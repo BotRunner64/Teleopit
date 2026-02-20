@@ -82,7 +82,7 @@ class RLPolicyController:
             self._session.run([self._output_name], {self._input_name: obs})[0],
             dtype=np.float32,
         ).reshape(-1)
-        return self._clip_and_scale(raw_action)
+        return raw_action
 
     def get_target_dof_pos(self, raw_action: NDArray[np.float32]) -> NDArray[np.float32]:
         scaled_action = self._clip_and_scale(np.asarray(raw_action, dtype=np.float32).reshape(-1))

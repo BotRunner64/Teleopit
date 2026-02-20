@@ -256,20 +256,26 @@ def render_sim2sim(
     max_frames: int = 0,
 ) -> None:
     """Render full sim2sim: BVH → GMR → obs → ONNX policy → PD control → MuJoCo."""
+    POLICY_HZ = 50
+    PD_HZ = 1000
+
     project_root = _find_project_root()
-    cfgs = _load_configs(str(bvh_path), project_root, policy_hz=fps)
+    cfgs = _load_configs(str(bvh_path), project_root, policy_hz=POLICY_HZ)
 
     from omegaconf import OmegaConf
 
     from teleopit.pipeline import TeleopPipeline
     from teleopit.retargeting.core import extract_mimic_obs
 
+    sim2sim_xml = project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml"
+    cfgs["robot"].xml_path = str(sim2sim_xml)
+
     cfg = OmegaConf.create({
         "robot": cfgs["robot"],
         "controller": cfgs["controller"],
         "input": cfgs["input"],
-        "policy_hz": cfgs["policy_hz"],
-        "pd_hz": cfgs["policy_hz"],
+        "policy_hz": POLICY_HZ,
+        "pd_hz": PD_HZ,
         "recording": {"output_path": "/tmp/teleopit_render.h5"},
     })
     pipeline = TeleopPipeline(cfg)
@@ -279,30 +285,40 @@ def render_sim2sim(
     renderer = mujoco.Renderer(model, height=height, width=width)
     cam = _make_camera()
 
-    n_bvh = len(pipeline.input_provider) if hasattr(pipeline.input_provider, '__len__') else len(pipeline.input_provider._provider)
-    num_steps = n_bvh
-    if max_frames > 0:
-        num_steps = min(num_steps, max_frames)
-    duration = num_steps / fps
-    print(f"  [sim2sim] Rendering {num_steps} frames @ {fps}fps -> {duration:.1f}s video")
-
-    loop = pipeline.loop
     input_prov = cast(Any, pipeline.input_provider)
     retargeter = cast(Any, pipeline.retargeter)
+    loop = pipeline.loop
+
+    n_bvh = len(input_prov)
+    bvh_duration = n_bvh / fps
+    if max_frames > 0:
+        bvh_duration = min(bvh_duration, max_frames / fps)
+    num_policy_steps = int(bvh_duration * POLICY_HZ)
+    print(f"  [sim2sim] {n_bvh} BVH frames @ {fps}fps = {bvh_duration:.1f}s")
+    print(f"  [sim2sim] Running {num_policy_steps} policy steps @ {POLICY_HZ}Hz, PD @ {PD_HZ}Hz (decimation={loop.decimation})")
+
+    bvh_frames_all = input_prov._frames
 
     frames: list[np.ndarray] = []
     t0 = time.time()
+    last_bvh_idx = -1
 
-    for step in range(num_steps):
-        try:
-            human_frame = input_prov.get_frame()
-        except StopIteration:
-            break
+    for step in range(num_policy_steps):
+        policy_time = step / POLICY_HZ
+        bvh_idx = min(int(policy_time * fps), n_bvh - 1)
 
-        retargeted = retargeter.retarget(human_frame)
-        qpos = loop._retarget_to_qpos(retargeted)
+        if bvh_idx != last_bvh_idx:
+            raw_frame = bvh_frames_all[bvh_idx]
+            human_frame = {
+                body_name: (np.array(d[0]), np.array(d[1]))
+                for body_name, d in raw_frame.items()
+            }
+            retargeted = retargeter.retarget(human_frame)
+            qpos = loop._retarget_to_qpos(retargeted)
+            last_bvh_idx = bvh_idx
+
         mimic_obs = extract_mimic_obs(
-            qpos=qpos, last_qpos=loop._last_retarget_qpos, dt=1.0 / loop.policy_hz
+            qpos=qpos, last_qpos=loop._last_retarget_qpos, dt=1.0 / POLICY_HZ
         )
 
         state = pipeline.robot.get_state()
@@ -333,7 +349,7 @@ def render_sim2sim(
         frames.append(frame.copy())
 
         if (step + 1) % 100 == 0:
-            print(f"    Step {step + 1}/{num_steps} ({time.time() - t0:.1f}s)")
+            print(f"    Step {step + 1}/{num_policy_steps} ({time.time() - t0:.1f}s)")
 
     renderer.close()
 
@@ -342,7 +358,7 @@ def render_sim2sim(
         return
 
     print(f"  [sim2sim] Done: {len(frames)} frames in {time.time() - t0:.1f}s")
-    _write_video(frames, output_path, fps)
+    _write_video(frames, output_path, POLICY_HZ)
 
 
 def main() -> None:
