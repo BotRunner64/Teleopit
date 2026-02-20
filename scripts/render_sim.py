@@ -1,0 +1,416 @@
+#!/usr/bin/env python3
+"""Render MuJoCo verification videos from BVH input.
+
+Produces THREE videos per BVH file, all at the BVH native frame rate
+with ALL frames rendered, so they have identical duration:
+  1. *_bvh.mp4      — Raw BVH skeleton (matplotlib 3D)
+  2. *_retarget.mp4  — GMR kinematic retargeting (qpos set directly, no physics)
+  3. *_sim2sim.mp4   — Full RL policy pipeline (BVH → GMR → obs → ONNX → PD → MuJoCo)
+
+Usage:
+    MUJOCO_GL=egl python scripts/render_sim.py --bvh data/lafan1/dance1_subject2.bvh
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+import time
+from pathlib import Path
+from typing import Any, cast
+
+import numpy as np
+
+os.environ.setdefault("MUJOCO_GL", "egl")
+
+import imageio  # noqa: E402
+import mujoco  # noqa: E402
+
+
+def _find_project_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _read_bvh_fps(bvh_path: Path) -> int:
+    with open(bvh_path, "r") as f:
+        for line in f:
+            m = re.match(r"\s*Frame Time:\s+([\d.]+)", line)
+            if m:
+                return round(1.0 / float(m.group(1)))
+    return 30
+
+
+def _make_camera() -> mujoco.MjvCamera:
+    cam = mujoco.MjvCamera()
+    cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+    cam.lookat[:] = [0.0, 0.0, 0.8]
+    cam.distance = 3.0
+    cam.azimuth = 135.0
+    cam.elevation = -20.0
+    return cam
+
+
+def _write_video(frames: list[np.ndarray], path: Path, fps: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer = imageio.get_writer(str(path), fps=fps, quality=8)
+    for f in frames:
+        writer.append_data(f)
+    writer.close()
+    size_mb = path.stat().st_size / (1024 * 1024)
+    duration = len(frames) / fps
+    print(f"  Saved: {path} ({size_mb:.1f} MB, {len(frames)} frames, {duration:.1f}s @ {fps}fps)")
+
+
+def _load_configs(bvh_path: str, project_root: Path, policy_hz: int) -> dict[str, Any]:
+    from omegaconf import OmegaConf
+
+    robot_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "robot" / "g1.yaml")
+    controller_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "controller" / "rl_policy.yaml")
+    input_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "input" / "bvh.yaml")
+
+    xml_path = project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_mocap_29dof.xml"
+    robot_cfg.xml_path = str(xml_path)
+
+    policy_path = project_root.parent / "TWIST2" / "assets" / "ckpts" / "twist2_1017_20k.onnx"
+    if not policy_path.exists():
+        print(f"ERROR: ONNX policy not found at {policy_path}")
+        sys.exit(1)
+    controller_cfg.policy_path = str(policy_path)
+    controller_cfg.default_dof_pos = list(robot_cfg.default_angles)
+    controller_cfg.action_scale = 0.5
+    controller_cfg.clip_range = [-10.0, 10.0]
+
+    input_cfg.bvh_file = str(bvh_path)
+    input_cfg.provider = "bvh"
+    input_cfg.bvh_format = "lafan1"
+    input_cfg.human_format = "bvh_lafan1"
+    input_cfg.robot_name = "unitree_g1"
+
+    return {
+        "robot": robot_cfg,
+        "controller": controller_cfg,
+        "input": input_cfg,
+        "policy_hz": policy_hz,
+    }
+
+
+def render_bvh(
+    bvh_path: Path,
+    output_path: Path,
+    width: int,
+    height: int,
+    fps: int,
+    max_frames: int = 0,
+) -> None:
+    """Render raw BVH skeleton as 3D matplotlib animation."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+    from teleopit.retargeting.gmr.utils.lafan_vendor.extract import read_bvh
+    from teleopit.retargeting.gmr.utils.lafan_vendor import utils
+
+    data = read_bvh(str(bvh_path))
+    rotation_matrix = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]])
+    global_quats, global_pos = utils.quat_fk(data.quats, data.pos, data.parents)
+    # (n_frames, n_bones, 3) — apply Y-up rotation and cm→m
+    positions = np.einsum("fbi,ji->fbj", global_pos, rotation_matrix) / 100.0
+    parents = data.parents
+
+    num_frames = positions.shape[0]
+    if max_frames > 0:
+        num_frames = min(num_frames, max_frames)
+    duration = num_frames / fps
+    print(f"  [bvh] Rendering {num_frames} frames @ {fps}fps -> {duration:.1f}s video")
+
+    dpi = 100
+    fig_w, fig_h = width / dpi, height / dpi
+    fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
+    ax = fig.add_subplot(111, projection="3d")
+
+    frames: list[np.ndarray] = []
+    t0 = time.time()
+
+    for step in range(num_frames):
+        ax.cla()
+        pos = positions[step]
+        root = pos[0]
+
+        ax.set_xlim(root[0] - 1.0, root[0] + 1.0)
+        ax.set_ylim(root[1] - 1.0, root[1] + 1.0)
+        ax.set_zlim(0.0, 2.0)
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        ax.set_zlabel("Z")
+        ax.set_title(f"BVH Skeleton — frame {step}")
+        ax.view_init(elev=20, azim=135)
+
+        for j in range(len(parents)):
+            p = parents[j]
+            if p < 0:
+                continue
+            xs = [pos[p, 0], pos[j, 0]]
+            ys = [pos[p, 1], pos[j, 1]]
+            zs = [pos[p, 2], pos[j, 2]]
+            ax.plot(xs, ys, zs, "b-", linewidth=2)
+
+        ax.scatter(pos[:, 0], pos[:, 1], pos[:, 2], c="red", s=15, depthshade=True)
+
+        fig.canvas.draw()
+        buf = fig.canvas.buffer_rgba()
+        img = np.asarray(buf)[:, :, :3].copy()
+        frames.append(img)
+
+        if (step + 1) % 100 == 0:
+            print(f"    Step {step + 1}/{num_frames} ({time.time() - t0:.1f}s)")
+
+    plt.close(fig)
+
+    if not frames:
+        print("  WARNING: No frames rendered!")
+        return
+
+    print(f"  [bvh] Done: {len(frames)} frames in {time.time() - t0:.1f}s")
+    _write_video(frames, output_path, fps)
+
+
+def render_retarget(
+    bvh_path: Path,
+    output_path: Path,
+    width: int,
+    height: int,
+    fps: int,
+    max_frames: int = 0,
+) -> None:
+    """Render GMR retargeting result — set qpos directly, no physics."""
+    project_root = _find_project_root()
+    cfgs = _load_configs(str(bvh_path), project_root, policy_hz=fps)
+
+    from teleopit.inputs import BVHInputProvider
+    from teleopit.retargeting.core import RetargetingModule
+    from teleopit.robots.mujoco_robot import MuJoCoRobot
+
+    robot = MuJoCoRobot(cfgs["robot"])
+    input_prov = BVHInputProvider(bvh_path=str(bvh_path), human_format="lafan1")
+    retargeter = RetargetingModule(
+        robot_name="unitree_g1",
+        human_format="bvh_lafan1",
+        actual_human_height=input_prov.human_height,
+    )
+
+    model = robot.model
+    data = robot.data
+    renderer = mujoco.Renderer(model, height=height, width=width)
+    cam = _make_camera()
+
+    num_steps = len(input_prov)
+    if max_frames > 0:
+        num_steps = min(num_steps, max_frames)
+    duration = num_steps / fps
+    print(f"  [retarget] Rendering {num_steps} frames @ {fps}fps -> {duration:.1f}s video")
+
+    frames: list[np.ndarray] = []
+    t0 = time.time()
+
+    for step in range(num_steps):
+        try:
+            human_frame = input_prov.get_frame()
+        except StopIteration:
+            break
+
+        retargeted = retargeter.retarget(human_frame)
+        qpos = np.asarray(retargeted, dtype=np.float64).reshape(-1)
+
+        # Set full qpos (7D root + 29D joints) directly — no physics
+        data.qpos[: len(qpos)] = qpos
+        data.qvel[:] = 0
+        mujoco.mj_forward(model, data)
+
+        cam.lookat[:] = [data.qpos[0], data.qpos[1], 0.8]
+
+        renderer.update_scene(data, camera=cam)
+        frame = renderer.render()
+        frames.append(frame.copy())
+
+        if (step + 1) % 100 == 0:
+            print(f"    Step {step + 1}/{num_steps} ({time.time() - t0:.1f}s)")
+
+    renderer.close()
+
+    if not frames:
+        print("  WARNING: No frames rendered!")
+        return
+
+    print(f"  [retarget] Done: {len(frames)} frames in {time.time() - t0:.1f}s")
+    _write_video(frames, output_path, fps)
+
+
+def render_sim2sim(
+    bvh_path: Path,
+    output_path: Path,
+    width: int,
+    height: int,
+    fps: int,
+    max_frames: int = 0,
+) -> None:
+    """Render full sim2sim: BVH → GMR → obs → ONNX policy → PD control → MuJoCo."""
+    project_root = _find_project_root()
+    cfgs = _load_configs(str(bvh_path), project_root, policy_hz=fps)
+
+    from omegaconf import OmegaConf
+
+    from teleopit.pipeline import TeleopPipeline
+    from teleopit.retargeting.core import extract_mimic_obs
+
+    cfg = OmegaConf.create({
+        "robot": cfgs["robot"],
+        "controller": cfgs["controller"],
+        "input": cfgs["input"],
+        "policy_hz": cfgs["policy_hz"],
+        "pd_hz": cfgs["policy_hz"],
+        "recording": {"output_path": "/tmp/teleopit_render.h5"},
+    })
+    pipeline = TeleopPipeline(cfg)
+
+    model = pipeline.robot.model
+    data = pipeline.robot.data
+    renderer = mujoco.Renderer(model, height=height, width=width)
+    cam = _make_camera()
+
+    n_bvh = len(pipeline.input_provider) if hasattr(pipeline.input_provider, '__len__') else len(pipeline.input_provider._provider)
+    num_steps = n_bvh
+    if max_frames > 0:
+        num_steps = min(num_steps, max_frames)
+    duration = num_steps / fps
+    print(f"  [sim2sim] Rendering {num_steps} frames @ {fps}fps -> {duration:.1f}s video")
+
+    loop = pipeline.loop
+    input_prov = cast(Any, pipeline.input_provider)
+    retargeter = cast(Any, pipeline.retargeter)
+
+    frames: list[np.ndarray] = []
+    t0 = time.time()
+
+    for step in range(num_steps):
+        try:
+            human_frame = input_prov.get_frame()
+        except StopIteration:
+            break
+
+        retargeted = retargeter.retarget(human_frame)
+        qpos = loop._retarget_to_qpos(retargeted)
+        mimic_obs = extract_mimic_obs(
+            qpos=qpos, last_qpos=loop._last_retarget_qpos, dt=1.0 / loop.policy_hz
+        )
+
+        state = pipeline.robot.get_state()
+        obs = loop._build_observation(state=state, mimic_obs=mimic_obs, last_action=loop._last_action)
+        policy_obs = loop._adapt_observation_for_policy(obs)
+        action = np.asarray(
+            pipeline.controller.compute_action(policy_obs), dtype=np.float32
+        ).reshape(-1)
+
+        target_dof_pos = loop._compute_target_dof_pos(action)
+
+        for _ in range(loop.decimation):
+            pd_state = pipeline.robot.get_state()
+            dof_pos = np.asarray(pd_state.qpos, dtype=np.float32)[: loop._num_actions]
+            dof_vel = np.asarray(pd_state.qvel, dtype=np.float32)[: loop._num_actions]
+            torque = (target_dof_pos - dof_pos) * loop._kps - dof_vel * loop._kds
+            torque = np.clip(torque, -loop._torque_limits, loop._torque_limits).astype(np.float32)
+            pipeline.robot.set_action(torque)
+            pipeline.robot.step()
+
+        loop._last_action = action
+        loop._last_retarget_qpos = qpos.copy()
+
+        cam.lookat[:] = [data.qpos[0], data.qpos[1], 0.8]
+
+        renderer.update_scene(data, camera=cam)
+        frame = renderer.render()
+        frames.append(frame.copy())
+
+        if (step + 1) % 100 == 0:
+            print(f"    Step {step + 1}/{num_steps} ({time.time() - t0:.1f}s)")
+
+    renderer.close()
+
+    if not frames:
+        print("  WARNING: No frames rendered!")
+        return
+
+    print(f"  [sim2sim] Done: {len(frames)} frames in {time.time() - t0:.1f}s")
+    _write_video(frames, output_path, fps)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Render BVH + retarget + sim2sim verification videos"
+    )
+    parser.add_argument("--bvh", required=True, help="Path to a single BVH file")
+    parser.add_argument("--max_seconds", type=float, default=0, help="Max video duration in seconds (0=full BVH)")
+    parser.add_argument("--width", type=int, default=640, help="Video width")
+    parser.add_argument("--height", type=int, default=360, help="Video height")
+    args = parser.parse_args()
+
+    project_root = _find_project_root()
+    bvh_path = Path(args.bvh)
+    if not bvh_path.is_absolute():
+        bvh_path = (project_root / bvh_path).resolve()
+
+    if not bvh_path.exists():
+        print(f"BVH file not found: {bvh_path}")
+        sys.exit(1)
+
+    fps = _read_bvh_fps(bvh_path)
+    max_frames = int(fps * args.max_seconds) if args.max_seconds > 0 else 0
+
+    output_dir = project_root / "outputs"
+    output_dir.mkdir(exist_ok=True)
+    stem = bvh_path.stem
+
+    print(f"Processing: {bvh_path.name} (native {fps}fps" + (f", cap {args.max_seconds:.0f}s)" if max_frames else ", full)"))
+
+    bvh_out = output_dir / f"{stem}_bvh.mp4"
+    print(f"\n=== Pass 1: BVH Skeleton ===")
+    render_bvh(
+        bvh_path=bvh_path,
+        output_path=bvh_out,
+        width=args.width,
+        height=args.height,
+        fps=fps,
+        max_frames=max_frames,
+    )
+
+    retarget_out = output_dir / f"{stem}_retarget.mp4"
+    print(f"\n=== Pass 2: GMR Retarget ===")
+    render_retarget(
+        bvh_path=bvh_path,
+        output_path=retarget_out,
+        width=args.width,
+        height=args.height,
+        fps=fps,
+        max_frames=max_frames,
+    )
+
+    sim2sim_out = output_dir / f"{stem}_sim2sim.mp4"
+    print(f"\n=== Pass 3: Sim2Sim ===")
+    render_sim2sim(
+        bvh_path=bvh_path,
+        output_path=sim2sim_out,
+        width=args.width,
+        height=args.height,
+        fps=fps,
+        max_frames=max_frames,
+    )
+
+    print(f"\nDone! Videos saved to {output_dir}/")
+    print(f"  BVH:      {bvh_out.name}")
+    print(f"  Retarget: {retarget_out.name}")
+    print(f"  Sim2Sim:  {sim2sim_out.name}")
+
+
+if __name__ == "__main__":
+    main()
