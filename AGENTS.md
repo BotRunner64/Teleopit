@@ -1,0 +1,97 @@
+# AGENTS.md
+
+## Project Overview
+
+Teleopit is a lightweight, extensible, self-contained humanoid robot whole-body teleoperation framework. It integrates GMR (General Motion Retargeting) and supports TWIST2-compatible RL policy inference via ONNX.
+
+Language: Python 3.10+
+Package: `teleopit` (installed via `pip install -e .`)
+Config: Hydra/OmegaConf YAML files in `teleopit/configs/`
+
+## Architecture
+
+```
+InputProvider (BVH/VR) → Retargeter (GMR) → ObservationBuilder (1402D) → Controller (ONNX RL) → Robot (MuJoCo + PD)
+```
+
+Module-internal isolation: all modules run in-process, communicate via `InProcessBus` (zero-copy). Core interfaces defined as `typing.Protocol` in `teleopit/interfaces.py`.
+
+## Directory Structure
+
+```
+teleopit/                 # Core package
+├── interfaces.py         # Protocol definitions: Robot, Controller, InputProvider, Retargeter, etc.
+├── pipeline.py           # TeleopPipeline — assembles and runs the full pipeline
+├── bus/                  # InProcessBus message pub/sub
+├── configs/              # Hydra YAML configs
+│   ├── default.yaml      # Top-level config composing robot + controller + input
+│   ├── robot/g1.yaml     # G1 robot: XML path, PD gains, default angles, action dims
+│   ├── controller/rl_policy.yaml
+│   └── input/bvh.yaml
+├── controllers/
+│   ├── rl_policy.py      # RLPolicyController — ONNX inference, returns RAW action (no scaling)
+│   └── observation.py    # TWIST2ObservationBuilder — 1402D obs (127×11 history + 35 mimic)
+├── inputs/
+│   └── bvh_provider.py   # BVHInputProvider — parses lafan1-format BVH
+├── retargeting/
+│   ├── core.py           # RetargetingModule + extract_mimic_obs()
+│   └── gmr/              # Self-contained GMR (assets, IK solver, 17+ robot configs)
+│       └── assets/unitree_g1/
+│           ├── g1_mocap_29dof.xml    # Kinematic retarget only (has ctrlrange bug)
+│           └── g1_sim2sim_29dof.xml  # Sim2sim with correct actuator limits
+├── robots/
+│   └── mujoco_robot.py   # MuJoCoRobot — MuJoCo sim wrapper
+├── sim/
+│   └── loop.py           # SimulationLoop — PD control at 1000Hz, policy at 50Hz
+└── recording/            # HDF5Recorder
+scripts/
+├── run_sim.py            # Run teleoperation pipeline
+├── render_sim.py         # Render single BVH → 3 videos (bvh skeleton, retarget, sim2sim)
+└── render_all_lafan1.sh  # Batch render all data/lafan1/*.bvh
+tests/                    # 67 pytest tests
+data/                     # BVH motion data (gitignored)
+├── lafan1/               # 77 BVH files, 30fps, 22 joints — working
+└── lafan1-resolved/      # 77 BVH files, 60fps, 75 joints — retarget BROKEN (different skeleton)
+outputs/                  # Rendered videos (gitignored)
+```
+
+## Key Technical Details
+
+### Sim2Sim Pipeline
+- Policy runs at 50Hz, PD control at 1000Hz (decimation=20), sim_dt=0.001
+- Action flow: `compute_action()` returns RAW action → `get_target_dof_pos()` applies clip [-10,10] + scale 0.5 ONCE
+- Must use `g1_sim2sim_29dof.xml` for sim2sim (not `g1_mocap_29dof.xml` which clamps torques to ±1 Nm)
+
+### TWIST2 Observation
+- 1402D vector: 127 features × 11 timesteps (history) + 35 mimic features
+- Mimic obs from `extract_mimic_obs()`: target joint positions + velocities
+
+### GMR Retargeting
+- Self-contained in `teleopit/retargeting/gmr/` with all assets
+- Only supports lafan1-format BVH (22 joints, 3 channels each)
+- lafan1-resolved format (75 joints, 6 channels) requires an adapter (not yet implemented)
+
+### PD Gains (G1 robot, from g1.yaml)
+- Most joints: kp varies by joint (see config)
+- Wrist joints: kp=4.0, kd=0.2 (matches TWIST2 reference)
+
+## Development
+
+```bash
+pip install -e .           # Install in dev mode
+pytest tests/ -v           # Run tests (67 tests)
+```
+
+### Rendering Videos
+```bash
+# Single BVH (produces 3 videos: bvh skeleton, retarget, sim2sim)
+MUJOCO_GL=egl python scripts/render_sim.py --bvh data/lafan1/dance1_subject2.bvh
+
+# All lafan1 BVH files (skips already-rendered)
+bash scripts/render_all_lafan1.sh --max_seconds 30
+```
+
+## Known Issues
+
+1. **lafan1-resolved retarget broken**: Different BVH skeleton format (75 joints vs 22). Needs adapter layer to map joints. User deferred fix.
+2. **g1_mocap_29dof.xml ctrlrange**: Has `ctrlrange="-1 1"` that clamps all torques. Only use for kinematic retarget visualization, never for sim2sim.
