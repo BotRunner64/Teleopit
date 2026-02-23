@@ -160,3 +160,51 @@ OMNI_KIT_ACCEPT_EULA=YES python teleopit_train/scripts/convert_urdf_isaaclab.py 
 ## Phase 2/3: Student 蒸馏（DAgger）
 
 Student 策略训练（DAgger 蒸馏 + 未来运动编码器）计划在后续迭代中实现。
+
+## 评估
+
+使用 benchmark 脚本评估训练好的策略:
+
+```bash
+# 激活 conda 环境
+eval "$(conda shell.bash hook)" && conda activate teleopit_isaaclab
+
+# 在训练好的 checkpoint 上运行 benchmark
+OMNI_KIT_ACCEPT_EULA=YES python teleopit_train/scripts/benchmark.py \
+  --task Isaac-G1-Mimic-v0 \
+  --checkpoint logs/rsl_rl/g1_mimic/run_name/model_30000.pt \
+  --num_envs 1 \
+  --headless
+
+# 覆盖运动文件(可选)
+OMNI_KIT_ACCEPT_EULA=YES python teleopit_train/scripts/benchmark.py \
+  --task Isaac-G1-Mimic-v0 \
+  --checkpoint logs/rsl_rl/g1_mimic/run_name/model_30000.pt \
+  --motion_file teleopit_train/configs/twist2_dataset.yaml \
+  --headless
+```
+
+### 跟踪误差
+
+benchmark 脚本计算 8 个跟踪误差:
+
+- **joint_dof**: 关节位置平均绝对误差
+- **joint_vel**: 关节速度平均绝对误差
+- **root_translation**: 根位置平均绝对误差 (XYZ)
+- **root_rotation**: 根旋转平均绝对误差 (四元数角度)
+- **root_vel**: 根线速度平均绝对误差 (局部坐标系)
+- **root_ang_vel**: 根角速度平均绝对误差 (局部坐标系)
+- **keybody_pos**: 关键身体部位位置平均绝对误差 (9 个部位: 手、脚、膝盖、肘部、头部)
+- **feet_slip**: 接触加权的脚部速度 (滑动惩罚)
+
+### 输出
+
+结果保存到 `benchmark_results/{task}-{checkpoint}.txt`,包含:
+
+- 总误差 (所有 8 个指标之和)
+- 每个指标的平均值
+- 每个身体部位的 keybody 分解 (手、脚、膝盖、肘部、头部)
+
+### 训练期间的 Wandb 日志
+
+训练期间,episode 指标(奖励 + 跟踪误差)会通过 `_reset_idx()` 中填充的 `self.extras["episode"]` 自动记录到 wandb。
