@@ -65,6 +65,7 @@ class G1MimicEnv(DirectRLEnv):
             },
         )
         self.robot = Articulation(robot_cfg)
+        self.scene.articulations["robot"] = self.robot
 
         # ── Terrain: use TerrainImporter instead of ground plane ──────────
         self.terrain_importer = TerrainImporter(self.cfg.terrain_importer)
@@ -80,13 +81,12 @@ class G1MimicEnv(DirectRLEnv):
                 update_period=0.0,
             )
         )
+        self.scene.sensors["contact_sensor"] = self.contact_sensor
 
         self.scene.clone_environments(copy_from_source=False)
         if self.device == "cpu":
             self.scene.filter_collisions(global_prim_paths=["/World/ground"])
 
-        self.scene.articulations["robot"] = self.robot
-        self.scene.sensors["contact_sensor"] = self.contact_sensor
 
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
@@ -539,7 +539,7 @@ class G1MimicEnv(DirectRLEnv):
                 motion_ids, motion_times
             )
             root_pos[:, 2] += self.cfg.motion.height_offset
-            root_pos[:, :2] += self._env_origins()[env_ids, :2]
+            root_pos[:, :3] += self._env_origins()[env_ids]
             self._ref_root_pos[env_ids] = root_pos
             self._ref_root_rot[env_ids] = root_rot
             self._ref_dof_pos[env_ids] = ref_dof_pos
@@ -551,6 +551,8 @@ class G1MimicEnv(DirectRLEnv):
             root_state[:, 3:7] = root_rot
             root_state[:, 7:10] = root_vel * 0.8
             root_state[:, 10:13] = root_ang_vel * 0.8
+        else:
+            root_state[:, :3] += self._env_origins()[env_ids]
         self.robot.write_joint_state_to_sim(dof_pos, dof_vel, env_ids=env_ids)
         self.robot.write_root_state_to_sim(root_state, env_ids=env_ids)
         self._process_rigid_shape_props(env_ids)
@@ -609,7 +611,7 @@ class G1MimicEnv(DirectRLEnv):
             self._motion_ids, motion_times
         )
         root_pos[:, 2] += self.cfg.motion.height_offset
-        root_pos[:, :2] += self._env_origins()[:, :2]
+        root_pos[:, :3] += self._env_origins()
 
         self._ref_root_pos[:] = root_pos
         self._ref_root_rot[:] = root_rot
