@@ -7,10 +7,14 @@ teleopit_train/assets/g1/
 ├── g1_29dof_rev_1_0.urdf              # Unitree 官方原始 URDF
 ├── g1_custom_collision_29dof.urdf     # 简化碰撞体的 URDF（训练用）
 └── usd/
-    ├── g1_29dof.usd                   # 当前使用的 USD（UrdfConverter 生成）
-    ├── g1_29dof_custom_pxr.usd.bak    # 旧版 USD 备份（自定义 pxr 转换器生成）
-    ├── configuration/                  # UrdfConverter 生成的配置层
-    └── meshes/                         # STL 网格文件
+    ├── g1_29dof.usd                   # composition root（引用下方子文件）
+    ├── config.yaml                    # UrdfConverter 生成的配置（相对路径）
+    ├── configuration/                 # UrdfConverter 生成的 USD 分层
+    │   ├── g1_29dof_base.usd          # 几何/mesh 层（~28MB）
+    │   ├── g1_29dof_physics.usd       # 物理层（关节、刚体、碰撞）
+    │   ├── g1_29dof_robot.usd         # 机器人配置层
+    │   └── g1_29dof_sensor.usd        # 传感器层
+    └── g1_29dof_custom_pxr.usd.bak    # 旧版 USD 备份（不要使用）
 ```
 
 ## URDF 来源
@@ -29,7 +33,7 @@ conda activate teleopit_isaaclab
 OMNI_KIT_ACCEPT_EULA=YES python teleopit_train/scripts/convert_urdf_isaaclab.py --headless
 ```
 
-脚本 `convert_urdf_isaaclab.py` 使用 Isaac Lab 官方 `UrdfConverter`，配置：
+转换脚本 `convert_urdf_isaaclab.py` 使用 Isaac Lab 官方 `UrdfConverter`，配置：
 
 | 参数 | 值 | 原因 |
 |------|-----|------|
@@ -39,6 +43,14 @@ OMNI_KIT_ACCEPT_EULA=YES python teleopit_train/scripts/convert_urdf_isaaclab.py 
 | joint_drive stiffness | 0.0 | 训练代码使用自定义 PD 控制 |
 | joint_drive damping | 0.0 | 同上 |
 | joint_drive target_type | "none" | 不使用 Isaac Lab 内置驱动 |
+
+❗ **重要**：UrdfConverter 会在 `config.yaml` 中写入绝对路径。转换完成后必须手动修改为相对路径，否则换机器后 USD 无法加载：
+
+```yaml
+# config.yaml — 转换后手动修改为：
+asset_path: ../g1_custom_collision_29dof.urdf  # 相对于 usd/ 目录
+usd_dir: .                                     # 当前目录
+```
 
 ### 不要使用：自定义 pxr 转换器
 

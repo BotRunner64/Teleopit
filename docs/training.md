@@ -28,23 +28,43 @@ pip install isaacsim==5.1.0
 3. 从源码安装 Isaac Lab v2.3.2：
 
 ```bash
-git clone https://github.com/isaac-sim/IsaacLab.git
+# clone（推荐 shallow clone 加速）
+git clone --depth 1 --branch v2.3.2 https://github.com/isaac-sim/IsaacLab.git
 cd IsaacLab
-git checkout v2.3.2
-pip install -e .
+
+# ⚠️ 不要用 pip install isaaclab —— PyPI 上的是 stub 包，缺少 envs/sim 等核心模块
+# 必须从源码逐个安装 extensions：
+
+# 先解决 flatdict 的 build 兼容性问题
+pip install flatdict==4.0.1 --no-build-isolation
+
+# 安装所有 Isaac Lab extensions
+pip install --editable source/isaaclab
+pip install --editable source/isaaclab_assets
+pip install --editable source/isaaclab_tasks
+pip install --editable source/isaaclab_rl
+pip install --editable source/isaaclab_contrib
+pip install --editable source/isaaclab_mimic
 ```
 
 4. 安装 Teleopit 及训练依赖：
 
 ```bash
 cd Teleopit
-pip install -e '.[train]'
+pip install --no-build-isolation -e '.[train]'
 ```
 
 5. 验证安装：
 
 ```bash
-python -c "import isaacsim; import isaaclab; import torch; print(f'Isaac Lab OK, CUDA: {torch.cuda.is_available()}')"
+python -c "
+from isaacsim import SimulationApp
+app = SimulationApp({'headless': True})
+from isaaclab.envs import DirectRLEnvCfg
+import teleopit_train.envs
+print('ALL OK')
+app.close()
+"
 ```
 
 ## 训练流程
