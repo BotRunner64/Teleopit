@@ -507,12 +507,25 @@ class G1MimicEnv(DirectRLEnv):
         if env_ids.numel() == 0:
             return
 
-        super()._reset_idx(env_ids)
+        # ── Collect episode stats BEFORE super()._reset_idx clears episode_length_buf ──
+        if len(env_ids) > 0:
+            self.extras["episode"] = {}
+            # Snapshot episode lengths before base class zeros them
+            episode_lengths = torch.clamp(self.episode_length_buf[env_ids].float(), min=1.0)
+            # Collect reward episode sums (averaged by episode length)
+            for key in self.episode_sums.keys():
+                self.extras["episode"][key] = self.episode_sums[key][env_ids] / episode_lengths
+            # Collect error episode means (prefix with "error_")
+            for name in self.episode_means.keys():
+                self.extras["episode"][f"error_{name}"] = self.episode_means[name][env_ids].clone()
+            # Save episode length for runner's average_episode_length
+            self.episode_length[env_ids] = episode_lengths
 
+        # ── Now safe to call base reset (zeros episode_length_buf) ──
+        super()._reset_idx(env_ids)
         dof_pos = self.default_dof_pos[env_ids].clone()
         dof_vel = torch.zeros_like(dof_pos)
         root_state = self.default_root_state[env_ids].clone()
-
         motion_lib = self._motion_lib
         if motion_lib is not None:
             motion_ids = motion_lib.sample_motions(env_ids.numel())
@@ -520,32 +533,26 @@ class G1MimicEnv(DirectRLEnv):
                 motion_times = motion_lib.sample_time(motion_ids)
             else:
                 motion_times = torch.zeros_like(motion_ids, dtype=torch.float)
-
             self._motion_ids[env_ids] = motion_ids
             self._motion_time_offsets[env_ids] = motion_times
-
             root_pos, root_rot, root_vel, root_ang_vel, ref_dof_pos, ref_dof_vel, *_ = motion_lib.calc_motion_frame(
                 motion_ids, motion_times
             )
             root_pos[:, 2] += self.cfg.motion.height_offset
             root_pos[:, :2] += self._env_origins()[env_ids, :2]
-
             self._ref_root_pos[env_ids] = root_pos
             self._ref_root_rot[env_ids] = root_rot
             self._ref_dof_pos[env_ids] = ref_dof_pos
             self._ref_root_vel[env_ids] = root_vel
             self._ref_root_ang_vel[env_ids] = root_ang_vel
-
             dof_pos = ref_dof_pos
             dof_vel = ref_dof_vel * 0.8
             root_state[:, :3] = root_pos
             root_state[:, 3:7] = root_rot
             root_state[:, 7:10] = root_vel * 0.8
             root_state[:, 10:13] = root_ang_vel * 0.8
-
         self.robot.write_joint_state_to_sim(dof_pos, dof_vel, env_ids=env_ids)
         self.robot.write_root_state_to_sim(root_state, env_ids=env_ids)
-
         self._process_rigid_shape_props(env_ids)
         self._process_rigid_body_props(env_ids)
         self._randomize_motor_strength(env_ids)
@@ -553,7 +560,6 @@ class G1MimicEnv(DirectRLEnv):
         if self.cfg.domain_rand.randomize_gravity:
             self._randomize_gravity()
             self._gravity_steps_since_last = 0
-
         self.actions[env_ids] = 0.0
         self.last_actions[env_ids] = 0.0
         self.delayed_actions[env_ids] = 0.0
@@ -564,30 +570,11 @@ class G1MimicEnv(DirectRLEnv):
         self.last_dof_vel[env_ids] = 0.0
         self.last_root_vel[env_ids] = 0.0
         self.feet_air_time[env_ids] = 0.0
+        # Reset episode accumulators for the new episode
         for key in self.episode_sums:
             self.episode_sums[key][env_ids] = 0.0
-        # Populate self.extras["episode"] for wandb logging
-        if len(env_ids) > 0:
-            self.extras["episode"] = {}
-            
-            # Collect reward episode sums (averaged by episode length)
-            for key in self.episode_sums.keys():
-                # Compute mean reward per step for each env being reset
-                episode_lengths = torch.clamp(self.episode_length_buf[env_ids], min=1.0)
-                mean_values = self.episode_sums[key][env_ids] / episode_lengths
-                
-                # Store in extras (runner expects dict of tensors)
-                self.extras["episode"][key] = mean_values
-            
-            # Collect error episode means (prefix with "error_")
-            for name in self.episode_means.keys():
-                self.extras["episode"][f"error_{name}"] = self.episode_means[name][env_ids].clone()
-            
-            # Reset episode_means for the reset envs
-            for name in self.episode_means.keys():
-                self.episode_means[name][env_ids] = 0.0
-        self.episode_length[env_ids] = self.episode_length_buf[env_ids].float()
-
+        for name in self.episode_means:
+            self.episode_means[name][env_ids] = 0.0
         self.scene.write_data_to_sim()
         self.sim.forward()
         self.scene.update(dt=self.physics_dt)
