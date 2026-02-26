@@ -77,6 +77,10 @@ outputs/                  # Rendered videos (gitignored)
 
 ## Development
 
+### Commit Policy
+- **不要自动提交代码**。commit 必须由用户主动发起，确保测试通过后再提交。
+- 使用 git 默认 user 作为 commit 作者。
+
 ```bash
 pip install -e .           # Install in dev mode
 pytest tests/ -v           # Run tests (67 tests)
