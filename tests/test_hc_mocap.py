@@ -17,18 +17,18 @@ class TestHCMocapParsing:
     """Test read_bvh() with hc_mocap format."""
 
     def test_read_bvh_hc_mocap_parses(self):
-        """Verify hc_mocap BVH parses correctly: 50 joints, 934 frames, quaternion shape."""
-        bvh_path = "data/motion_corrected_v2.bvh"
+        """Verify hc_mocap BVH parses correctly: 52 joints, 96 frames, quaternion shape."""
+        bvh_path = "data/hc_mocap/tpose.bvh"
         data = read_bvh(bvh_path)
 
         # Check joint count
-        assert len(data.bones) == 50, f"Expected 50 joints, got {len(data.bones)}"
+        assert len(data.bones) == 52, f"Expected 52 joints, got {len(data.bones)}"
 
         # Check frame count
-        assert data.quats.shape[0] == 934, f"Expected 934 frames, got {data.quats.shape[0]}"
+        assert data.quats.shape[0] == 96, f"Expected 96 frames, got {data.quats.shape[0]}"
 
         # Check quaternion shape (frames, joints, 4)
-        assert data.quats.shape == (934, 50, 4), f"Expected (934, 50, 4), got {data.quats.shape}"
+        assert data.quats.shape == (96, 52, 4), f"Expected (96, 52, 4), got {data.quats.shape}"
 
         # Check frametime is parsed
         assert data.frametime is not None, "frametime should be parsed"
@@ -41,15 +41,15 @@ class TestHCMocapLoading:
     """Test _load_bvh_file() with hc_mocap format."""
 
     def test_load_bvh_file_hc_mocap_scale(self):
-        """Verify hc_mocap loading: meter scale (root_z ≈ 0.84), LeftFootMod present, fps=60."""
-        bvh_path = "data/motion_corrected_v2.bvh"
+        """Verify hc_mocap loading: meter scale (root_z ≈ 0.95), LeftFootMod present, fps=60."""
+        bvh_path = "data/hc_mocap/tpose.bvh"
         provider = BVHInputProvider(bvh_path=bvh_path, human_format="hc_mocap")
 
         # Check fps (should be 60 from BVH, no downsampling in current implementation)
         assert provider.fps == 60, f"Expected fps=60, got {provider.fps}"
 
-        # Check frame count (934 frames, downsampled to 467)
-        assert len(provider) == 467, f"Expected 467 frames (934/2), got {len(provider)}"
+        # Check frame count (96 frames, downsampled to 48)
+        assert len(provider) == 48, f"Expected 48 frames (96/2), got {len(provider)}"
 
         # Get first frame
         frame = provider.get_frame()
@@ -71,7 +71,7 @@ class TestHCMocapProvider:
 
     def test_bvh_input_provider_hc_mocap(self):
         """Verify BVHInputProvider.get_frame() returns valid HumanFrame dict."""
-        bvh_path = "data/motion_corrected_v2.bvh"
+        bvh_path = "data/hc_mocap/tpose.bvh"
         provider = BVHInputProvider(bvh_path=bvh_path, human_format="hc_mocap")
 
         # Get frame 0

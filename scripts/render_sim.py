@@ -140,6 +140,9 @@ def render_bvh(
     global_quats, global_pos = utils.quat_fk(data.quats, data.pos, data.parents)
     scale_divisor = 1.0 if bvh_format == "hc_mocap" else 100.0
     positions = np.einsum("fbi,ji->fbj", global_pos, rotation_matrix) / scale_divisor
+    # hc_mocap: lift skeleton to ground level (BVH root at Y=0, feet at Y≈-0.95)
+    if bvh_format == "hc_mocap":
+        positions[:, :, 2] += 0.9526
     # hc_mocap 60fps is downsampled to 30fps by BVHInputProvider — match here
     if bvh_format == "hc_mocap" and positions.shape[0] > 0:
         raw_fps = round(1.0 / data.frametime) if data.frametime else 30
@@ -232,6 +235,8 @@ def render_retarget(
 
     model = robot.model
     data = robot.data
+    model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
+    model.vis.global_.offheight = max(model.vis.global_.offheight, height)
     renderer = mujoco.Renderer(model, height=height, width=width)
     cam = _make_camera()
 
@@ -333,6 +338,8 @@ def render_sim2sim(
 
     model = pipeline.robot.model
     data = pipeline.robot.data
+    model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
+    model.vis.global_.offheight = max(model.vis.global_.offheight, height)
     renderer = mujoco.Renderer(model, height=height, width=width)
     cam = _make_camera()
 

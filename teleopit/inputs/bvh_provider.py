@@ -21,6 +21,8 @@ def _load_bvh_file(bvh_file: str, format: str = "lafan1"):
         for i, bone in enumerate(data.bones):
             orientation = utils.quat_mul(rotation_quat, global_data[0][frame, i])
             position = global_data[1][frame, i] @ rotation_matrix.T / scale_divisor
+            if format == "hc_mocap":
+                position = position + np.array([0.0, 0.0, 0.9526])
             result[bone] = [position, orientation]
 
         if format == "lafan1":
@@ -38,9 +40,9 @@ def _load_bvh_file(bvh_file: str, format: str = "lafan1"):
             result["LeftFootMod"] = [result[left_foot_key][0], result[left_toe_key][1]]
             result["RightFootMod"] = [result[right_foot_key][0], result[right_toe_key][1]]
         elif format == "hc_mocap":
-            # hc_mocap has no Toe joints — use hc_Foot_L/R position + orientation
-            result["LeftFootMod"] = [result["hc_Foot_L"][0], result["hc_Foot_L"][1]]
-            result["RightFootMod"] = [result["hc_Foot_R"][0], result["hc_Foot_R"][1]]
+            # hc_Foot_L/R position + LeftToeBase/RightToeBase orientation
+            result["LeftFootMod"] = [result["hc_Foot_L"][0], result["LeftToeBase"][1]]
+            result["RightFootMod"] = [result["hc_Foot_R"][0], result["RightToeBase"][1]]
         else:
             raise ValueError(f"Invalid format: {format}")
 
@@ -52,29 +54,18 @@ def _load_bvh_file(bvh_file: str, format: str = "lafan1"):
     else:
         fps = 30
 
-    # Estimate human height from skeleton offsets (sum Y offsets from root to head)
-    bone_names = list(data.bones)
-    offsets = data.offsets  # shape: (num_joints, 3)
-    parents = data.parents
-    # Build path: root → Spine → hc_Chest → hc_Chest1 → neck → hc_Head (or similar)
-    # Sum absolute Y offsets along the longest vertical chain
     if format == "hc_mocap":
-        # Upward chain: root → Spine → hc_Chest → hc_Chest1 → neck → hc_Head → end_site
-        up_joints = ["Spine", "hc_Chest", "hc_Chest1", "neck", "hc_Head"]
-        up_height = 0.0
-        for jname in up_joints:
-            if jname in bone_names:
-                idx = bone_names.index(jname)
-                up_height += abs(offsets[idx][1])  # Y offset in BVH (Y-up)
-        # Downward chain: root → hc_Hip_L → hc_Knee_L → hc_Foot_L
-        down_joints = ["hc_Hip_L", "hc_Knee_L", "hc_Foot_L"]
-        down_height = 0.0
-        for jname in down_joints:
-            if jname in bone_names:
-                idx = bone_names.index(jname)
-                down_height += abs(offsets[idx][1])  # Y offset in BVH (Y-up)
-        human_height = up_height + down_height
-        if human_height < 0.5:  # fallback
+        # Use frame 0 global FK positions for accurate height (head_Y - lowest_foot_Y)
+        head_idx = list(data.bones).index("hc_Head") if "hc_Head" in data.bones else None
+        toe_l_idx = list(data.bones).index("LeftToeBase") if "LeftToeBase" in data.bones else None
+        toe_r_idx = list(data.bones).index("RightToeBase") if "RightToeBase" in data.bones else None
+        if head_idx is not None and toe_l_idx is not None:
+            head_y = global_data[1][0, head_idx, 1]  # Y in BVH Y-up space
+            toe_y = min(global_data[1][0, toe_l_idx, 1], global_data[1][0, toe_r_idx, 1])
+            human_height = head_y - toe_y
+        else:
+            human_height = 1.75
+        if human_height < 0.5:
             human_height = 1.75
     else:
         human_height = 1.75
