@@ -33,7 +33,7 @@ Teleopit 采用模块化架构，核心数据流如下所示：
 
 ## 特性
 
-- **GMR 运动重定向**: 独立集成的 GMR 模块，包含完整资产，支持 unitree_g1, h1 等多种机器人。
+- **GMR 运动重定向**: 独立集成的 GMR 模块，包含完整资产，支持 unitree_g1, h1 等多种机器人。支持 lafan1 和 hc_mocap 等多种 BVH 格式。
 - **TWIST2 兼容观测**: 精确复刻 1402D (127×11 + 35) 观测构建逻辑，直接支持 TWIST2 预训练模型。
 - **ONNX RL 策略推理**: 采用 `onnxruntime` 进行推理，不依赖完整的 PyTorch 环境即可运行。
 - **MuJoCo 仿真与 PD 控制**: 集成 MuJoCo 物理引擎，支持 1000Hz PD 控制与 50Hz Policy 推理频率。
@@ -148,3 +148,32 @@ pytest tests/ -v
 - `numpy`, `scipy`, `torch`: 数值计算与张量处理
 - `rich`: 终端日志增强
 
+
+## 训练
+
+Teleopit 集成了 TWIST2 的训练代码，作为独立的 `teleopit_train` 包，基于 Isaac Lab 进行 GPU 并行仿真训练。
+
+快速开始：
+
+```bash
+# 1. 环境搭建（详见 docs/training.md）
+conda activate teleopit_isaaclab
+# 2. 训练 teacher 策略
+python teleopit_train/scripts/train.py \
+    --task Isaac-G1-Mimic-v0 \
+    --num_envs 4096 \
+    --max_iterations 30000 \
+    --headless
+
+# 3. 导出 ONNX 模型
+python teleopit_train/scripts/save_onnx.py \
+    --checkpoint logs/rsl_rl/g1_mimic/<timestamp>/model_30000.pt \
+    --output policy.onnx
+# 4. 推理
+python scripts/run_sim.py --policy policy.onnx
+```
+
+详细文档：
+- [训练指南](docs/training.md) — 环境搭建、训练流程、指标解读
+- [资产管理](docs/assets.md) — USD/URDF 转换与验证
+- [常见问题](docs/troubleshooting.md) — PhysX 挂起、Isaac Sim 警告等
