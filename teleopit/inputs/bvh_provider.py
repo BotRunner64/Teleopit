@@ -12,32 +12,69 @@ def _load_bvh_file(bvh_file: str, format: str = "lafan1"):
     rotation_matrix = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]])
     rotation_quat = R.from_matrix(rotation_matrix).as_quat(scalar_first=True)
 
+    # hc_mocap uses meters, lafan1/nokov use centimeters
+    scale_divisor = 1.0 if format == "hc_mocap" else 100.0
+
     frames = []
     for frame in range(data.pos.shape[0]):
         result = {}
         for i, bone in enumerate(data.bones):
             orientation = utils.quat_mul(rotation_quat, global_data[0][frame, i])
-            position = global_data[1][frame, i] @ rotation_matrix.T / 100
+            position = global_data[1][frame, i] @ rotation_matrix.T / scale_divisor
+            if format == "hc_mocap":
+                position = position + np.array([0.0, 0.0, 0.9526])
             result[bone] = [position, orientation]
 
-        left_foot_key = "LeftFoot" if "LeftFoot" in result else "LeftAnkle"
-        right_foot_key = "RightFoot" if "RightFoot" in result else "RightAnkle"
-        left_toe_key = "LeftToe" if "LeftToe" in result else "LeftToeBase"
-        right_toe_key = "RightToe" if "RightToe" in result else "RightToeBase"
-            
         if format == "lafan1":
+            left_foot_key = "LeftFoot" if "LeftFoot" in result else "LeftAnkle"
+            right_foot_key = "RightFoot" if "RightFoot" in result else "RightAnkle"
+            left_toe_key = "LeftToe" if "LeftToe" in result else "LeftToeBase"
+            right_toe_key = "RightToe" if "RightToe" in result else "RightToeBase"
             result["LeftFootMod"] = [result[left_foot_key][0], result[left_toe_key][1]]
             result["RightFootMod"] = [result[right_foot_key][0], result[right_toe_key][1]]
         elif format == "nokov":
+            left_foot_key = "LeftFoot" if "LeftFoot" in result else "LeftAnkle"
+            right_foot_key = "RightFoot" if "RightFoot" in result else "RightAnkle"
+            left_toe_key = "LeftToe" if "LeftToe" in result else "LeftToeBase"
+            right_toe_key = "RightToe" if "RightToe" in result else "RightToeBase"
             result["LeftFootMod"] = [result[left_foot_key][0], result[left_toe_key][1]]
             result["RightFootMod"] = [result[right_foot_key][0], result[right_toe_key][1]]
+        elif format == "hc_mocap":
+            # hc_Foot_L/R position + LeftToeBase/RightToeBase orientation
+            result["LeftFootMod"] = [result["hc_Foot_L"][0], result["LeftToeBase"][1]]
+            result["RightFootMod"] = [result["hc_Foot_R"][0], result["RightToeBase"][1]]
         else:
             raise ValueError(f"Invalid format: {format}")
-            
+
         frames.append(result)
-    
-    human_height = 1.75
-    return frames, human_height, 30
+
+    # Read FPS from BVH Frame Time field
+    if data.frametime is not None and data.frametime > 0:
+        fps = int(round(1.0 / data.frametime))
+    else:
+        fps = 30
+
+    if format == "hc_mocap":
+        # Use frame 0 global FK positions for accurate height (head_Y - lowest_foot_Y)
+        head_idx = list(data.bones).index("hc_Head") if "hc_Head" in data.bones else None
+        toe_l_idx = list(data.bones).index("LeftToeBase") if "LeftToeBase" in data.bones else None
+        toe_r_idx = list(data.bones).index("RightToeBase") if "RightToeBase" in data.bones else None
+        if head_idx is not None and toe_l_idx is not None:
+            head_y = global_data[1][0, head_idx, 1]  # Y in BVH Y-up space
+            toe_y = min(global_data[1][0, toe_l_idx, 1], global_data[1][0, toe_r_idx, 1])
+            human_height = head_y - toe_y
+        else:
+            human_height = 1.75
+        if human_height < 0.5:
+            human_height = 1.75
+    else:
+        human_height = 1.75
+
+    # Downsample hc_mocap from 60fps to 30fps
+    if format == "hc_mocap" and fps == 60:
+        frames = frames[::2]
+
+    return frames, human_height, fps
 
 
 class BVHInputProvider:
