@@ -32,7 +32,7 @@ teleopit/                 # Core package
 │   ├── rl_policy.py      # RLPolicyController — ONNX inference, returns RAW action (no scaling)
 │   └── observation.py    # TWIST2ObservationBuilder — 1402D obs (127×11 history + 35 mimic)
 ├── inputs/
-│   └── bvh_provider.py   # BVHInputProvider — parses lafan1-format BVH
+│   └── bvh_provider.py   # BVHInputProvider — parses lafan1/hc_mocap BVH formats
 ├── retargeting/
 │   ├── core.py           # RetargetingModule + extract_mimic_obs()
 │   └── gmr/              # Self-contained GMR (assets, IK solver, 17+ robot configs)
@@ -46,11 +46,13 @@ teleopit/                 # Core package
 └── recording/            # HDF5Recorder
 scripts/
 ├── run_sim.py            # Run teleoperation pipeline
-├── render_sim.py         # Render single BVH → 3 videos (bvh skeleton, retarget, sim2sim)
-└── render_all_lafan1.sh  # Batch render all data/lafan1/*.bvh
-tests/                    # 67 pytest tests
+├── render_sim.py         # Render single BVH → 3 videos (bvh skeleton, retarget, sim2sim), supports --format flag
+├── render_all_lafan1.sh  # Batch render all data/lafan1/*.bvh
+└── compute_ik_offsets.py # Compute IK quaternion offsets for new BVH formats (see IK Offset Calibration)
+tests/                    # 78 pytest tests
 data/                     # BVH motion data (gitignored)
 ├── lafan1/               # 77 BVH files, 30fps, 22 joints — working
+├── hc_mocap/             # hc_mocap BVH files, 60fps, 50 joints, tab-separated, meters
 └── lafan1-resolved/      # 77 BVH files, 60fps, 75 joints — retarget BROKEN (different skeleton)
 outputs/                  # Rendered videos (gitignored)
 ```
@@ -68,8 +70,41 @@ outputs/                  # Rendered videos (gitignored)
 
 ### GMR Retargeting
 - Self-contained in `teleopit/retargeting/gmr/` with all assets
-- Only supports lafan1-format BVH (22 joints, 3 channels each)
+- Supports lafan1-format BVH (22 joints, 30fps, centimeters, space-separated)
+- Supports hc_mocap-format BVH (50 joints, 60fps→30fps downsampled, meters, tab-separated)
 - lafan1-resolved format (75 joints, 6 channels) requires an adapter (not yet implemented)
+- IK configs per format: `bvh_lafan1_to_g1.json`, `bvh_hc_mocap_to_g1.json`
+
+### IK Offset Calibration
+
+IK config 中每个 (robot_body, human_bone) 对的第 5 个元素是四元数偏移 `R_offset`（w,x,y,z 标量在前）。重定向时的应用公式为：
+
+```
+R_result = R_human * R_offset        （scipy Rotation 乘法，即 Hamilton 积）
+```
+
+校准公式：
+
+```
+R_offset = R_human_tpose^{-1} * R_robot_tpose
+```
+
+**关键注意事项 — 根节点朝向对齐**：计算 `R_robot_tpose` 时，必须先将机器人根节点旋转到与 BVH 人体朝向一致。G1 默认朝 +X，hc_mocap BVH 人体朝 -Y（Z-up），需要给根节点设置 -90° Z 轴旋转。若缺少此步骤，所有偏移量会有 ~90° 的系统性偏航误差，导致前倾变侧倾、双脚错位等问题。
+
+机器人 T-pose 设置：
+- 根节点四元数：旋转至与人体朝向一致（hc_mocap 为 -90° Z 轴）
+- `left_shoulder_roll_joint = +π/2`，`right_shoulder_roll_joint = -π/2`（手臂水平）
+- 其余关节为 0
+
+使用 `scripts/compute_ik_offsets.py` 可自动从 BVH 骨架几何推算人体朝向并计算偏移量：
+
+```bash
+python scripts/compute_ik_offsets.py                          # 仅打印偏移量
+python scripts/compute_ik_offsets.py --write                  # 打印并写入 config
+python scripts/compute_ik_offsets.py --bvh path/to/tpose.bvh  # 指定 T-pose 文件
+```
+
+**FootMod 朝向来源**：hc_mocap 的 `LeftFootMod`/`RightFootMod` 使用 `LeftToeBase`/`RightToeBase` 的朝向（非 `hc_Foot_L`/`hc_Foot_R`）。若更改此来源，需同步重算踝关节偏移量。
 
 ### PD Gains (G1 robot, from g1.yaml)
 - Most joints: kp varies by joint (see config)
@@ -80,16 +115,20 @@ outputs/                  # Rendered videos (gitignored)
 ### Commit Policy
 - **不要自动提交代码**。commit 必须由用户主动发起，确保测试通过后再提交。
 - 使用 git 默认 user 作为 commit 作者。
+- **完成大 feature 后必须更新文档**：当一个完整功能（如新格式支持、新模块）实现并测试通过后，需同步更新 AGENTS.md 和 README.md 中的相关说明（目录结构、使用方法、技术细节等），随代码一起提交。
 
 ```bash
 pip install -e .           # Install in dev mode
-pytest tests/ -v           # Run tests (67 tests)
+pytest tests/ -v           # Run tests (78 tests)
 ```
 
 ### Rendering Videos
 ```bash
-# Single BVH (produces 3 videos: bvh skeleton, retarget, sim2sim)
+# Single BVH — lafan1 format (default)
 MUJOCO_GL=egl python scripts/render_sim.py --bvh data/lafan1/dance1_subject2.bvh
+
+# Single BVH — hc_mocap format
+MUJOCO_GL=egl python scripts/render_sim.py --bvh data/motion_corrected_v2.bvh --format hc_mocap
 
 # All lafan1 BVH files (skips already-rendered)
 bash scripts/render_all_lafan1.sh --max_seconds 30
