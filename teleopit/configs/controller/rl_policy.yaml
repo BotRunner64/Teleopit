@@ -1,2 +1,5 @@
-policy_path: null
+policy_path: "/home/wubingqian/project/teleop_projects/Teleopit/teleopit/assets/rl_controller/twist2_1017_20k.onnx"
 device: "cpu"
+
+action_scale: 0.5
+clip_range: [-10.0, 10.0]

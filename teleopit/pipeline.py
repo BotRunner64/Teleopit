@@ -73,12 +73,14 @@ class TeleopPipeline:
             "policy_hz": float(_cfg_get(cfg, "policy_hz", 50.0)),
             "pd_hz": float(_cfg_get(cfg, "pd_hz", 1000.0)),
         }
+        viewer_enabled = bool(_cfg_get(cfg, "viewer", False))
         self.loop = SimulationLoop(
             cast(Any, self.robot),
             cast(Any, self.controller),
             cast(Any, self.obs_builder),
             cast(Any, self.bus),
             sim_cfg,
+            viewer=viewer_enabled,
         )
 
     def run(self, num_steps: int, record: bool = False) -> dict[str, float | int | str]:
@@ -120,10 +122,10 @@ class TeleopPipeline:
     def _build_obs_cfg(self, robot_cfg: Any) -> dict[str, Any]:
         return {
             "num_actions": int(_cfg_get(robot_cfg, "num_actions")),
-            "ang_vel_scale": 0.25,
-            "dof_pos_scale": 1.0,
-            "dof_vel_scale": 0.05,
-            "ankle_idx": [4, 5, 10, 11],
+            "ang_vel_scale": float(_cfg_get(robot_cfg, "ang_vel_scale", 0.25)),
+            "dof_pos_scale": float(_cfg_get(robot_cfg, "dof_pos_scale", 1.0)),
+            "dof_vel_scale": float(_cfg_get(robot_cfg, "dof_vel_scale", 0.05)),
+            "ankle_idx": list(_cfg_get(robot_cfg, "ankle_idx", [4, 5, 10, 11])),
             "default_dof_pos": list(_cfg_get(robot_cfg, "default_angles")),
         }
 
@@ -139,7 +141,7 @@ class TeleopPipeline:
                 if candidate.exists():
                     _cfg_set(robot_cfg, "xml_path", str(candidate))
                 else:
-                    fallback = self._project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_mocap_29dof.xml"
+                    fallback = self._project_root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml"
                     _cfg_set(robot_cfg, "xml_path", str(fallback.resolve()))
 
         if controller_cfg is not None:
