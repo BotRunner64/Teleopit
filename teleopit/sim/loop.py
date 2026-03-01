@@ -115,59 +115,82 @@ class SimulationLoop:
         viewer = self._viewer_handle
         policy_dt = 1.0 / self.policy_hz
         wall_start = time.monotonic() if viewer is not None else 0.0
-        for _ in range(num_steps):
-            if viewer is not None and not viewer.is_running():
-                break
 
-            human_frame = input_provider.get_frame()
-            retargeted = retargeter.retarget(human_frame)
-            qpos = self._retarget_to_qpos(retargeted)
-            mimic_obs = extract_mimic_obs(qpos=qpos, last_qpos=self._last_retarget_qpos, dt=1.0 / self.policy_hz)
+        # Frame-rate alignment: BVH fps may differ from policy Hz.
+        # When BVH fps < policy Hz, multiple policy steps reuse the same BVH frame.
+        input_fps: float = float(getattr(input_provider, "fps", self.policy_hz))
+        last_bvh_idx = -1
+        cached_human_frame: object = None
+        cached_retargeted: object = None
 
-            state = self.robot.get_state()
-            obs = self._build_observation(state=state, mimic_obs=mimic_obs, last_action=self._last_action)
-            policy_obs = self._adapt_observation_for_policy(obs)
-            action: Float32Array = np.asarray(self.controller.compute_action(policy_obs), dtype=np.float32).reshape(-1)
-            if action.shape[0] != self._num_actions:
-                raise ValueError(f"Controller returned {action.shape[0]} actions, expected {self._num_actions}")
+        try:
+            for _ in range(num_steps):
+                if viewer is not None and not viewer.is_running():
+                    break
 
-            target_dof_pos = self._compute_target_dof_pos(action)
+                policy_time = steps_done * policy_dt
+                bvh_idx = int(policy_time * input_fps)
 
-            torque: Float32Array = np.zeros((self._num_actions,), dtype=np.float32)
-            for _ in range(self.decimation):
-                pd_state = self.robot.get_state()
-                dof_pos = np.asarray(pd_state.qpos, dtype=np.float32)[: self._num_actions]
-                dof_vel = np.asarray(pd_state.qvel, dtype=np.float32)[: self._num_actions]
-                torque = np.asarray((target_dof_pos - dof_pos) * self._kps - dof_vel * self._kds, dtype=np.float32)
-                torque = np.asarray(np.clip(torque, -self._torque_limits, self._torque_limits), dtype=np.float32)
-                self.robot.set_action(torque)
-                self.robot.step()
+                if bvh_idx != last_bvh_idx:
+                    if not input_provider.is_available():
+                        break
+                    cached_human_frame = input_provider.get_frame()
+                    cached_retargeted = retargeter.retarget(cached_human_frame)
+                    last_bvh_idx = bvh_idx
 
-            final_state = self.robot.get_state()
-            self._publish(mimic_obs, action, final_state)
-            self._record(recorder, final_state, mimic_obs, action, target_dof_pos, torque)
+                retargeted = cached_retargeted
+                qpos = self._retarget_to_qpos(retargeted)
+                mimic_obs = extract_mimic_obs(qpos=qpos, last_qpos=self._last_retarget_qpos, dt=1.0 / self.policy_hz)
 
-            if viewer is not None:
-                # Camera tracks pelvis
-                if self._pelvis_body_id is not None:
-                    data = getattr(self.robot, "data", None)
-                    if data is not None:
-                        viewer.cam.lookat[:] = data.xpos[self._pelvis_body_id]
-                viewer.sync()
-                # Real-time pacing: sleep until wall clock catches up with sim time
-                sim_time = (steps_done + 1) * policy_dt
-                wall_elapsed = time.monotonic() - wall_start
-                sleep_time = sim_time - wall_elapsed
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
+                state = self.robot.get_state()
+                obs = self._build_observation(state=state, mimic_obs=mimic_obs, last_action=self._last_action)
+                policy_obs = self._adapt_observation_for_policy(obs)
+                action: Float32Array = np.asarray(self.controller.compute_action(policy_obs), dtype=np.float32).reshape(-1)
+                if action.shape[0] != self._num_actions:
+                    raise ValueError(f"Controller returned {action.shape[0]} actions, expected {self._num_actions}")
 
-            self._last_action = action
-            self._last_retarget_qpos = qpos.copy()
-            steps_done += 1
+                target_dof_pos = self._compute_target_dof_pos(action)
+
+                torque: Float32Array = np.zeros((self._num_actions,), dtype=np.float32)
+                for _ in range(self.decimation):
+                    pd_state = self.robot.get_state()
+                    dof_pos = np.asarray(pd_state.qpos, dtype=np.float32)[: self._num_actions]
+                    dof_vel = np.asarray(pd_state.qvel, dtype=np.float32)[: self._num_actions]
+                    torque = np.asarray((target_dof_pos - dof_pos) * self._kps - dof_vel * self._kds, dtype=np.float32)
+                    torque = np.asarray(np.clip(torque, -self._torque_limits, self._torque_limits), dtype=np.float32)
+                    self.robot.set_action(torque)
+                    self.robot.step()
+
+                final_state = self.robot.get_state()
+                self._publish(mimic_obs, action, final_state)
+                self._record(recorder, final_state, mimic_obs, action, target_dof_pos, torque)
+
+                if viewer is not None:
+                    # Camera tracks pelvis
+                    if self._pelvis_body_id is not None:
+                        data = getattr(self.robot, "data", None)
+                        if data is not None:
+                            viewer.cam.lookat[:] = data.xpos[self._pelvis_body_id]
+                    viewer.sync()
+                    # Real-time pacing: sleep until wall clock catches up with sim time
+                    sim_time = (steps_done + 1) * policy_dt
+                    wall_elapsed = time.monotonic() - wall_start
+                    sleep_time = sim_time - wall_elapsed
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
+
+                self._last_action = action
+                self._last_retarget_qpos = qpos.copy()
+                steps_done += 1
+        finally:
+            if self._viewer_handle is not None:
+                try:
+                    self._viewer_handle.close()
+                except Exception:
+                    pass
+                self._viewer_handle = None
 
         final_state = self.robot.get_state()
-        if self._viewer_handle is not None and self._viewer_handle.is_running():
-            self._viewer_handle.close()
         return {
             "steps": steps_done,
             "root_height": self._get_root_height(final_state),

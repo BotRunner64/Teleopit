@@ -73,6 +73,7 @@ def _load_bvh_file(bvh_file: str, format: str = "lafan1"):
     # Downsample hc_mocap from 60fps to 30fps
     if format == "hc_mocap" and fps == 60:
         frames = frames[::2]
+        fps = 30
 
     return frames, human_height, fps
 

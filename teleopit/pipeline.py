@@ -59,13 +59,26 @@ class TeleopPipeline:
             raise ValueError("cfg must include robot/controller/input sections")
 
         self.robot = MuJoCoRobot(robot_cfg)
+
+        # Ensure controller has default_dof_pos from robot config
+        if _cfg_get(controller_cfg, "default_dof_pos", None) is None:
+            default_angles = _cfg_get(robot_cfg, "default_angles", None)
+            if default_angles is not None:
+                _cfg_set(controller_cfg, "default_dof_pos", list(default_angles))
+
         self.controller = RLPolicyController(controller_cfg)
         self.obs_builder = TWIST2ObservationBuilder(self._build_obs_cfg(robot_cfg))
         self.bus = InProcessBus()
         self.input_provider = self._build_input_provider(input_cfg)
+
+        human_format = _cfg_get(input_cfg, "human_format", None)
+        if not human_format or str(human_format) == "null":
+            bvh_format = str(_cfg_get(input_cfg, "bvh_format", "lafan1"))
+            human_format = f"bvh_{bvh_format}"
+
         self.retargeter = RetargetingModule(
             robot_name=str(_cfg_get(input_cfg, "robot_name", "unitree_g1")),
-            human_format=str(_cfg_get(input_cfg, "human_format", "bvh_lafan1")),
+            human_format=str(human_format),
             actual_human_height=float(_cfg_get(input_cfg, "human_height", 1.75)),
         )
 
