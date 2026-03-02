@@ -30,10 +30,6 @@ mocap_switch:
   check_frames: 10   # Consecutive valid frames required before switching
   max_position_value: 5.0  # Position sanity threshold (meters)
 
-# LocoClient configuration
-loco:
-  timeout: 10.0
-
 hydra:
   run:
     dir: .

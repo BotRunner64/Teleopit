@@ -149,6 +149,8 @@ python scripts/run_online_sim.py num_steps=5000
 
 Teleopit 支持通过 Unitree SDK2 直接控制实物 G1 机器人，提供手柄遥控和动捕遥操作两种模式。
 
+> **重要限制（实测）**：Unitree Python SDK 在 `debug` 模式下不支持使用 `ai_sport`（LocoClient 高层走跑运控）。推荐启动时序为：机器人开机 → 等待自动进入零力矩模式 → 遥控器依次进入预备模式和走跑运控（确保 `ai_sport` 已工作）→ 再启动 `run_sim2real.py`。
+
 **前置准备：**
 
 ```bash
