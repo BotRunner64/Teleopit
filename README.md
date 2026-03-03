@@ -178,6 +178,36 @@ done
 
 输出文件保存在 `outputs/` 目录下，命名规则：`{bvh文件名}_bvh.mp4`、`{bvh文件名}_retarget.mp4`、`{bvh文件名}_sim2sim.mp4`。
 
+### 离线渲染 PKL Retargeting 视频
+
+使用 `render_pkl_sim2sim.py` 对 TWIST2 retargeting 输出的 `.pkl` 文件进行离线渲染，生成两个视频：运动学重定向（直接设 qpos）和 RL 策略物理仿真（sim2sim）。
+
+```bash
+# 渲染单个 pkl 文件（输出到 outputs/pkl_sim2sim/{文件名}/ 目录）
+MUJOCO_GL=egl python scripts/render_pkl_sim2sim.py --pkl data/twist2_retarget_pkl/OMOMO_g1_GMR/sub1_clothesstand_000.pkl
+
+# 限制渲染时长
+MUJOCO_GL=egl python scripts/render_pkl_sim2sim.py --pkl data/twist2_retarget_pkl/OMOMO_g1_GMR/sub1_clothesstand_000.pkl --max_seconds 10
+
+# 自定义输出目录和分辨率
+MUJOCO_GL=egl python scripts/render_pkl_sim2sim.py --pkl data/twist2_retarget_pkl/v1_v2_v3_g1/0807_yanjie_walk_001.pkl --output_dir outputs/custom --width 1280 --height 720
+
+# 批量渲染
+for f in data/twist2_retarget_pkl/v1_v2_v3_g1/*.pkl; do
+    MUJOCO_GL=egl python scripts/render_pkl_sim2sim.py --pkl "$f"
+done
+```
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--pkl` | (必选) | `.pkl` 运动文件路径 |
+| `--output_dir` | `outputs/pkl_sim2sim/{stem}/` | 输出目录 |
+| `--max_seconds` | `0` | 最大渲染时长（秒），0 = 渲染完整动作 |
+| `--width` | `640` | 视频宽度（像素） |
+| `--height` | `360` | 视频高度（像素） |
+
+PKL 文件格式：包含 `root_pos` (N×3)、`root_rot` (N×4, xyzw)、`dof_pos` (N×29)、`fps` 等字段，由 TWIST2 retargeting pipeline 生成。输出文件为 `retarget.mp4` 和 `sim2sim.mp4`。
+
 ### Sim2Real 实物部署
 
 Teleopit 支持通过 Unitree SDK2 直接控制实物 G1 机器人，提供手柄遥控和动捕遥操作两种模式。
@@ -253,6 +283,7 @@ Teleopit/
 │   ├── run_online_sim.py    # 实时 UDP 在线仿真
 │   ├── run_sim2real.py      # Sim2Real 实物部署（手柄/动捕双模式）
 │   ├── render_sim.py       # 离线渲染 BVH/重定向/sim2sim 对比视频
+│   ├── render_pkl_sim2sim.py # 离线渲染 PKL retargeting/sim2sim 视频
 │   └── send_bvh_udp.py     # UDP BVH 测试发送工具
 ├── teleopit/                # 核心源码
 │   ├── bus/                 # 消息总线 (InProcessBus)
