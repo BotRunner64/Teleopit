@@ -333,7 +333,7 @@ class OnPolicyDaggerRunner:
                     self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
             ep_infos.clear()
         
-        # self.current_learning_iteration += num_learning_iterations
+        self.current_learning_iteration += num_learning_iterations
         self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
     
     def _need_normalizer_update(self, iterations, update_iterations):
@@ -492,8 +492,8 @@ class OnPolicyDaggerRunner:
             self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
         # self.current_learning_iteration = loaded_dict['iter']
         self.current_learning_iteration = int(os.path.basename(path).split("_")[1].split(".")[0])
-        self.env.global_counter = self.current_learning_iteration * 24
-        self.env.total_env_steps_counter = self.current_learning_iteration * 24
+        self.env.global_counter = self.current_learning_iteration * self.num_steps_per_env
+        self.env.total_env_steps_counter = self.current_learning_iteration * self.num_steps_per_env
         print("*" * 80)
         return loaded_dict['infos']
 

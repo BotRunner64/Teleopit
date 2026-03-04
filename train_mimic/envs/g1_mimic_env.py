@@ -810,6 +810,7 @@ class G1MimicEnv(DirectRLEnv):
                 continue
             fn_name = "_error_" + name
             if not hasattr(self, fn_name):
+                print(f"[WARNING] Evaluation '{name}' enabled but {fn_name}() not implemented, skipping.")
                 continue
             self.eval_names.append(name)
             self.eval_functions.append(getattr(self, fn_name))

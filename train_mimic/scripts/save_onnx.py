@@ -105,7 +105,11 @@ def export_policy_as_onnx(
     )
     
     # Load weights
-    policy.load_state_dict(policy_state_dict, strict=False)
+    result = policy.load_state_dict(policy_state_dict, strict=False)
+    if result.missing_keys:
+        print(f"[WARNING] Missing keys in checkpoint: {result.missing_keys}")
+    if result.unexpected_keys:
+        print(f"[WARNING] Unexpected keys in checkpoint: {result.unexpected_keys}")
     policy.eval()
     
     # Extract normalizer if available

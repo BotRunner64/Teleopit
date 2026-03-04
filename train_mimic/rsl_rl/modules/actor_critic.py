@@ -182,7 +182,10 @@ class ActorCritic(nn.Module):
     def reset_std(self, std, num_actions, device):
         new_std = std * torch.ones(num_actions, device=device)
         self.std.data = new_std.data
-        
+
+    def update_std(self, std):
+        self.std.data = std * torch.ones_like(self.std.data)
+
     def if_fix_std(self):
         return self.fix_action_std
 

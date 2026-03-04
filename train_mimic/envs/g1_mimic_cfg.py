@@ -418,8 +418,6 @@ class G1EvaluationsCfg:
     tracking_root_vel: bool = True
     tracking_root_ang_vel: bool = True
     tracking_keybody_pos: bool = True
-    tracking_root_pose_delta_local: bool = True
-    tracking_root_rotation_delta_local: bool = True
 
 
 # ---------------------------------------------------------------------------

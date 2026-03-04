@@ -242,7 +242,8 @@ class DAggerRunner:
                     self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
             
             ep_infos.clear()
-        
+
+        self.current_learning_iteration += num_learning_iterations
         self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
     
     def log(self, locs, width=80, pad=35):

@@ -13,6 +13,25 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from typing import Any
 
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train G1 mimic policy with custom rsl_rl runner.")
+    parser.add_argument("--task", type=str, default="Isaac-G1-Mimic-v0")
+    parser.add_argument("--num_envs", type=int, default=None)
+    parser.add_argument("--max_iterations", type=int, default=None)
+    parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--wandb_project", type=str, default=None)
+    parser.add_argument("--experiment_name", type=str, default=None)
+    parser.add_argument("--motion_file", type=str, default=None,
+                        help="Override motion file (pkl, yaml, or directory of pkl files)")
+    # Intercept --help before SimulationApp swallows it
+    if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
+        parser.print_help()
+        raise SystemExit(0)
+    return parser.parse_args()
+
+
 # Save original asyncio.run BEFORE Isaac Sim patches it.
 # Isaac Sim's omni.kit.async_engine monkey-patches asyncio.run() globally,
 # which conflicts with wandb's background AsyncioManager thread and causes a segfault.
@@ -37,20 +56,6 @@ import train_mimic.envs  # noqa: F401, E402
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry  # noqa: E402
 from train_mimic.rsl_rl.runners.on_policy_runner_mimic import OnPolicyRunnerMimic as OnPolicyRunner  # noqa: E402
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train G1 mimic policy with custom rsl_rl runner.")
-    parser.add_argument("--task", type=str, default="Isaac-G1-Mimic-v0")
-    parser.add_argument("--num_envs", type=int, default=None)
-    parser.add_argument("--max_iterations", type=int, default=None)
-    parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--wandb_project", type=str, default=None)
-    parser.add_argument("--experiment_name", type=str, default=None)
-    parser.add_argument("--motion_file", type=str, default=None,
-                        help="Override motion file (pkl, yaml, or directory of pkl files)")
-    return parser.parse_args()
 
 
 def _to_dict(cfg: Any) -> dict[str, Any]:
@@ -229,4 +234,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        simulation_app.close()

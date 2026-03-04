@@ -130,7 +130,11 @@ def _load_policy(
         action_std=policy_cfg.get("action_std", None),
         layer_norm=bool(policy_cfg.get("layer_norm", False)),
     ).to(device)
-    policy.load_state_dict(policy_state_dict, strict=False)
+    result = policy.load_state_dict(policy_state_dict, strict=False)
+    if result.missing_keys:
+        print(f"[WARNING] Missing keys in checkpoint: {result.missing_keys}")
+    if result.unexpected_keys:
+        print(f"[WARNING] Unexpected keys in checkpoint: {result.unexpected_keys}")
     policy.eval()
 
     normalizer = checkpoint.get("normalizer", None)
@@ -242,11 +246,7 @@ def _benchmark(args_cli: argparse.Namespace) -> tuple[str, str]:
                 step_out = env.step(actions)
                 if len(step_out) == 5:
                     next_obs, _, terminated, truncated, _ = step_out
-                    dones = torch.tensor(
-                        [bool(terminated) or bool(truncated)],
-                        dtype=torch.bool,
-                        device=obs.device,
-                    )
+                    dones = terminated | truncated
                 else:
                     next_obs, _, dones, _ = step_out
                 obs = _policy_obs(next_obs)
