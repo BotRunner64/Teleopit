@@ -10,17 +10,6 @@ from typing import Any
 from train_mimic.tasks.tracking.config.constants import DEFAULT_TRAIN_MOTION_FILE, OFFICIAL_TASK
 
 DEFAULT_TASK = OFFICIAL_TASK
-LEGACY_TASK_ALIASES = {
-    "Tracking-Flat-G1-v2-NoStateEst": DEFAULT_TASK,
-}
-
-
-def resolve_task_name(task_name: str) -> str:
-    """Normalize a task name to the canonical registered task."""
-    normalized = LEGACY_TASK_ALIASES.get(task_name, task_name)
-    if normalized != task_name:
-        print(f"[WARN] Task '{task_name}' is deprecated. Use '{normalized}' instead.")
-    return normalized
 
 
 def validate_motion_file(motion_file: str) -> None:
@@ -79,11 +68,10 @@ def load_task_components(
             load_runner_cls,
             _configure_torch_backends,
         ) = import_training_stack()
-    canonical_task = resolve_task_name(task_name)
-    env_cfg = load_env_cfg(canonical_task, play=play)
-    agent_cfg = load_rl_cfg(canonical_task)
-    runner_cls = load_runner_cls(canonical_task)
-    return canonical_task, env_cfg, agent_cfg, runner_cls
+    env_cfg = load_env_cfg(task_name, play=play)
+    agent_cfg = load_rl_cfg(task_name)
+    runner_cls = load_runner_cls(task_name)
+    return task_name, env_cfg, agent_cfg, runner_cls
 
 
 def build_runner_cfg_dict(agent_cfg: Any, *, force_tensorboard: bool = False) -> dict[str, Any]:

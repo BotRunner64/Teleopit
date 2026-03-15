@@ -284,7 +284,7 @@ Quick reference:
 
  **Environment API**: mjlab `ManagerBasedRlEnv` + standard rsl_rl runner
  **Config system**: Python class-based env/runner cfg from task registry
- **Training task surface**: official task is `Tracking-Flat-G1-NoStateEst`; deprecated alias `Tracking-Flat-G1-v2-NoStateEst` is accepted by CLI and mapped to the official task
+ **Training task surface**: official task is `Tracking-Flat-G1-NoStateEst`; `Tracking-Flat-G1-v2-NoStateEst` is no longer supported
  **Multi-GPU training**: supported on a single node via `train_mimic/scripts/train.py --gpu_ids ...`; script relaunches itself with distributed workers, and `--num_envs` means per-GPU environments
  **Checkpoint format**: `logs/rsl_rl/{experiment}/{run}/model_{iter}.pt`
  **Network**: Standard MLP actor/critic (`[512,256,128]`, ELU)

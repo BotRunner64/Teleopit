@@ -8,7 +8,7 @@
 
 - 官方训练任务只有一个：`Tracking-Flat-G1-NoStateEst`
 - 该任务对应 **154D no-state-estimation** actor 观测，也是当前 sim2real 唯一支持的训练路径
-- 旧 task `Tracking-Flat-G1-v2-NoStateEst` 仅保留为兼容别名；`v0`、`v1`、state-estimation 任务不再是正式支持接口
+- `Tracking-Flat-G1-v0*`、`Tracking-Flat-G1-v1*`、`Tracking-Flat-G1-v2-NoStateEst`、state-estimation 任务都不再是正式支持接口
 - adaptive sampling 相关实现仍保留在代码里作为内部参考，但不再通过公开 task 暴露
 
 ## 环境安装
@@ -100,7 +100,6 @@ python train_mimic/scripts/train.py \
 - `--num_envs` 在多卡模式下表示每张卡的环境数
 - 默认 logger 是 tensorboard；传 `--wandb_project <name>` 才会启用 wandb
 - `--motion_file` 必须指向单个 merged NPZ
-- 如果传入旧别名 `Tracking-Flat-G1-v2-NoStateEst`，脚本会给出弃用提示并自动映射到新 task
 
 ## 导出与评估
 
@@ -184,5 +183,4 @@ train_mimic/
 
 - `build_dataset_v2.py` 已并入 `build_dataset.py`
 - manifest/review/export/migrate 那套 legacy 数据脚本已移除
-- `Tracking-Flat-G1-v2-NoStateEst` 仍可用，但只作为兼容别名
-- `Tracking-Flat-G1-v0*`、`Tracking-Flat-G1-v1*` 已退出正式支持面
+- `Tracking-Flat-G1-v0*`、`Tracking-Flat-G1-v1*`、`Tracking-Flat-G1-v2-NoStateEst` 已退出正式支持面

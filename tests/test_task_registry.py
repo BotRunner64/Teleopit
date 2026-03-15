@@ -24,19 +24,6 @@ def test_official_no_state_estimation_task_is_registered() -> None:
     assert load_runner_cls(DEFAULT_TASK) is MotionTrackingOnPolicyRunner
 
 
-def test_legacy_task_alias_matches_official_task() -> None:
-    import mjlab.tasks  # noqa: F401
-    import train_mimic.tasks  # noqa: F401
-    from mjlab.tasks.registry import load_env_cfg
-
-    env_cfg = load_env_cfg(DEFAULT_TASK)
-    alias_cfg = load_env_cfg("Tracking-Flat-G1-v2-NoStateEst")
-
-    assert alias_cfg.commands["motion"].sampling_mode == env_cfg.commands["motion"].sampling_mode
-    assert alias_cfg.episode_length_s == env_cfg.episode_length_s
-    assert alias_cfg.observations["actor"].terms.keys() == env_cfg.observations["actor"].terms.keys()
-
-
 def test_play_env_disables_corruption_and_random_push() -> None:
     import mjlab.tasks  # noqa: F401
     import train_mimic.tasks  # noqa: F401
