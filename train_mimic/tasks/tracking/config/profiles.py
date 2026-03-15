@@ -36,6 +36,12 @@ ADAPTIVE_REFERENCE_PROFILE = TrackingTaskProfile(
     sampling_mode="adaptive",
 )
 
+VELOCITY_DRIVEN_PROFILE = TrackingTaskProfile(
+    name="velocity_driven",
+    experiment_name="g1_tracking_vel_driven",
+    sampling_mode="uniform",
+)
+
 GENERAL_MOTION_REFERENCE_PROFILE = TrackingTaskProfile(
     name="general_motion_reference",
     experiment_name="g1_tracking_general_motion_reference",

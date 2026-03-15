@@ -41,6 +41,16 @@ def motion_anchor_ori_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tens
     return mat[..., :2].reshape(mat.shape[0], -1)
 
 
+def root_vel_cmd(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    return command.anchor_lin_vel_heading[:, :2]
+
+
+def root_yaw_rate_cmd(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    return command.anchor_yaw_rate.unsqueeze(-1)
+
+
 def robot_body_pos_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     command = cast(MotionCommand, env.command_manager.get_term(command_name))
 

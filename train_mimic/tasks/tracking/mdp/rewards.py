@@ -5,7 +5,13 @@ from typing import TYPE_CHECKING, cast
 import torch
 
 from mjlab.sensor import ContactSensor
-from mjlab.utils.lab_api.math import quat_error_magnitude
+from mjlab.utils.lab_api.math import (
+    quat_apply,
+    quat_error_magnitude,
+    quat_inv,
+    quat_mul,
+    yaw_quat,
+)
 
 from .commands import MotionCommand
 
@@ -109,6 +115,123 @@ def motion_global_body_angular_velocity_error_exp(
             - command.robot_body_ang_vel_w[:, body_indexes]
         ),
         dim=-1,
+    )
+    return torch.exp(-error.mean(-1) / std**2)
+
+
+def _robot_body_local(command: MotionCommand, body_indexes: list[int]):
+    """Compute robot body positions/orientations in robot anchor's yaw-only frame."""
+    robot_yaw_inv = quat_inv(yaw_quat(command.robot_anchor_quat_w))
+    robot_yaw_inv_rep = robot_yaw_inv[:, None, :].expand(
+        -1, len(body_indexes), -1
+    )
+    pos_b = quat_apply(
+        robot_yaw_inv_rep,
+        command.robot_body_pos_w[:, body_indexes]
+        - command.robot_anchor_pos_w[:, None, :],
+    )
+    quat_b = quat_mul(robot_yaw_inv_rep, command.robot_body_quat_w[:, body_indexes])
+    return pos_b, quat_b, robot_yaw_inv_rep
+
+
+# -- Velocity-driven root tracking rewards ------------------------------------
+
+
+def root_lin_vel_tracking_exp(
+    env: ManagerBasedRlEnv, command_name: str, std: float
+) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    cmd_vel = command.anchor_lin_vel_heading[:, :2]
+    robot_vel = command.robot_anchor_lin_vel_heading[:, :2]
+    error = torch.sum(torch.square(cmd_vel - robot_vel), dim=-1)
+    return torch.exp(-error / std**2)
+
+
+def root_yaw_rate_tracking_exp(
+    env: ManagerBasedRlEnv, command_name: str, std: float
+) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    error = (command.anchor_yaw_rate - command.robot_anchor_yaw_rate) ** 2
+    return torch.exp(-error / std**2)
+
+
+def root_height_tracking_exp(
+    env: ManagerBasedRlEnv, command_name: str, std: float
+) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    error = (command.anchor_pos_w[:, 2] - command.robot_anchor_pos_w[:, 2]) ** 2
+    return torch.exp(-error / std**2)
+
+
+# -- Local-frame body tracking rewards ----------------------------------------
+
+
+def motion_local_body_position_error_exp(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    std: float,
+    body_names: tuple[str, ...] | None = None,
+) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    body_indexes = _get_body_indexes(command, body_names)
+    robot_pos_b, _, _ = _robot_body_local(command, body_indexes)
+    error = torch.sum(
+        torch.square(command.body_pos_b[:, body_indexes] - robot_pos_b), dim=-1
+    )
+    return torch.exp(-error.mean(-1) / std**2)
+
+
+def motion_local_body_orientation_error_exp(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    std: float,
+    body_names: tuple[str, ...] | None = None,
+) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    body_indexes = _get_body_indexes(command, body_names)
+    _, robot_quat_b, _ = _robot_body_local(command, body_indexes)
+    error = quat_error_magnitude(command.body_quat_b[:, body_indexes], robot_quat_b) ** 2
+    return torch.exp(-error.mean(-1) / std**2)
+
+
+def motion_local_body_linear_velocity_error_exp(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    std: float,
+    body_names: tuple[str, ...] | None = None,
+) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    body_indexes = _get_body_indexes(command, body_names)
+    robot_yaw_inv = quat_inv(yaw_quat(command.robot_anchor_quat_w))
+    robot_yaw_inv_rep = robot_yaw_inv[:, None, :].expand(
+        -1, len(body_indexes), -1
+    )
+    robot_vel_b = quat_apply(
+        robot_yaw_inv_rep, command.robot_body_lin_vel_w[:, body_indexes]
+    )
+    error = torch.sum(
+        torch.square(command.body_lin_vel_b[:, body_indexes] - robot_vel_b), dim=-1
+    )
+    return torch.exp(-error.mean(-1) / std**2)
+
+
+def motion_local_body_angular_velocity_error_exp(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    std: float,
+    body_names: tuple[str, ...] | None = None,
+) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    body_indexes = _get_body_indexes(command, body_names)
+    robot_yaw_inv = quat_inv(yaw_quat(command.robot_anchor_quat_w))
+    robot_yaw_inv_rep = robot_yaw_inv[:, None, :].expand(
+        -1, len(body_indexes), -1
+    )
+    robot_ang_vel_b = quat_apply(
+        robot_yaw_inv_rep, command.robot_body_ang_vel_w[:, body_indexes]
+    )
+    error = torch.sum(
+        torch.square(command.body_ang_vel_b[:, body_indexes] - robot_ang_vel_b), dim=-1
     )
     return torch.exp(-error.mean(-1) / std**2)
 

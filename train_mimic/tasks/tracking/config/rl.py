@@ -5,8 +5,10 @@ from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 from train_mimic.tasks.tracking.config.constants import DEFAULT_EXPERIMENT_NAME
 
 
-def make_tracking_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
-    """Create RL runner configuration for the official G1 tracking task."""
+def make_tracking_ppo_runner_cfg(
+    experiment_name: str = DEFAULT_EXPERIMENT_NAME,
+) -> RslRlOnPolicyRunnerCfg:
+    """Create RL runner configuration for a tracking task."""
     return RslRlOnPolicyRunnerCfg(
         actor=RslRlModelCfg(
             hidden_dims=(512, 256, 128),
@@ -37,7 +39,7 @@ def make_tracking_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
             desired_kl=0.01,
             max_grad_norm=1.0,
         ),
-        experiment_name=DEFAULT_EXPERIMENT_NAME,
+        experiment_name=experiment_name,
         save_interval=2000,
         num_steps_per_env=24,
         max_iterations=30_000,

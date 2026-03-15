@@ -241,6 +241,13 @@ class MotionCommand(CommandTerm):
         )
         self.body_quat_relative_w[:, :, 0] = 1.0
 
+        nb = len(cfg.body_names)
+        self.body_pos_b = torch.zeros(self.num_envs, nb, 3, device=self.device)
+        self.body_quat_b = torch.zeros(self.num_envs, nb, 4, device=self.device)
+        self.body_quat_b[:, :, 0] = 1.0
+        self.body_lin_vel_b = torch.zeros(self.num_envs, nb, 3, device=self.device)
+        self.body_ang_vel_b = torch.zeros(self.num_envs, nb, 3, device=self.device)
+
         # Adaptive sampling — bins are now per-clip.
         # Kernel smoothing is disabled because adjacent clip IDs have no
         # temporal or semantic adjacency; convolving would leak failure
@@ -375,6 +382,32 @@ class MotionCommand(CommandTerm):
     @property
     def robot_anchor_ang_vel_w(self) -> torch.Tensor:
         return self.robot.data.body_link_ang_vel_w[:, self.robot_anchor_body_index]
+
+    # ------------------------------------------------------------------
+    # Properties — velocity-driven commands
+    # ------------------------------------------------------------------
+
+    @property
+    def anchor_lin_vel_heading(self) -> torch.Tensor:
+        """Reference anchor linear velocity in its heading (yaw-only) frame."""
+        return quat_apply(quat_inv(yaw_quat(self.anchor_quat_w)), self.anchor_lin_vel_w)
+
+    @property
+    def anchor_yaw_rate(self) -> torch.Tensor:
+        """Reference anchor yaw angular velocity (world-z component)."""
+        return self.anchor_ang_vel_w[:, 2]
+
+    @property
+    def robot_anchor_lin_vel_heading(self) -> torch.Tensor:
+        """Robot anchor linear velocity in its own heading (yaw-only) frame."""
+        return quat_apply(
+            quat_inv(yaw_quat(self.robot_anchor_quat_w)), self.robot_anchor_lin_vel_w
+        )
+
+    @property
+    def robot_anchor_yaw_rate(self) -> torch.Tensor:
+        """Robot anchor yaw angular velocity (world-z component)."""
+        return self.robot_anchor_ang_vel_w[:, 2]
 
     # ------------------------------------------------------------------
     # Metrics
@@ -525,6 +558,21 @@ class MotionCommand(CommandTerm):
 
         self.robot.clear_state(env_ids=env_ids)
 
+        self._refresh_body_local_cache()
+
+    def _refresh_body_local_cache(self) -> None:
+        """Recompute body targets in the reference anchor's yaw-only local frame."""
+        ref_yaw_inv = quat_inv(yaw_quat(self.anchor_quat_w))
+        ref_yaw_inv_rep = ref_yaw_inv[:, None, :].expand_as(self.body_quat_w)
+        anchor_pos_w_for_local = self.anchor_pos_w[:, None, :].expand_as(self.body_pos_w)
+
+        self.body_pos_b = quat_apply(
+            ref_yaw_inv_rep, self.body_pos_w - anchor_pos_w_for_local
+        )
+        self.body_quat_b = quat_mul(ref_yaw_inv_rep, self.body_quat_w)
+        self.body_lin_vel_b = quat_apply(ref_yaw_inv_rep, self.body_lin_vel_w)
+        self.body_ang_vel_b = quat_apply(ref_yaw_inv_rep, self.body_ang_vel_w)
+
     # ------------------------------------------------------------------
     # Per-step update
     # ------------------------------------------------------------------
@@ -566,6 +614,8 @@ class MotionCommand(CommandTerm):
         self.body_pos_relative_w = delta_pos_w + quat_apply(
             delta_ori_w, self.body_pos_w - anchor_pos_w_repeat
         )
+
+        self._refresh_body_local_cache()
 
         if self.cfg.sampling_mode == "adaptive":
             self.bin_failed_count = (

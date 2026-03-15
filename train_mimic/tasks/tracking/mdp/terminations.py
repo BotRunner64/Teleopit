@@ -70,6 +70,22 @@ def bad_motion_body_pos(
     return torch.any(error > threshold, dim=-1)
 
 
+def bad_local_body_pos_z(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    threshold: float,
+    body_names: tuple[str, ...] | None = None,
+) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    body_indexes = _get_body_indexes(command, body_names)
+    ref_z = command.body_pos_b[:, body_indexes, 2]
+    robot_z = (
+        command.robot_body_pos_w[:, body_indexes, 2]
+        - command.robot_anchor_pos_w[:, 2:3]
+    )
+    return torch.any(torch.abs(ref_z - robot_z) > threshold, dim=-1)
+
+
 def bad_motion_body_pos_z_only(
     env: ManagerBasedRlEnv,
     command_name: str,
