@@ -152,8 +152,8 @@ def parse_args() -> argparse.Namespace:
                         help="Record benchmark video(s)")
     parser.add_argument("--num_clips", type=int, default=1,
                         help="Number of separate video clips to render (default: 1)")
-    parser.add_argument("--video_length", type=int, default=600,
-                        help="Steps per video clip (default: 600)")
+    parser.add_argument("--video_length", type=int, default=None,
+                        help="Steps per video clip (default: longest clip in motion file)")
     parser.add_argument("--video_folder", type=str, default=None,
                         help="Output folder for benchmark video(s)")
     parser.add_argument("--split", action="store_true",
@@ -167,7 +167,7 @@ def main() -> int:
 
     if args.warmup_steps < 0:
         raise ValueError("--warmup_steps must be >= 0")
-    if args.num_eval_steps <= args.warmup_steps:
+    if not args.video and args.num_eval_steps <= args.warmup_steps:
         raise ValueError("--num_eval_steps must be greater than --warmup_steps")
     if args.video and args.num_envs != 1:
         raise ValueError("--video currently requires --num_envs 1")
@@ -247,6 +247,27 @@ def main() -> int:
             raise
 
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+
+    # Auto-resolve video_length from motion file if not specified.
+    if args.video and args.video_length is None:
+        motion_data = np.load(args.motion_file)
+        clip_fps = float(motion_data["fps"])
+        max_clip_frames = int(motion_data["clip_lengths"].max())
+        step_dt = env.unwrapped.step_dt
+        args.video_length = int(max_clip_frames / clip_fps / step_dt)
+        print(f"[INFO] Auto video_length={args.video_length} steps "
+              f"({max_clip_frames} frames / {clip_fps} fps / {step_dt} step_dt = "
+              f"{args.video_length * step_dt:.1f}s)")
+    elif args.video_length is None:
+        args.video_length = 600
+
+    # Auto-adjust num_eval_steps to cover all video clips.
+    if args.video:
+        min_steps = args.num_clips * args.video_length + args.warmup_steps
+        if args.num_eval_steps < min_steps:
+            print(f"[INFO] Increasing --num_eval_steps from {args.num_eval_steps} to {min_steps} "
+                  f"to cover {args.num_clips} clips x {args.video_length} steps + {args.warmup_steps} warmup.")
+            args.num_eval_steps = min_steps
 
     log_dir = os.path.dirname(args.checkpoint)
     agent_dict = build_runner_cfg_dict(agent_cfg, force_tensorboard=True)
