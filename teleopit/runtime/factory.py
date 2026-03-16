@@ -144,6 +144,7 @@ def _build_policy_components(
         "xml_path": str(cfg_get(robot_cfg, "xml_path")),
         "anchor_body_name": cfg_get(robot_cfg, "anchor_body_name", "torso_link"),
         "has_state_estimation": has_state_estimation,
+        "yaw_only": bool(cfg_get(robot_cfg, "yaw_only", False)),
     }
     obs_builder = obs_builder_cls(obs_cfg)
 

@@ -281,6 +281,13 @@ class MjlabObservationBuilder:
             raw = True
         self.has_state_estimation: bool = bool(raw)
 
+        # Use yaw-only quaternion for coordinate transforms (matches YawOnly training).
+        try:
+            yaw_raw = _cfg_get(cfg, "yaw_only")
+        except KeyError:
+            yaw_raw = False
+        self.yaw_only: bool = bool(yaw_raw)
+
         # MuJoCo model for FK computation
         xml_path = str(_cfg_get(cfg, "xml_path"))
         if not Path(xml_path).is_file():
@@ -406,9 +413,11 @@ class MjlabObservationBuilder:
         command = np.concatenate((motion_joint_pos, motion_joint_vel_vec), dtype=np.float32)
 
         # motion anchor in robot-anchor frame.
+        # yaw_only mode: use yaw-only quaternion to decouple roll/pitch from transform.
+        ref_quat = _yaw_quat_np(robot_anchor_quat) if self.yaw_only else robot_anchor_quat
         diff = motion_anchor_pos - robot_anchor_pos
-        motion_anchor_pos_b = _quat_rotate_np(_quat_inv_np(robot_anchor_quat), diff)
-        rel_quat = _quat_mul_np(_quat_inv_np(robot_anchor_quat), motion_anchor_quat)
+        motion_anchor_pos_b = _quat_rotate_np(_quat_inv_np(ref_quat), diff)
+        rel_quat = _quat_mul_np(_quat_inv_np(ref_quat), motion_anchor_quat)
         motion_anchor_ori_b = _quat_to_rot6d_np(rel_quat)
 
         # robot proprio.
