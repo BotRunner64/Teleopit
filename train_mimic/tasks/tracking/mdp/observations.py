@@ -7,6 +7,7 @@ import torch
 from mjlab.utils.lab_api.math import (
     matrix_from_quat,
     subtract_frame_transforms,
+    yaw_quat,
 )
 
 from .commands import MotionCommand
@@ -62,6 +63,68 @@ def robot_body_ori_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     _, ori_b = subtract_frame_transforms(
         command.robot_anchor_pos_w[:, None, :].repeat(1, num_bodies, 1),
         command.robot_anchor_quat_w[:, None, :].repeat(1, num_bodies, 1),
+        command.robot_body_pos_w,
+        command.robot_body_quat_w,
+    )
+    mat = matrix_from_quat(ori_b)
+    return mat[..., :2].reshape(mat.shape[0], -1)
+
+
+# ---------------------------------------------------------------------------
+# Yaw-only variants: use yaw_quat(robot_anchor_quat_w) to decouple
+# roll/pitch from the coordinate transform, matching the TWIST2 approach.
+# ---------------------------------------------------------------------------
+
+
+def motion_anchor_pos_b_yaw(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+
+    pos, _ = subtract_frame_transforms(
+        command.robot_anchor_pos_w,
+        yaw_quat(command.robot_anchor_quat_w),
+        command.anchor_pos_w,
+        command.anchor_quat_w,
+    )
+
+    return pos.view(env.num_envs, -1)
+
+
+def motion_anchor_ori_b_yaw(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+
+    _, ori = subtract_frame_transforms(
+        command.robot_anchor_pos_w,
+        yaw_quat(command.robot_anchor_quat_w),
+        command.anchor_pos_w,
+        command.anchor_quat_w,
+    )
+    mat = matrix_from_quat(ori)
+    return mat[..., :2].reshape(mat.shape[0], -1)
+
+
+def robot_body_pos_b_yaw(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+
+    num_bodies = len(command.cfg.body_names)
+    robot_yaw = yaw_quat(command.robot_anchor_quat_w)
+    pos_b, _ = subtract_frame_transforms(
+        command.robot_anchor_pos_w[:, None, :].repeat(1, num_bodies, 1),
+        robot_yaw[:, None, :].repeat(1, num_bodies, 1),
+        command.robot_body_pos_w,
+        command.robot_body_quat_w,
+    )
+
+    return pos_b.view(env.num_envs, -1)
+
+
+def robot_body_ori_b_yaw(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+
+    num_bodies = len(command.cfg.body_names)
+    robot_yaw = yaw_quat(command.robot_anchor_quat_w)
+    _, ori_b = subtract_frame_transforms(
+        command.robot_anchor_pos_w[:, None, :].repeat(1, num_bodies, 1),
+        robot_yaw[:, None, :].repeat(1, num_bodies, 1),
         command.robot_body_pos_w,
         command.robot_body_quat_w,
     )

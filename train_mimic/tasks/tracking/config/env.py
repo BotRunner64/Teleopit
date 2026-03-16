@@ -10,6 +10,7 @@ from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
 
+from train_mimic.tasks.tracking import mdp
 from train_mimic.tasks.tracking.config.constants import DEFAULT_TRAIN_MOTION_FILE
 from train_mimic.tasks.tracking.config.profiles import (
     OFFICIAL_UNIFORM_PROFILE,
@@ -64,11 +65,27 @@ def _apply_play_mode_overrides(cfg: ManagerBasedRlEnvCfg) -> None:
 _ROOT_POSE_REWARD_KEYS = ("motion_global_root_pos", "motion_global_root_ori")
 
 
+def _swap_obs_for_yaw_only(cfg: ManagerBasedRlEnvCfg) -> None:
+    """Replace observation terms with yaw-only variants."""
+    _YAW_SWAP = {
+        "motion_anchor_pos_b": mdp.motion_anchor_pos_b_yaw,
+        "motion_anchor_ori_b": mdp.motion_anchor_ori_b_yaw,
+        "body_pos": mdp.robot_body_pos_b_yaw,
+        "body_ori": mdp.robot_body_ori_b_yaw,
+    }
+    for group_key in ("actor", "critic"):
+        group = cfg.observations[group_key]
+        for term_name, yaw_func in _YAW_SWAP.items():
+            if term_name in group.terms:
+                group.terms[term_name].func = yaw_func
+
+
 def make_tracking_env_cfg_for_profile(
     profile: TrackingTaskProfile = OFFICIAL_UNIFORM_PROFILE,
     *,
     play: bool = False,
     no_root_pose: bool = False,
+    yaw_only: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """Create the G1 tracking env for a single internal profile."""
     cfg = make_tracking_env_cfg()
@@ -122,6 +139,8 @@ def make_tracking_env_cfg_for_profile(
         cfg.sim.njmax = 500
 
     _prune_actor_terms_for_no_state_estimation(cfg)
+    if yaw_only:
+        _swap_obs_for_yaw_only(cfg)
     if no_root_pose:
         for key in _ROOT_POSE_REWARD_KEYS:
             cfg.rewards.pop(key)
