@@ -176,10 +176,12 @@ def _add_history_obs_groups(
 
 
 def make_history_cnn_tracking_env_cfg(
-    *, play: bool = False
+    *, play: bool = False, yaw_only: bool = False
 ) -> ManagerBasedRlEnvCfg:
     """Create the G1 tracking env with history CNN observation groups."""
-    cfg = make_tracking_env_cfg_for_profile(OFFICIAL_UNIFORM_PROFILE, play=play)
+    cfg = make_tracking_env_cfg_for_profile(
+        OFFICIAL_UNIFORM_PROFILE, play=play, yaw_only=yaw_only
+    )
     _add_history_obs_groups(cfg)
     # In play mode the base factory disables corruption on actor; do the same
     # for the history groups.

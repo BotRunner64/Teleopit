@@ -7,6 +7,8 @@ from train_mimic.tasks.tracking.config.constants import (
     NO_ROOT_POSE_EXPERIMENT_NAME,
     NO_ROOT_POSE_TASK,
     OFFICIAL_TASK,
+    YAW_HISTORY_EXPERIMENT_NAME,
+    YAW_HISTORY_TASK,
     YAW_ONLY_EXPERIMENT_NAME,
     YAW_ONLY_TASK,
 )
@@ -56,5 +58,15 @@ register_mjlab_task(
         OFFICIAL_UNIFORM_PROFILE, play=True, yaw_only=True
     ),
     rl_cfg=make_tracking_ppo_runner_cfg(experiment_name=YAW_ONLY_EXPERIMENT_NAME),
+    runner_cls=MotionTrackingOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id=YAW_HISTORY_TASK,
+    env_cfg=make_history_cnn_tracking_env_cfg(yaw_only=True),
+    play_env_cfg=make_history_cnn_tracking_env_cfg(play=True, yaw_only=True),
+    rl_cfg=make_history_cnn_tracking_ppo_runner_cfg(
+        experiment_name=YAW_HISTORY_EXPERIMENT_NAME
+    ),
     runner_cls=MotionTrackingOnPolicyRunner,
 )

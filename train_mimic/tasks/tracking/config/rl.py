@@ -62,7 +62,9 @@ _CNN_CFG: dict = {
 }
 
 
-def make_history_cnn_tracking_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
+def make_history_cnn_tracking_ppo_runner_cfg(
+    experiment_name: str = HISTORY_CNN_EXPERIMENT_NAME,
+) -> RslRlOnPolicyRunnerCfg:
     """Create RL runner configuration for the history-CNN tracking task."""
     return RslRlOnPolicyRunnerCfg(
         actor=RslRlModelCfg(
@@ -102,7 +104,7 @@ def make_history_cnn_tracking_ppo_runner_cfg() -> RslRlOnPolicyRunnerCfg:
             "actor": ("actor", "actor_history"),
             "critic": ("critic", "critic_history"),
         },
-        experiment_name=HISTORY_CNN_EXPERIMENT_NAME,
+        experiment_name=experiment_name,
         save_interval=2000,
         num_steps_per_env=24,
         max_iterations=30_000,
