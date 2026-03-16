@@ -250,12 +250,16 @@ train_mimic/               # Training package (pip install -e '.[train]')
 │   └── motion_fk.py          # FK consistency checks
 ├── scripts/                  # Training, export, evaluation, data prep
 │   ├── train.py              # mjlab + rsl_rl PPO training entry point
-│   ├── save_onnx.py          # ONNX export
+│   ├── save_onnx.py          # ONNX export (MLP + TemporalCNNModel)
 │   ├── play.py               # Checkpoint playback
 │   ├── benchmark.py          # Policy evaluation with tracking errors
 │   └── convert_pkl_to_npz.py # PKL → NPZ clip conversion and merge (body pose labels rebuilt via MuJoCo FK)
 ├── tasks/                    # Task registration + env/runner cfg
 │   └── tracking/config/      # Single official tracking task + internal profiles
+├── tasks/tracking/rl/        # Custom RL model/runner extensions
+│   ├── runner.py             # ONNX export wrapper for policy + motion labels
+│   ├── conv1d_encoder.py     # 1-D CNN encoder for temporal history groups
+│   └── temporal_cnn_model.py # History-CNN actor/critic model
 ├── configs/
 │   └── datasets/             # YAML dataset specs
 ├── assets/g1/                # G1 assets
@@ -276,19 +280,23 @@ Quick reference:
  Ingest data: `python train_mimic/scripts/data/ingest_motion.py --type bvh --input data/hc_mocap_bvh --output data/datasets/hc_mocap_v1/clips/hc_mocap_v1 --source hc_mocap_v1 --bvh_format hc_mocap`
  Build dataset (recommended): `python train_mimic/scripts/data/build_dataset.py --spec train_mimic/configs/datasets/twist2_full.yaml`
  Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-NoStateEst --motion_file data/datasets/twist2_full/train.npz --num_envs 4096 --max_iterations 30000`
+ History-CNN Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-HistoryCNN --motion_file data/datasets/twist2_full/train.npz --num_envs 4096 --max_iterations 30000`
  Multi-GPU Train: `python train_mimic/scripts/train.py --task Tracking-Flat-G1-NoStateEst --motion_file data/datasets/twist2_full/train.npz --gpu_ids 0 1 2 3 --num_envs 1024 --max_iterations 30000` (`--num_envs` is per-GPU)
  Export: `python train_mimic/scripts/save_onnx.py --checkpoint <path> --output policy.onnx`
+ History-CNN Export: `python train_mimic/scripts/save_onnx.py --checkpoint <path> --output policy.onnx --history_length 10`
  Eval: `python train_mimic/scripts/benchmark.py --task Tracking-Flat-G1-NoStateEst --checkpoint <path> --motion_file data/datasets/twist2_full/val.npz --num_envs 1`
 
 ### Key Technical Details
 
  **Environment API**: mjlab `ManagerBasedRlEnv` + standard rsl_rl runner
  **Config system**: Python class-based env/runner cfg from task registry
- **Training task surface**: official task is `Tracking-Flat-G1-NoStateEst`; `Tracking-Flat-G1-v2-NoStateEst` is no longer supported
+ **Training task surface**: default task is `Tracking-Flat-G1-NoStateEst`; `Tracking-Flat-G1-HistoryCNN` is available as a temporal-history variant; `Tracking-Flat-G1-v2-NoStateEst` is no longer supported
  **Multi-GPU training**: supported on a single node via `train_mimic/scripts/train.py --gpu_ids ...`; script relaunches itself with distributed workers, and `--num_envs` means per-GPU environments
  **Checkpoint format**: `logs/rsl_rl/{experiment}/{run}/model_{iter}.pt`
  **Network**: Standard MLP actor/critic (`[512,256,128]`, ELU)
- **Dataset system**: typed-source YAML (`bvh`/`pkl`/`npz`) -> standard NPZ clips -> `train.npz`/`val.npz`, all inside `data/datasets/<dataset>/`
+ **Temporal history variant**: `Tracking-Flat-G1-HistoryCNN` adds `actor_history` / `critic_history` observation groups and uses `TemporalCNNModel`; exported ONNX has two inputs (`obs`, `obs_history`)
+ **Inference compatibility**: `RLPolicyController` supports dual-input History-CNN ONNX by maintaining a history buffer and clearing it on pipeline start or looping input reset
+ **Dataset system**: typed-source YAML (`bvh`/`pkl`/`npz`) -> standard training NPZ (`train.npz`/`val.npz`); `clips/` is still used for clip-oriented paths, but `pkl`-only specs can batch-build directly without intermediate clip files
  **Motion label consistency**: `convert_pkl_to_npz.py` must generate `body_pos_w/body_quat_w/body_ang_vel_w` from MuJoCo FK; use `train_mimic/scripts/data/check_motion_npz_fk.py` to validate clips before large training runs
  **One-way dependency**: train_mimic imports from teleopit, never the reverse
  **Motion file**: single NPZ required by `MotionLoader`; build script outputs `train.npz` / `val.npz`

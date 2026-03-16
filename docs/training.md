@@ -1,13 +1,15 @@
 # 训练指南
 
-本文档只描述当前 `train_mimic` 的官方训练主线。
+本文档描述当前 `train_mimic` 的正式训练主线，以及已接入的 `HistoryCNN` 变体。
 
 > 入口导航：数据准备看 [`docs/dataset.md`](dataset.md)，项目整体边界看 [`docs/architecture.md`](architecture.md)。
 
 ## 当前主线
 
-- 官方训练任务只有一个：`Tracking-Flat-G1-NoStateEst`
-- 该任务对应 **154D no-state-estimation** actor 观测，也是当前 sim2real 唯一支持的训练路径
+- 默认训练任务是 `Tracking-Flat-G1-NoStateEst`
+- 额外支持 `Tracking-Flat-G1-HistoryCNN`：在相同当前帧观测之外，再给 actor/critic 提供未展平的时间历史 `(B, T, D)`，由 1-D CNN 编码
+- `Tracking-Flat-G1-NoStateEst` 对应 **154D no-state-estimation** actor 观测，也是当前 sim2real 唯一支持的训练路径
+- `Tracking-Flat-G1-HistoryCNN` 目前同样基于 no-state-estimation 观测，但导出的 ONNX 是双输入模型：`obs` + `obs_history`
 - `Tracking-Flat-G1-v0*`、`Tracking-Flat-G1-v1*`、`Tracking-Flat-G1-v2-NoStateEst`、state-estimation 任务都不再是正式支持接口
 - adaptive sampling 相关实现仍保留在代码里作为内部参考，但不再通过公开 task 暴露
 
@@ -53,7 +55,8 @@ python train_mimic/scripts/data/build_dataset.py \
 - `data/datasets/twist2_full/train.npz`
 - `data/datasets/twist2_full/val.npz`
 - `data/datasets/twist2_full/build_info.json`
-- `data/datasets/twist2_full/clips/<source>/<clip>.npz`
+- `data/datasets/twist2_full/manifest_resolved.csv`
+- `data/datasets/twist2_full/clips/<source>/<clip>.npz`：仅在 source 需要逐 clip 转换/复用时存在；如果整个 spec 都是 `pkl` source，builder 会直接 batch merge，不再落中间 clip 文件
 
 若要单独检查某个 clip 的 FK 标签一致性：
 
@@ -79,6 +82,16 @@ python train_mimic/scripts/train.py \
 ```bash
 python train_mimic/scripts/train.py \
     --task Tracking-Flat-G1-NoStateEst \
+    --num_envs 4096 \
+    --max_iterations 30000 \
+    --motion_file data/datasets/twist2_full/train.npz
+```
+
+History-CNN 训练：
+
+```bash
+python train_mimic/scripts/train.py \
+    --task Tracking-Flat-G1-HistoryCNN \
     --num_envs 4096 \
     --max_iterations 30000 \
     --motion_file data/datasets/twist2_full/train.npz
@@ -110,6 +123,21 @@ python train_mimic/scripts/save_onnx.py \
     --checkpoint logs/rsl_rl/g1_tracking/<run>/model_30000.pt \
     --output policy.onnx
 ```
+
+导出 History-CNN ONNX：
+
+```bash
+python train_mimic/scripts/save_onnx.py \
+    --checkpoint logs/rsl_rl/g1_tracking_history_cnn/<run>/model_30000.pt \
+    --output policy.onnx \
+    --history_length 10
+```
+
+说明：
+
+- 标准 MLP policy 导出为单输入 ONNX：`obs`
+- `HistoryCNN` policy 导出为双输入 ONNX：`obs`、`obs_history`
+- 当前仓库的 `teleopit.controllers.rl_policy.RLPolicyController` 已支持双输入 history buffer，并会在 pipeline 启动或循环输入源 reset 时清空缓存
 
 播放 checkpoint：
 
@@ -184,3 +212,4 @@ train_mimic/
 - `build_dataset_v2.py` 已并入 `build_dataset.py`
 - manifest/review/export/migrate 那套 legacy 数据脚本已移除
 - `Tracking-Flat-G1-v0*`、`Tracking-Flat-G1-v1*`、`Tracking-Flat-G1-v2-NoStateEst` 已退出正式支持面
+- `Tracking-Flat-G1-HistoryCNN` 已注册为训练变体，但它不是 sim2real 官方默认路径；真机仍只支持 154D 单帧 no-state-estimation 推理

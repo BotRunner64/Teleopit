@@ -93,6 +93,14 @@ python train_mimic/scripts/train.py \
   --motion_file data/datasets/twist2_full/train.npz
 ```
 
+History-CNN 训练变体：
+
+```bash
+python train_mimic/scripts/train.py \
+  --task Tracking-Flat-G1-HistoryCNN \
+  --motion_file data/datasets/twist2_full/train.npz
+```
+
 ## Choose Your Path
 
 - **我想一键重建推荐训练数据集**：运行 `python train_mimic/scripts/data/build_dataset.py --spec train_mimic/configs/datasets/twist2_full.yaml`
@@ -105,6 +113,7 @@ python train_mimic/scripts/train.py \
 - **我想理解 Hydra 配置该怎么改**：看 [`docs/configuration.md`](docs/configuration.md)
 - **我想构建训练数据集**：看 [`docs/dataset.md`](docs/dataset.md)
 - **我想训练或导出 ONNX policy**：看 [`docs/training.md`](docs/training.md)
+- `Tracking-Flat-G1-HistoryCNN` 导出的 ONNX 有两个输入：`obs` 和 `obs_history`；请使用当前仓库推理代码，不要用旧版单输入推理脚本
 - **我想检查 motion NPZ 标签是否和 FK 一致**：运行 `python train_mimic/scripts/data/check_motion_npz_fk.py --npz <clip.npz>`
 - **我想控制真机 G1**：看 [`docs/sim2real.md`](docs/sim2real.md)
 - **我遇到训练侧问题**：看 [`docs/training_troubleshooting.md`](docs/training_troubleshooting.md)

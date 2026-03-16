@@ -46,6 +46,7 @@ import os
 import pickle
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -93,13 +94,12 @@ def _validate_fk_outputs(body_quat_w: np.ndarray, body_ang_vel_w: np.ndarray, pk
         raise ValueError(f"FK-derived body_ang_vel_w contains NaN/Inf for {pkl_path}")
 
 
-def convert_pkl_to_npz(
+def convert_pkl_to_arrays(
     pkl_path: str,
-    npz_path: str,
     *,
     extractor: MotionFkExtractor | None = None,
-) -> None:
-    """Convert a single PKL motion file to NPZ format."""
+) -> dict[str, Any]:
+    """Convert a single PKL motion file to arrays without writing to disk."""
     with open(pkl_path, "rb") as f:
         data = pickle.load(f)
 
@@ -145,19 +145,28 @@ def convert_pkl_to_npz(
     body_lin_vel_w, body_ang_vel_w = compute_body_velocities(body_pos_w, body_quat_w, dt)
     _validate_fk_outputs(body_quat_w, body_ang_vel_w, pkl_path)
 
-    # Save
+    return {
+        "fps": fps,
+        "joint_pos": dof_pos,
+        "joint_vel": joint_vel,
+        "body_pos_w": body_pos_w,
+        "body_quat_w": body_quat_w.astype(np.float32),
+        "body_lin_vel_w": body_lin_vel_w,
+        "body_ang_vel_w": body_ang_vel_w,
+        "body_names": np.array(_MJLAB_G1_BODY_NAMES, dtype=str),
+    }
+
+
+def convert_pkl_to_npz(
+    pkl_path: str,
+    npz_path: str,
+    *,
+    extractor: MotionFkExtractor | None = None,
+) -> None:
+    """Convert a single PKL motion file to NPZ format."""
+    arrays = convert_pkl_to_arrays(pkl_path, extractor=extractor)
     os.makedirs(os.path.dirname(npz_path) or ".", exist_ok=True)
-    np.savez(
-        npz_path,
-        fps=fps,
-        joint_pos=dof_pos,
-        joint_vel=joint_vel,
-        body_pos_w=body_pos_w,
-        body_quat_w=body_quat_w.astype(np.float32),
-        body_lin_vel_w=body_lin_vel_w,
-        body_ang_vel_w=body_ang_vel_w,
-        body_names=np.array(_MJLAB_G1_BODY_NAMES, dtype=str),
-    )
+    np.savez(npz_path, **arrays)
 
 
 def merge_npz_dir(npz_dir: str, output_path: str) -> None:

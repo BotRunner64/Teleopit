@@ -2,7 +2,7 @@
 
 当前训练侧只保留一条正式数据主线：
 
-`typed source YAML -> 标准 NPZ clips -> train.npz / val.npz`
+`typed source YAML -> 标准训练 NPZ（train.npz / val.npz）`
 
 用户只需要理解一个命令：
 
@@ -17,7 +17,7 @@ python train_mimic/scripts/data/build_dataset.py \
 
 ```text
 data/datasets/<dataset>/
-├── clips/
+├── clips/                  # 可选；仅在需要逐 clip 中间产物时存在
 │   └── <source>/...
 ├── train.npz
 ├── val.npz
@@ -26,6 +26,11 @@ data/datasets/<dataset>/
 ```
 
 这意味着导入、导出、备份一个 dataset 时，直接处理整个 `data/datasets/<dataset>/` 目录即可。
+
+补充说明：
+
+- 如果 spec 包含 `bvh` 或 `npz` source，builder 会保留/生成标准 `clips/`
+- 如果 spec 全部是 `pkl` source，builder 会走 batch merge 路径，直接并行转成 split 级别的 `train.npz` / `val.npz`，默认不再写中间 clip 文件
 
 ## YAML spec
 
@@ -52,7 +57,7 @@ sources:
 - `target_fps`: merge 前统一重采样到的目标帧率
 - `val_percent`: 基于 `clip_id` hash 的验证集比例
 - `hash_salt`: 可选 split salt
-- `sources[].name`: source 名称，也会成为 `clips/<source>/` 子目录名
+- `sources[].name`: source 名称；在会生成 clip 中间产物的路径里，它也会成为 `clips/<source>/` 子目录名
 - `sources[].type`: `bvh` / `pkl` / `npz`
 - `sources[].input`: 原始输入文件或目录。对于 `type: npz`，目录应直接指向 clip 目录，不要指向已有 dataset 根目录
 - `sources[].weight`: 可选源级别采样权重，默认 `1.0`
@@ -62,13 +67,13 @@ sources:
 
 ## 转换规则
 
-统一转换到标准 NPZ clip：
+统一转换目标是标准训练 NPZ；中间 clip 是否落盘取决于 source 类型组合：
 
 - `bvh -> retarget pkl -> npz clip`
-- `pkl -> npz clip`
+- `pkl -> npz clip`，或在 `pkl-only` dataset 中直接 batch merge 到 split 输出
 - `npz -> validate + copy/reuse`
 
-最终 build 阶段只消费标准 NPZ clip，不再区分原始输入类型。
+最终 build 阶段始终产出标准 merged NPZ，不再区分原始输入类型。
 
 ## 常用命令
 
@@ -139,12 +144,14 @@ python train_mimic/scripts/data/ingest_motion.py \
 
 ## 单独检查 clip
 
-检查某个 NPZ 的 FK 一致性：
+检查某个 clip NPZ 的 FK 一致性：
 
 ```bash
 python train_mimic/scripts/data/check_motion_npz_fk.py \
     --npz data/datasets/twist2_full/clips/<source>/<clip>.npz
 ```
+
+如果当前 dataset 是 `pkl-only` batch build，默认不会有 `clips/<source>/<clip>.npz`；这时如需逐 clip 检查，请先用 `ingest_motion.py` 单独落盘该 source。
 
 推荐判据：
 

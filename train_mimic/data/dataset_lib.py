@@ -108,7 +108,7 @@ def hash_split(clip_id: str, val_percent: int, salt: str = "") -> str:
     return "val" if bucket < val_percent else "train"
 
 
-def _resample_along_time(arr: np.ndarray, new_t: int) -> np.ndarray:
+def resample_along_time(arr: np.ndarray, new_t: int) -> np.ndarray:
     """Resample an array along time axis 0 using linear interpolation."""
     old_t = int(arr.shape[0])
     if old_t == new_t:
@@ -176,12 +176,12 @@ def merge_npz_files(
             new_t = int(round(old_t * float(target_fps) / float(cur_fps)))
             new_t = max(new_t, 1)
 
-            joint_pos = _resample_along_time(joint_pos, new_t)
-            joint_vel = _resample_along_time(joint_vel, new_t)
-            body_pos_w = _resample_along_time(body_pos_w, new_t)
-            body_quat_w = _resample_along_time(body_quat_w, new_t)
-            body_lin_vel_w = _resample_along_time(body_lin_vel_w, new_t)
-            body_ang_vel_w = _resample_along_time(body_ang_vel_w, new_t)
+            joint_pos = resample_along_time(joint_pos, new_t)
+            joint_vel = resample_along_time(joint_vel, new_t)
+            body_pos_w = resample_along_time(body_pos_w, new_t)
+            body_quat_w = resample_along_time(body_quat_w, new_t)
+            body_lin_vel_w = resample_along_time(body_lin_vel_w, new_t)
+            body_ang_vel_w = resample_along_time(body_ang_vel_w, new_t)
 
             quat_norm = np.linalg.norm(body_quat_w, axis=-1, keepdims=True)
             quat_norm = np.where(quat_norm < 1e-8, 1.0, quat_norm)

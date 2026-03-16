@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from collections import deque
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol, cast
@@ -23,6 +24,9 @@ class _OrtSession(Protocol):
 
 
 class RLPolicyController:
+    _multi_input: bool = False
+    _history_buf: deque[NDArray[np.float32]] | None = None
+
     def __init__(self, cfg: object) -> None:
         self._session: _OrtSession
         self._input_name: str
@@ -55,14 +59,28 @@ class RLPolicyController:
         self._input_name = self._session.get_inputs()[0].name
         self._output_name = self._session.get_outputs()[0].name
 
+        # Detect multi-input (history) model
+        onnx_inputs = self._session.get_inputs()
+        self._multi_input = len(onnx_inputs) >= 2 and onnx_inputs[1].name == "obs_history"
+        self._history_buf: deque[NDArray[np.float32]] | None = None
+        self._history_length: int = 0
+        self._history_obs_dim: int = 0
+        if self._multi_input:
+            hist_shape = onnx_inputs[1].shape  # (1, T, D)
+            self._history_length = int(hist_shape[1])
+            self._history_obs_dim = int(hist_shape[2])
+            self._history_buf = deque(maxlen=self._history_length)
+
         self._expected_obs_dim = self._extract_feature_dim(self._session.get_inputs()[0].shape)
         _SUPPORTED_OBS_DIMS = {154, 160}
         if self._expected_obs_dim is not None and self._expected_obs_dim not in _SUPPORTED_OBS_DIMS:
-            raise ValueError(
-                f"Unsupported policy input dimension: {self._expected_obs_dim}. "
-                f"Supported dimensions: {sorted(_SUPPORTED_OBS_DIMS)} "
-                "(mjlab-aligned policies exported from train_mimic)."
-            )
+            # Multi-input models may have different obs dims — skip validation
+            if not self._multi_input:
+                raise ValueError(
+                    f"Unsupported policy input dimension: {self._expected_obs_dim}. "
+                    f"Supported dimensions: {sorted(_SUPPORTED_OBS_DIMS)} "
+                    "(mjlab-aligned policies exported from train_mimic)."
+                )
 
         raw_scale = self._cfg_get(cfg, "action_scale", None)
         self.action_scale = np.asarray(
@@ -79,20 +97,47 @@ class RLPolicyController:
         obs = np.asarray(observation, dtype=np.float32)
         if obs.ndim == 1:
             if self._expected_obs_dim is not None and obs.shape[0] != self._expected_obs_dim:
-                raise ValueError(
-                    f"Observation dimension mismatch: expected {self._expected_obs_dim}, got {obs.shape[0]}"
-                )
+                if not self._multi_input:
+                    raise ValueError(
+                        f"Observation dimension mismatch: expected {self._expected_obs_dim}, got {obs.shape[0]}"
+                    )
             obs = obs[np.newaxis, :]
         elif obs.ndim == 2 and obs.shape[0] == 1:
             if self._expected_obs_dim is not None and obs.shape[1] != self._expected_obs_dim:
-                raise ValueError(
-                    f"Observation dimension mismatch: expected {self._expected_obs_dim}, got {obs.shape[1]}"
-                )
+                if not self._multi_input:
+                    raise ValueError(
+                        f"Observation dimension mismatch: expected {self._expected_obs_dim}, got {obs.shape[1]}"
+                    )
         else:
             raise ValueError(f"Observation must be shape (obs_dim,) or (1, obs_dim), got {obs.shape}")
 
+        if self._multi_input:
+            return self._compute_action_multi_input(obs)
+
         raw_action = np.asarray(
             self._session.run([self._output_name], {self._input_name: obs})[0],
+            dtype=np.float32,
+        ).reshape(-1)
+        return raw_action
+
+    def _compute_action_multi_input(self, obs: NDArray[np.float32]) -> NDArray[np.float32]:
+        """Run inference with multi-input (history) ONNX model."""
+        assert self._history_buf is not None
+        obs_flat = obs.reshape(-1)
+        # Backfill on first call (or after reset)
+        if len(self._history_buf) == 0:
+            for _ in range(self._history_length):
+                self._history_buf.append(obs_flat.copy())
+        else:
+            self._history_buf.append(obs_flat.copy())
+        obs_history = np.stack(list(self._history_buf), axis=0)[np.newaxis]  # (1, T, D)
+        # The first ONNX input may have a different dim than obs_history's D
+        # if the model separates current vs history. Use obs as-is for first input.
+        raw_action = np.asarray(
+            self._session.run(
+                [self._output_name],
+                {self._input_name: obs, "obs_history": obs_history.astype(np.float32)},
+            )[0],
             dtype=np.float32,
         ).reshape(-1)
         return raw_action
@@ -106,7 +151,8 @@ class RLPolicyController:
         return scaled_action + self.default_dof_pos
 
     def reset(self) -> None:
-        return None
+        if self._history_buf is not None:
+            self._history_buf.clear()
 
     def _clip_and_scale(self, raw_action: NDArray[np.float32]) -> NDArray[np.float32]:
         clipped = np.clip(raw_action, self.clip_range[0], self.clip_range[1])

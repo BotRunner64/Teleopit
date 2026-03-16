@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,12 +28,17 @@ class MocapComponents:
 
 
 class _LoopingInputProvider:
-    def __init__(self, provider: Any) -> None:
+    def __init__(
+        self, provider: Any, on_reset: Callable[[], None] | None = None
+    ) -> None:
         self._provider = provider
+        self._on_reset = on_reset
 
     def get_frame(self) -> dict[str, tuple[Any, Any]]:
         if not self._provider.is_available():
             self._provider.reset()
+            if self._on_reset is not None:
+                self._on_reset()
         return self._provider.get_frame()
 
     def is_available(self) -> bool:
@@ -272,6 +278,10 @@ def build_inference_components(
         pico4_input_cls=pico4_input_cls,
         udp_bvh_input_cls=udp_bvh_input_cls,
     )
+    # Wire controller reset to looping provider so stateful controllers
+    # (e.g. history buffer) are cleared when the input loops.
+    if isinstance(input_provider, _LoopingInputProvider) and hasattr(controller, "reset"):
+        input_provider._on_reset = controller.reset
     retargeter = _build_retargeter(input_cfg, input_provider, retargeter_cls)
     return InferenceComponents(
         robot=robot,

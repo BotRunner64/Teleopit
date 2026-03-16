@@ -60,6 +60,8 @@ class TeleopPipeline:
         if num_steps < 0:
             raise ValueError("num_steps must be non-negative (0 = infinite)")
 
+        self.controller.reset()
+
         if not record:
             return dict(self.loop.run(cast(Any, self.input_provider), cast(Any, self.retargeter), num_steps=num_steps))
 

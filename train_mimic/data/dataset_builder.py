@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import os
 import shutil
+import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -12,15 +13,18 @@ from typing import Any
 import mujoco
 import yaml
 
+import numpy as np
+
 from train_mimic.data.dataset_lib import (
     hash_split,
     inspect_npz,
     merge_npz_files,
+    resample_along_time,
     utc_now_iso,
     write_json,
 )
 from train_mimic.data.motion_fk import MotionFkExtractor, compute_npz_fk_consistency
-from train_mimic.scripts.convert_pkl_to_npz import convert_pkl_to_npz
+from train_mimic.scripts.convert_pkl_to_npz import convert_pkl_to_arrays, convert_pkl_to_npz
 from teleopit.retargeting.export_pkl import convert_bvh_to_retarget_pkl, mocap_xml_path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -413,8 +417,9 @@ def run_conversion_tasks(tasks: list[ConversionTask], *, jobs: int = DEFAULT_JOB
         return
 
     max_workers = min(jobs, total)
+    ctx = multiprocessing.get_context("spawn")
     try:
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        with ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx) as executor:
             future_map = {executor.submit(_convert_task, task): task for task in tasks}
             completed = 0
             try:
@@ -639,6 +644,320 @@ def _rows_for_split(rows: list[DatasetClipRow], split: str) -> tuple[list[Path],
     return list(files), list(weights)
 
 
+_ARRAY_KEYS = [
+    "joint_pos", "joint_vel", "body_pos_w", "body_quat_w",
+    "body_lin_vel_w", "body_ang_vel_w",
+]
+
+
+def _batch_convert_chunk(
+    pkl_paths: list[str],
+    weights: list[float],
+    target_fps: int,
+    output_path: str,
+    label: str,
+) -> dict[str, Any]:
+    """Worker: convert a batch of PKL files and write one merged chunk NPZ.
+
+    Designed to run in a spawned subprocess via ProcessPoolExecutor.
+    """
+    from train_mimic.data.motion_fk import MotionFkExtractor
+    from train_mimic.scripts.convert_pkl_to_npz import convert_pkl_to_arrays
+
+    extractor = MotionFkExtractor()
+    acc: dict[str, list[np.ndarray]] = {k: [] for k in _ARRAY_KEYS}
+    clip_lengths: list[int] = []
+    clip_weights: list[float] = []
+    body_names: np.ndarray | None = None
+    total = len(pkl_paths)
+
+    for i, (pkl_path, weight) in enumerate(zip(pkl_paths, weights)):
+        try:
+            arrays = convert_pkl_to_arrays(pkl_path, extractor=extractor)
+        except Exception as exc:
+            raise RuntimeError(f"failed converting {pkl_path}: {exc}") from exc
+
+        fps = arrays.pop("fps")
+        body_names = arrays.pop("body_names")
+
+        # Resample if source fps differs from target
+        if fps != target_fps:
+            old_t = arrays["joint_pos"].shape[0]
+            new_t = max(1, round(old_t * target_fps / fps))
+            for key in _ARRAY_KEYS:
+                arrays[key] = resample_along_time(arrays[key], new_t)
+            qn = np.linalg.norm(arrays["body_quat_w"], axis=-1, keepdims=True)
+            arrays["body_quat_w"] = arrays["body_quat_w"] / np.where(qn < 1e-8, 1.0, qn)
+
+        for key in _ARRAY_KEYS:
+            acc[key].append(arrays[key])
+        clip_lengths.append(arrays["joint_pos"].shape[0])
+        clip_weights.append(weight)
+
+        if (i + 1) % 500 == 0 or (i + 1) == total:
+            print(f"[BATCH] {label}: {i + 1}/{total}", flush=True)
+
+    # Build merged chunk
+    clip_lengths_arr = np.array(clip_lengths, dtype=np.int64)
+    clip_starts = np.zeros(len(clip_lengths), dtype=np.int64)
+    if len(clip_lengths) > 1:
+        clip_starts[1:] = np.cumsum(clip_lengths_arr[:-1])
+
+    merged = {k: np.concatenate(v, axis=0) for k, v in acc.items()}
+    merged["fps"] = target_fps
+    merged["body_names"] = body_names
+    merged["clip_starts"] = clip_starts
+    merged["clip_lengths"] = clip_lengths_arr
+    merged["clip_fps"] = np.full(len(clip_lengths), target_fps, dtype=np.int64)
+    merged["clip_weights"] = np.array(clip_weights, dtype=np.float64)
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    np.savez(output_path, **merged)
+
+    total_frames = int(merged["joint_pos"].shape[0])
+    print(
+        f"[BATCH] {label}: done, {total} clips, {total_frames} frames -> "
+        f"{Path(output_path).name}",
+        flush=True,
+    )
+    return {
+        "output": output_path,
+        "clips": total,
+        "num_clips": total,
+        "frames": total_frames,
+        "fps": target_fps,
+        "duration_s": total_frames / max(target_fps, 1),
+    }
+
+
+def _merge_chunk_files(chunk_paths: list[Path], output_path: Path) -> dict[str, Any]:
+    """Merge pre-merged chunk NPZ files into a single output."""
+    acc: dict[str, list[np.ndarray]] = {k: [] for k in _ARRAY_KEYS}
+    all_clip_lengths: list[np.ndarray] = []
+    all_clip_fps: list[np.ndarray] = []
+    all_clip_weights: list[np.ndarray] = []
+    fps: int | None = None
+    body_names: np.ndarray | None = None
+
+    for p in chunk_paths:
+        d = np.load(p, allow_pickle=True)
+        if fps is None:
+            fps = int(d["fps"])
+            body_names = d["body_names"]
+        for key in acc:
+            acc[key].append(d[key])
+        all_clip_lengths.append(d["clip_lengths"])
+        all_clip_fps.append(d["clip_fps"])
+        all_clip_weights.append(d["clip_weights"])
+
+    clip_lengths = np.concatenate(all_clip_lengths)
+    clip_starts = np.zeros(len(clip_lengths), dtype=np.int64)
+    if len(clip_lengths) > 1:
+        clip_starts[1:] = np.cumsum(clip_lengths[:-1])
+
+    merged = {k: np.concatenate(v, axis=0) for k, v in acc.items()}
+    merged["fps"] = fps
+    merged["body_names"] = body_names
+    merged["clip_starts"] = clip_starts
+    merged["clip_lengths"] = clip_lengths
+    merged["clip_fps"] = np.concatenate(all_clip_fps)
+    merged["clip_weights"] = np.concatenate(all_clip_weights)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(output_path, **merged)
+
+    total_frames = int(merged["joint_pos"].shape[0])
+    num_clips = len(clip_lengths)
+    return {
+        "output": str(output_path),
+        "clips": num_clips,
+        "num_clips": num_clips,
+        "frames": total_frames,
+        "fps": fps,
+        "duration_s": float(total_frames / max(fps or 1, 1)),
+    }
+
+
+def _batch_convert_split(
+    clips: list[tuple[str, float]],
+    target_fps: int,
+    output_path: Path,
+    jobs: int,
+    split_name: str,
+) -> dict[str, Any]:
+    """Convert clips for one split using parallel chunk workers."""
+    if not clips:
+        raise ValueError(f"no clips for split {split_name}")
+
+    pkl_paths = [c[0] for c in clips]
+    weights = [c[1] for c in clips]
+    num_workers = min(jobs, len(clips))
+
+    if num_workers <= 1:
+        return _batch_convert_chunk(
+            pkl_paths, weights, target_fps, str(output_path), split_name,
+        )
+
+    # Split into chunks, one per worker
+    chunk_size = (len(clips) + num_workers - 1) // num_workers
+    chunk_args: list[tuple[list[str], list[float], int, str, str]] = []
+    for i in range(num_workers):
+        start = i * chunk_size
+        end = min(start + chunk_size, len(clips))
+        if start >= len(clips):
+            break
+        chunk_out = str(output_path.parent / f".{split_name}_chunk_{i}.npz")
+        chunk_args.append((
+            pkl_paths[start:end],
+            weights[start:end],
+            target_fps,
+            chunk_out,
+            f"{split_name}[{i}]",
+        ))
+
+    ctx = multiprocessing.get_context("spawn")
+    try:
+        with ProcessPoolExecutor(max_workers=len(chunk_args), mp_context=ctx) as executor:
+            futures = {
+                executor.submit(_batch_convert_chunk, *args): args[3]
+                for args in chunk_args
+            }
+            try:
+                for future in as_completed(futures):
+                    future.result()
+            except Exception:
+                for future in futures:
+                    future.cancel()
+                raise
+    except (PermissionError, OSError):
+        print(f"[WARN] process pool unavailable; falling back to serial for {split_name}")
+        return _batch_convert_chunk(
+            pkl_paths, weights, target_fps, str(output_path), split_name,
+        )
+
+    # Merge chunk files into final output
+    chunk_paths = [Path(args[3]) for args in chunk_args]
+    print(f"[MERGE] {split_name}: merging {len(chunk_paths)} chunks ...", flush=True)
+    stats = _merge_chunk_files(chunk_paths, output_path)
+    for p in chunk_paths:
+        p.unlink(missing_ok=True)
+    print(
+        f"[MERGE] {split_name}: {stats['clips']} clips, "
+        f"{stats['frames']} frames ({stats['duration_s']:.1f}s)",
+        flush=True,
+    )
+    return stats
+
+
+def _build_dataset_batch(
+    spec: DatasetSpec,
+    *,
+    paths: DatasetPaths,
+    force: bool = False,
+    skip_fk_check: bool = False,
+    skip_validate: bool = False,
+    jobs: int = DEFAULT_JOBS,
+) -> dict[str, Any]:
+    """Batch build: enumerate -> split -> parallel chunk convert -> merge.
+
+    Skips writing individual clip NPZ files. Each worker converts a batch of
+    PKL files in-memory and writes one merged chunk NPZ.
+    """
+    if force and paths.dataset_dir.exists():
+        shutil.rmtree(paths.dataset_dir)
+
+    # 1. Enumerate all source files and pre-compute splits
+    clip_entries: list[tuple[str, str, str, float, str]] = []
+    for source in spec.sources:
+        items, _ = _collect_source_files(source)
+        for item in items:
+            clip_id = f"{source.name}:{item.rel_no_suffix.as_posix()}"
+            split = hash_split(clip_id, spec.val_percent, spec.hash_salt)
+            clip_entries.append((str(item.path), clip_id, source.name, source.weight, split))
+
+    if len(clip_entries) < 2:
+        raise ValueError("dataset must contain at least 2 clips")
+
+    # Ensure both splits are non-empty
+    train_entries = [e for e in clip_entries if e[4] == "train"]
+    val_entries = [e for e in clip_entries if e[4] == "val"]
+    if not train_entries or not val_entries:
+        ordered = sorted(clip_entries, key=lambda e: e[1])
+        target_split = "val" if not val_entries else "train"
+        first = ordered[0]
+        clip_entries = [
+            (p, cid, src, w, target_split if cid == first[1] else sp)
+            for p, cid, src, w, sp in clip_entries
+        ]
+        train_entries = [e for e in clip_entries if e[4] == "train"]
+        val_entries = [e for e in clip_entries if e[4] == "val"]
+
+    print(
+        f"[DATASET] {spec.name}: {len(clip_entries)} clips "
+        f"({len(train_entries)} train, {len(val_entries)} val), "
+        f"jobs={jobs}",
+        flush=True,
+    )
+
+    # 2. Process each split with parallel chunk workers
+    paths.dataset_dir.mkdir(parents=True, exist_ok=True)
+    train_out = paths.dataset_dir / "train.npz"
+    val_out = paths.dataset_dir / "val.npz"
+
+    train_stats = _batch_convert_split(
+        [(e[0], e[3]) for e in train_entries],
+        spec.target_fps, train_out, jobs, "train",
+    )
+    val_stats = _batch_convert_split(
+        [(e[0], e[3]) for e in val_entries],
+        spec.target_fps, val_out, jobs, "val",
+    )
+
+    # 3. Write manifest
+    rows: list[DatasetClipRow] = []
+    for path, clip_id, source, weight, split in clip_entries:
+        rows.append(DatasetClipRow(
+            clip_id=clip_id,
+            source=source,
+            file_rel=_display_path(Path(path)),
+            num_frames=0,
+            fps=spec.target_fps,
+            resolved_split=split,
+            resolved_npz_path=str(train_out if split == "train" else val_out),
+            weight=weight,
+        ))
+    manifest_path = write_manifest_resolved(rows, paths.dataset_dir)
+
+    # 4. Build report
+    report: dict[str, Any] = {
+        "dataset": spec.name,
+        "built_at_utc": utc_now_iso(),
+        "target_fps": spec.target_fps,
+        "val_percent": spec.val_percent,
+        "hash_salt": spec.hash_salt,
+        "dataset_dir": str(paths.dataset_dir),
+        "build_dir": str(paths.dataset_dir),
+        "clips_dir": "",
+        "manifest_resolved": str(manifest_path),
+        "skip_validate": bool(skip_validate),
+        "skip_fk_check": bool(skip_fk_check),
+        "jobs": int(jobs),
+        "sources": [asdict(source) for source in spec.sources],
+        "splits": {
+            "train": train_stats,
+            "val": val_stats,
+        },
+        "clip_counts": {
+            "total": len(clip_entries),
+            "train": len(train_entries),
+            "val": len(val_entries),
+        },
+        "fk_checks": [],
+    }
+    write_json(paths.dataset_dir / "build_info.json", report)
+    return report
+
+
 def build_dataset_from_spec(
     spec: DatasetSpec,
     *,
@@ -649,6 +968,20 @@ def build_dataset_from_spec(
     output_root: str | Path | None = None,
 ) -> dict[str, Any]:
     paths = resolve_dataset_paths(spec, output_root=output_root)
+
+    # Use batch mode for pkl-only datasets (no intermediate clip files)
+    all_pkl = all(source.type == "pkl" for source in spec.sources)
+    if all_pkl:
+        return _build_dataset_batch(
+            spec,
+            paths=paths,
+            force=force,
+            skip_fk_check=skip_fk_check,
+            skip_validate=skip_validate,
+            jobs=jobs,
+        )
+
+    # Legacy per-file mode for bvh/npz sources
     convert_sources_to_npz(spec, paths=paths, force=force, jobs=jobs)
     rows = collect_clip_rows(spec, paths=paths)
 

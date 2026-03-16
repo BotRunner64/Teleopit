@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 from mjlab.asset_zoo.robots import G1_ACTION_SCALE, get_g1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
@@ -126,4 +128,43 @@ def make_tracking_env_cfg_for_profile(
     if play:
         _apply_play_mode_overrides(cfg)
 
+    return cfg
+
+
+def _add_history_obs_groups(
+    cfg: ManagerBasedRlEnvCfg, history_length: int = 10
+) -> None:
+    """Add ``actor_history`` and ``critic_history`` observation groups.
+
+    Each history group mirrors the corresponding base group's terms but uses
+    group-level ``history_length`` with ``flatten_history_dim=False`` so the
+    observation manager produces ``(B, T, D)`` tensors.
+    """
+    cfg.observations["actor_history"] = ObservationGroupCfg(
+        terms=deepcopy(cfg.observations["actor"].terms),
+        concatenate_terms=True,
+        enable_corruption=cfg.observations["actor"].enable_corruption,
+        history_length=history_length,
+        flatten_history_dim=False,
+    )
+    cfg.observations["critic_history"] = ObservationGroupCfg(
+        terms=deepcopy(cfg.observations["critic"].terms),
+        concatenate_terms=True,
+        enable_corruption=False,
+        history_length=history_length,
+        flatten_history_dim=False,
+    )
+
+
+def make_history_cnn_tracking_env_cfg(
+    *, play: bool = False
+) -> ManagerBasedRlEnvCfg:
+    """Create the G1 tracking env with history CNN observation groups."""
+    cfg = make_tracking_env_cfg_for_profile(OFFICIAL_UNIFORM_PROFILE, play=play)
+    _add_history_obs_groups(cfg)
+    # In play mode the base factory disables corruption on actor; do the same
+    # for the history groups.
+    if play:
+        cfg.observations["actor_history"].enable_corruption = False
+        cfg.observations["critic_history"].enable_corruption = False
     return cfg

@@ -24,12 +24,18 @@ class _OnnxMotionModel(nn.Module):
         self.register_buffer("body_ang_vel_w", motion.body_ang_vel_w.to("cpu"))
         self.time_step_total: int = self.joint_pos.shape[0]  # type: ignore[index]
 
-    def forward(self, x, time_step):
+    def forward(self, *args):
+        # Last arg is always time_step; preceding args are policy inputs.
+        *policy_args, time_step = args
         time_step_clamped = torch.clamp(
             time_step.long().squeeze(-1), max=self.time_step_total - 1
         )
+        if len(policy_args) == 1:
+            policy_out = self.policy(policy_args[0])
+        else:
+            policy_out = self.policy(*policy_args)
         return (
-            self.policy(x),
+            policy_out,
             self.joint_pos[time_step_clamped],  # type: ignore[index]
             self.joint_vel[time_step_clamped],  # type: ignore[index]
             self.body_pos_w[time_step_clamped],  # type: ignore[index]
@@ -61,16 +67,17 @@ class MotionTrackingOnPolicyRunner(MjlabOnPolicyRunner):
         model = _OnnxMotionModel(self.alg.get_policy(), cmd.motion)
         model.to("cpu")
         model.eval()
-        obs = torch.zeros(1, model.policy.input_size)
+        dummy_inputs = model.policy.get_dummy_inputs()
         time_step = torch.zeros(1, 1)
+        input_names = model.policy.input_names + ["time_step"]
         torch.onnx.export(
             model,
-            (obs, time_step),
+            (*dummy_inputs, time_step),
             os.path.join(path, filename),
             export_params=True,
             opset_version=18,
             verbose=verbose,
-            input_names=["obs", "time_step"],
+            input_names=input_names,
             output_names=[
                 "actions",
                 "joint_pos",
