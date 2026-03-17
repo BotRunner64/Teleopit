@@ -330,9 +330,8 @@ class SimulationLoop:
 
                 obs = self._build_observation(
                     state=state,
-                    mimic_obs=preparation.mimic_obs,
+                    motion_prep=preparation,
                     last_action=self._step_runner.last_action,
-                    retarget_qpos=preparation.qpos,
                 )
                 policy_obs = self._validate_observation_for_policy(obs)
                 action: Float32Array = np.asarray(self.controller.compute_action(policy_obs), dtype=np.float32).reshape(-1)
@@ -387,11 +386,10 @@ class SimulationLoop:
     def _build_observation(
         self,
         state: object,
-        mimic_obs: Float32Array,
+        motion_prep: object,
         last_action: Float32Array,
-        retarget_qpos: Float64Array,
     ) -> Float32Array:
-        return self._step_runner.build_observation(state, mimic_obs, last_action, retarget_qpos)
+        return self._step_runner.build_observation(state, motion_prep, last_action)
 
     def _publish(self, mimic_obs: Float32Array, action: Float32Array, robot_state: object) -> None:
         self._publisher.publish(mimic_obs, action, robot_state)

@@ -237,6 +237,121 @@ def merge_npz_files(
     }
 
 
+def extract_clip_arrays(npz_path: Path, clip_index: int) -> dict[str, Any]:
+    """Extract a single clip's arrays from a merged NPZ by clip index.
+
+    Returns a dict with the same keys as a standalone clip NPZ:
+    fps, joint_pos, joint_vel, body_pos_w, body_quat_w,
+    body_lin_vel_w, body_ang_vel_w, body_names.
+    """
+    d = np.load(npz_path, allow_pickle=True)
+    clip_starts = d["clip_starts"]
+    clip_lengths = d["clip_lengths"]
+    if clip_index < 0 or clip_index >= len(clip_starts):
+        raise IndexError(
+            f"clip_index {clip_index} out of range [0, {len(clip_starts)}) in {npz_path}"
+        )
+    start = int(clip_starts[clip_index])
+    length = int(clip_lengths[clip_index])
+    s = slice(start, start + length)
+    return {
+        "fps": int(d["fps"]),
+        "joint_pos": np.asarray(d["joint_pos"][s]),
+        "joint_vel": np.asarray(d["joint_vel"][s]),
+        "body_pos_w": np.asarray(d["body_pos_w"][s]),
+        "body_quat_w": np.asarray(d["body_quat_w"][s]),
+        "body_lin_vel_w": np.asarray(d["body_lin_vel_w"][s]),
+        "body_ang_vel_w": np.asarray(d["body_ang_vel_w"][s]),
+        "body_names": np.asarray(d["body_names"]),
+    }
+
+
+def merge_clip_dicts(
+    clip_dicts: list[dict[str, Any]],
+    output_path: Path,
+    *,
+    target_fps: int | None = None,
+    weights: list[float] | None = None,
+) -> dict[str, Any]:
+    """Merge a list of in-memory clip array dicts into a single NPZ.
+
+    Each dict must have keys: fps, joint_pos, joint_vel, body_pos_w,
+    body_quat_w, body_lin_vel_w, body_ang_vel_w, body_names.
+    """
+    if not clip_dicts:
+        raise ValueError("no clip dicts to merge")
+    if weights is not None and len(weights) != len(clip_dicts):
+        raise ValueError(
+            f"weights length ({len(weights)}) != clip_dicts length ({len(clip_dicts)})"
+        )
+    if target_fps is not None and target_fps <= 0:
+        raise ValueError(f"target_fps must be > 0, got {target_fps}")
+
+    array_keys = [
+        "joint_pos", "joint_vel", "body_pos_w", "body_quat_w",
+        "body_lin_vel_w", "body_ang_vel_w",
+    ]
+    arrays: dict[str, list[np.ndarray]] = {k: [] for k in array_keys}
+    fps: int | None = None
+    body_names: np.ndarray | None = None
+    per_clip_fps: list[int] = []
+    per_clip_weights: list[float] = []
+
+    for i, cd in enumerate(clip_dicts):
+        cur_fps = int(cd["fps"])
+        cur_body_names = np.asarray(cd["body_names"])
+
+        clip_arrays = {k: np.asarray(cd[k]) for k in array_keys}
+
+        if target_fps is not None and cur_fps != target_fps:
+            old_t = clip_arrays["joint_pos"].shape[0]
+            new_t = max(1, round(old_t * target_fps / cur_fps))
+            for k in array_keys:
+                clip_arrays[k] = resample_along_time(clip_arrays[k], new_t)
+            qn = np.linalg.norm(clip_arrays["body_quat_w"], axis=-1, keepdims=True)
+            clip_arrays["body_quat_w"] = clip_arrays["body_quat_w"] / np.where(qn < 1e-8, 1.0, qn)
+            cur_fps = target_fps
+
+        if fps is None:
+            fps = cur_fps
+            body_names = cur_body_names
+        elif cur_fps != fps:
+            raise ValueError(f"inconsistent fps: clip {i} has {cur_fps}, expected {fps}")
+        elif body_names is None or not np.array_equal(cur_body_names, body_names):
+            raise ValueError(f"inconsistent body_names: clip {i}")
+
+        per_clip_fps.append(cur_fps)
+        per_clip_weights.append(weights[i] if weights is not None else 1.0)
+        for k in array_keys:
+            arrays[k].append(clip_arrays[k])
+
+    clip_lengths = np.array([a.shape[0] for a in arrays["joint_pos"]], dtype=np.int64)
+    clip_starts = np.zeros(len(clip_lengths), dtype=np.int64)
+    if len(clip_lengths) > 1:
+        clip_starts[1:] = np.cumsum(clip_lengths[:-1])
+
+    merged = {k: np.concatenate(v, axis=0) for k, v in arrays.items()}
+    merged["fps"] = int(fps)  # type: ignore[arg-type]
+    merged["body_names"] = body_names
+    merged["clip_starts"] = clip_starts
+    merged["clip_lengths"] = clip_lengths
+    merged["clip_fps"] = np.array(per_clip_fps, dtype=np.int64)
+    merged["clip_weights"] = np.array(per_clip_weights, dtype=np.float64)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(output_path, **merged)
+
+    total_frames = int(merged["joint_pos"].shape[0])
+    return {
+        "output": str(output_path),
+        "clips": len(clip_dicts),
+        "num_clips": len(clip_dicts),
+        "frames": total_frames,
+        "fps": int(merged["fps"]),
+        "duration_s": float(total_frames / max(int(merged["fps"]), 1)),
+    }
+
+
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:

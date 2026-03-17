@@ -1,0 +1,9 @@
+name: seed_v1_smoke
+target_fps: 30
+val_percent: 5
+hash_salt: ""
+sources:
+  - name: seed_smoke
+    type: seed_csv
+    input: data/SEED/g1/csv/221118
+    weight: 1.0

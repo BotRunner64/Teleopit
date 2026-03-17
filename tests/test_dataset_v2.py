@@ -15,7 +15,7 @@ from train_mimic.data.dataset_builder import (
     convert_source_to_npz_clips,
     load_dataset_spec,
 )
-from train_mimic.data.dataset_lib import inspect_npz
+from train_mimic.data.dataset_lib import inspect_npz, merge_clip_dicts
 from train_mimic.data.motion_fk import (
     MotionFkExtractor,
     normalize_quaternion,
@@ -262,3 +262,26 @@ def test_build_dataset_from_spec_writes_single_directory_outputs(tmp_path: Path)
     assert (dataset_dir / "manifest_resolved.csv").is_file()
     assert (dataset_dir / "build_info.json").is_file()
     assert report["clip_counts"]["total"] == 2
+
+
+def test_merge_clip_dicts_rejects_inconsistent_body_names(tmp_path: Path) -> None:
+    clip_a = tmp_path / "clip_a.npz"
+    clip_b = tmp_path / "clip_b.npz"
+    _write_npz_from_pkl(clip_a)
+    _write_npz_from_pkl(clip_b)
+
+    clip_a_dict = dict(np.load(clip_a, allow_pickle=True))
+    clip_b_dict = dict(np.load(clip_b, allow_pickle=True))
+    clip_b_dict["body_names"] = np.array(["wrong"] * len(clip_b_dict["body_names"]), dtype=str)
+
+    with pytest.raises(ValueError, match="inconsistent body_names"):
+        merge_clip_dicts([clip_a_dict, clip_b_dict], tmp_path / "merged.npz")
+
+
+def test_merge_clip_dicts_rejects_non_positive_target_fps(tmp_path: Path) -> None:
+    clip_path = tmp_path / "clip.npz"
+    _write_npz_from_pkl(clip_path)
+    clip_dict = dict(np.load(clip_path, allow_pickle=True))
+
+    with pytest.raises(ValueError, match="target_fps must be > 0"):
+        merge_clip_dicts([clip_dict], tmp_path / "merged.npz", target_fps=0)

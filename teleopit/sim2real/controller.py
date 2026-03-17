@@ -20,7 +20,13 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from teleopit.controllers.observation import MjlabObservationBuilder, align_motion_qpos_yaw
+from teleopit.controllers.observation import (
+    MjlabObservationBuilder,
+    VelCmdObservationBuilder,
+    _quat_inv_np,
+    _quat_mul_np,
+    align_motion_qpos_yaw,
+)
 from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.controllers.rl_policy import RLPolicyController
 from teleopit.inputs.pico4_provider import Pico4InputProvider
@@ -74,7 +80,7 @@ class Sim2RealController:
             cfg,
             self._project_root,
             controller_cls=RLPolicyController,
-            obs_builder_cls=MjlabObservationBuilder,
+            obs_builder_cls=MjlabObservationBuilder,  # factory auto-detects VelCmd from policy dim
             pico4_input_cls=Pico4InputProvider,
             udp_bvh_input_cls=UDPBVHInputProvider,
             retargeter_cls=RetargetingModule,
@@ -169,13 +175,18 @@ class Sim2RealController:
 
         # Standing → zero joint velocity reference
         motion_joint_vel = np.zeros(self.num_actions, dtype=np.float32)
+        motion_qpos = np.asarray(qpos[:7 + self.num_actions], dtype=np.float32)
 
-        obs = self.obs_builder.build(
-            robot_state,
-            np.asarray(qpos[:7 + self.num_actions], dtype=np.float32),
-            motion_joint_vel,
-            self._last_action,
-        )
+        if isinstance(self.obs_builder, VelCmdObservationBuilder):
+            obs = self.obs_builder.build(
+                robot_state, motion_qpos, motion_joint_vel, self._last_action,
+                np.zeros(3, dtype=np.float32),
+                np.zeros(3, dtype=np.float32),
+            )
+        else:
+            obs = self.obs_builder.build(
+                robot_state, motion_qpos, motion_joint_vel, self._last_action,
+            )
         obs = self._validate_observation_for_policy(obs)
 
         action = self.policy.compute_action(obs)
@@ -210,6 +221,13 @@ class Sim2RealController:
         # Align motion root yaw to robot's current yaw heading.
         align_motion_qpos_yaw(np.asarray(robot_state.quat, dtype=np.float32), qpos)
 
+        # Compute anchor velocities AFTER yaw alignment so both current
+        # and previous (_last_retarget_qpos) qpos are in the same world frame.
+        anchor_lin_vel_w: Float32Array | None = None
+        anchor_ang_vel_w: Float32Array | None = None
+        if isinstance(self.obs_builder, VelCmdObservationBuilder):
+            anchor_lin_vel_w, anchor_ang_vel_w = self._compute_anchor_velocities(qpos)
+
         if qpos.shape[0] < 7 + self.num_actions:
             raise ValueError(
                 f"Retargeted qpos too short: {qpos.shape[0]} (need >= {7 + self.num_actions})"
@@ -220,12 +238,18 @@ class Sim2RealController:
         else:
             prev_joint_pos = np.asarray(self._last_retarget_qpos[7:7 + self.num_actions], dtype=np.float32)
             motion_joint_vel = (motion_joint_pos - prev_joint_pos) * np.float32(self.policy_hz)
-        obs = self.obs_builder.build(
-            robot_state,
-            np.asarray(qpos[:7 + self.num_actions], dtype=np.float32),
-            motion_joint_vel,
-            self._last_action,
-        )
+
+        motion_qpos = np.asarray(qpos[:7 + self.num_actions], dtype=np.float32)
+        if isinstance(self.obs_builder, VelCmdObservationBuilder):
+            assert anchor_lin_vel_w is not None and anchor_ang_vel_w is not None
+            obs = self.obs_builder.build(
+                robot_state, motion_qpos, motion_joint_vel, self._last_action,
+                anchor_lin_vel_w, anchor_ang_vel_w,
+            )
+        else:
+            obs = self.obs_builder.build(
+                robot_state, motion_qpos, motion_joint_vel, self._last_action,
+            )
         obs = self._validate_observation_for_policy(obs)
 
         action = self.policy.compute_action(obs)
@@ -237,6 +261,54 @@ class Sim2RealController:
         # Update state
         self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
         self._last_retarget_qpos = qpos.copy()
+
+    def _compute_anchor_velocities(
+        self, qpos: Float64Array,
+    ) -> tuple[Float32Array, Float32Array]:
+        """Compute motion anchor linear/angular velocity in world frame via finite diff."""
+        assert isinstance(self.obs_builder, VelCmdObservationBuilder)
+        builder = self.obs_builder._base
+
+        cur_pos = np.asarray(qpos[0:3], dtype=np.float32)
+        cur_quat = np.asarray(qpos[3:7], dtype=np.float32)
+        cur_joints = np.asarray(qpos[7:7 + self.num_actions], dtype=np.float32)
+        builder._run_fk(cur_pos, cur_quat, cur_joints)
+        cur_anchor_pos = builder._get_body_pos(builder._anchor_body_id).copy()
+
+        if self._last_retarget_qpos is None:
+            return np.zeros(3, dtype=np.float32), np.zeros(3, dtype=np.float32)
+
+        prev = self._last_retarget_qpos
+        prev_pos = np.asarray(prev[0:3], dtype=np.float32)
+        prev_quat = np.asarray(prev[3:7], dtype=np.float32)
+        prev_joints = np.asarray(prev[7:7 + self.num_actions], dtype=np.float32)
+        builder._run_fk(prev_pos, prev_quat, prev_joints)
+        prev_anchor_pos = builder._get_body_pos(builder._anchor_body_id).copy()
+
+        dt = np.float32(1.0 / self.policy_hz)
+        anchor_lin_vel_w = np.asarray(
+            (cur_anchor_pos - prev_anchor_pos) / dt, dtype=np.float32,
+        )
+
+        # Angular velocity from quaternion difference.
+        builder._run_fk(cur_pos, cur_quat, cur_joints)
+        cur_anchor_quat = builder._get_body_quat(builder._anchor_body_id).copy()
+        builder._run_fk(prev_pos, prev_quat, prev_joints)
+        prev_anchor_quat = builder._get_body_quat(builder._anchor_body_id).copy()
+
+        q_delta = _quat_mul_np(cur_anchor_quat, _quat_inv_np(prev_anchor_quat))
+        if q_delta[0] < 0:
+            q_delta = -q_delta
+        w_clamped = float(np.clip(q_delta[0], -1.0, 1.0))
+        half_angle = np.float32(np.arccos(w_clamped))
+        sin_half = np.float32(np.sin(half_angle))
+        if sin_half > 1e-6:
+            axis = q_delta[1:4] / sin_half
+            anchor_ang_vel_w = np.asarray(axis * 2.0 * half_angle / dt, dtype=np.float32)
+        else:
+            anchor_ang_vel_w = np.zeros(3, dtype=np.float32)
+
+        return anchor_lin_vel_w, anchor_ang_vel_w
 
     # ------------------------------------------------------------------
     # State machine transitions

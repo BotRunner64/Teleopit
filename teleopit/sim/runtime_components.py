@@ -9,7 +9,11 @@ import numpy as np
 from numpy.typing import NDArray
 
 from teleopit.bus.topics import TOPIC_ACTION, TOPIC_MIMIC_OBS, TOPIC_ROBOT_STATE
-from teleopit.controllers.observation import MjlabObservationBuilder, align_motion_qpos_yaw
+from teleopit.controllers.observation import (
+    MjlabObservationBuilder,
+    VelCmdObservationBuilder,
+    align_motion_qpos_yaw,
+)
 from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.interfaces import MessageBus, ObservationBuilder, Recorder, Robot
 from teleopit.retargeting.core import extract_mimic_obs
@@ -48,6 +52,8 @@ class MotionPreparation:
     qpos: Float64Array
     retarget_viewer_qpos: Float64Array
     mimic_obs: Float32Array
+    motion_anchor_lin_vel_w: Float32Array | None = None
+    motion_anchor_ang_vel_w: Float32Array | None = None
 
 
 class RuntimePublisher:
@@ -145,11 +151,81 @@ class PolicyStepRunner:
         qpos[0:2] = robot_xy
         align_motion_qpos_yaw(np.asarray(state.quat, dtype=np.float32), qpos)
 
+        # Compute motion anchor velocities AFTER yaw alignment so both current
+        # and previous (last_retarget_qpos) qpos are in the same world frame.
+        motion_anchor_lin_vel_w: Float32Array | None = None
+        motion_anchor_ang_vel_w: Float32Array | None = None
+        if isinstance(self.obs_builder, VelCmdObservationBuilder):
+            motion_anchor_lin_vel_w, motion_anchor_ang_vel_w = (
+                self._compute_anchor_velocities(qpos)
+            )
+
         return MotionPreparation(
             qpos=qpos,
             retarget_viewer_qpos=retarget_viewer_qpos,
             mimic_obs=np.asarray(mimic_obs, dtype=np.float32),
+            motion_anchor_lin_vel_w=motion_anchor_lin_vel_w,
+            motion_anchor_ang_vel_w=motion_anchor_ang_vel_w,
         )
+
+    def _compute_anchor_velocities(
+        self, qpos: Float64Array
+    ) -> tuple[Float32Array, Float32Array]:
+        """Compute motion anchor linear/angular velocity in world frame via finite diff."""
+        assert isinstance(self.obs_builder, VelCmdObservationBuilder)
+        builder = self.obs_builder._base
+
+        # Current anchor state via FK.
+        motion_pos = np.asarray(qpos[0:3], dtype=np.float32)
+        motion_quat = np.asarray(qpos[3:7], dtype=np.float32)
+        motion_joints = np.asarray(qpos[7:7 + self.num_actions], dtype=np.float32)
+        builder._run_fk(motion_pos, motion_quat, motion_joints)
+        cur_anchor_pos = builder._get_body_pos(builder._anchor_body_id).copy()
+
+        if self.last_retarget_qpos is None:
+            return (
+                np.zeros(3, dtype=np.float32),
+                np.zeros(3, dtype=np.float32),
+            )
+
+        # Previous anchor state via FK.
+        prev = self.last_retarget_qpos
+        prev_pos = np.asarray(prev[0:3], dtype=np.float32)
+        prev_quat = np.asarray(prev[3:7], dtype=np.float32)
+        prev_joints = np.asarray(prev[7:7 + self.num_actions], dtype=np.float32)
+        builder._run_fk(prev_pos, prev_quat, prev_joints)
+        prev_anchor_pos = builder._get_body_pos(builder._anchor_body_id).copy()
+
+        dt = np.float32(1.0 / self.policy_hz)
+        anchor_lin_vel_w = np.asarray(
+            (cur_anchor_pos - prev_anchor_pos) / dt, dtype=np.float32
+        )
+
+        # Angular velocity from quaternion difference.
+        # Re-run FK for current to restore state.
+        builder._run_fk(motion_pos, motion_quat, motion_joints)
+        cur_anchor_quat = builder._get_body_quat(builder._anchor_body_id).copy()
+        builder._run_fk(prev_pos, prev_quat, prev_joints)
+        prev_anchor_quat = builder._get_body_quat(builder._anchor_body_id).copy()
+
+        from teleopit.controllers.observation import _quat_mul_np, _quat_inv_np
+        # q_delta = cur * inv(prev) -> angular velocity
+        q_delta = _quat_mul_np(cur_anchor_quat, _quat_inv_np(prev_anchor_quat))
+        # Ensure positive w for stability.
+        if q_delta[0] < 0:
+            q_delta = -q_delta
+        # axis-angle extraction: angle = 2 * acos(w), axis = xyz / sin(angle/2)
+        w_clamped = float(np.clip(q_delta[0], -1.0, 1.0))
+        half_angle = np.float32(np.arccos(w_clamped))
+        sin_half = np.float32(np.sin(half_angle))
+        if sin_half > 1e-6:
+            axis = q_delta[1:4] / sin_half
+            angle = 2.0 * half_angle
+            anchor_ang_vel_w = np.asarray(axis * angle / dt, dtype=np.float32)
+        else:
+            anchor_ang_vel_w = np.zeros(3, dtype=np.float32)
+
+        return anchor_lin_vel_w, anchor_ang_vel_w
 
     def compute_target_dof_pos(self, action: Float32Array) -> Float32Array:
         get_target = getattr(self.controller, "get_target_dof_pos", None)
@@ -168,38 +244,67 @@ class PolicyStepRunner:
     def build_observation(
         self,
         state: object,
-        mimic_obs: Float32Array,
+        motion_prep: MotionPreparation,
         last_action: Float32Array,
-        retarget_qpos: Float64Array,
     ) -> Float32Array:
-        if isinstance(self.obs_builder, MjlabObservationBuilder):
-            if retarget_qpos.shape[0] < 7 + self.num_actions:
-                raise ValueError(
-                    f"Retargeted qpos too short for MjlabObservationBuilder: {retarget_qpos.shape[0]} "
-                    f"(need >= {7 + self.num_actions})"
-                )
-            motion_joint_pos = np.asarray(retarget_qpos[7:7 + self.num_actions], dtype=np.float32)
-            if self.last_retarget_qpos is None:
-                motion_joint_vel = np.zeros((self.num_actions,), dtype=np.float32)
-            else:
-                prev_joint_pos = np.asarray(
-                    self.last_retarget_qpos[7:7 + self.num_actions],
-                    dtype=np.float32,
-                )
-                motion_joint_vel = (motion_joint_pos - prev_joint_pos) * np.float32(self.policy_hz)
+        retarget_qpos = motion_prep.qpos
+        if isinstance(self.obs_builder, VelCmdObservationBuilder):
+            motion_qpos, motion_joint_vel = self._extract_motion_joint_data(retarget_qpos)
+            assert motion_prep.motion_anchor_lin_vel_w is not None
+            assert motion_prep.motion_anchor_ang_vel_w is not None
             obs = self.obs_builder.build(
                 cast(object, state),
-                np.asarray(retarget_qpos[:7 + self.num_actions], dtype=np.float32),
+                motion_qpos,
+                motion_joint_vel,
+                last_action,
+                motion_prep.motion_anchor_lin_vel_w,
+                motion_prep.motion_anchor_ang_vel_w,
+            )
+        elif isinstance(self.obs_builder, MjlabObservationBuilder):
+            motion_qpos, motion_joint_vel = self._extract_motion_joint_data(retarget_qpos)
+            obs = self.obs_builder.build(
+                cast(object, state),
+                motion_qpos,
                 motion_joint_vel,
                 last_action,
             )
         elif hasattr(self.obs_builder, "build_observation"):
-            obs = cast(_SupportsBuildObservation, self.obs_builder).build_observation(state, [last_action], mimic_obs)
+            obs = cast(_SupportsBuildObservation, self.obs_builder).build_observation(
+                state, [last_action], motion_prep.mimic_obs,
+            )
         elif hasattr(self.obs_builder, "build"):
-            obs = cast(_SupportsBuild, cast(object, self.obs_builder)).build(state, mimic_obs, last_action)
+            obs = cast(_SupportsBuild, cast(object, self.obs_builder)).build(
+                state, motion_prep.mimic_obs, last_action,
+            )
         else:
             raise TypeError("ObservationBuilder must provide build_observation() or build().")
         return np.asarray(obs, dtype=np.float32)
+
+    def _extract_motion_joint_data(
+        self, retarget_qpos: Float64Array
+    ) -> tuple[Float32Array, Float32Array]:
+        """Extract motion qpos and joint velocities from retarget qpos."""
+        if retarget_qpos.shape[0] < 7 + self.num_actions:
+            raise ValueError(
+                f"Retargeted qpos too short: {retarget_qpos.shape[0]} "
+                f"(need >= {7 + self.num_actions})"
+            )
+        motion_joint_pos = np.asarray(
+            retarget_qpos[7:7 + self.num_actions], dtype=np.float32
+        )
+        if self.last_retarget_qpos is None:
+            motion_joint_vel = np.zeros((self.num_actions,), dtype=np.float32)
+        else:
+            prev_joint_pos = np.asarray(
+                self.last_retarget_qpos[7:7 + self.num_actions], dtype=np.float32
+            )
+            motion_joint_vel = (motion_joint_pos - prev_joint_pos) * np.float32(
+                self.policy_hz
+            )
+        motion_qpos = np.asarray(
+            retarget_qpos[:7 + self.num_actions], dtype=np.float32
+        )
+        return motion_qpos, motion_joint_vel
 
     def validate_observation_for_policy(self, obs: Float32Array) -> Float32Array:
         expected_raw = getattr(self.controller, "_expected_obs_dim", None)

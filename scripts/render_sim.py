@@ -384,22 +384,14 @@ def render_sim2sim(
                 for body_name, d in raw_frame.items()
             }
             retargeted = retargeter.retarget(human_frame)
-            qpos = loop._retarget_to_qpos(retargeted)
             last_bvh_idx = bvh_idx
 
-        mimic_obs = extract_mimic_obs(
-            qpos=qpos, last_qpos=loop._last_retarget_qpos, dt=1.0 / POLICY_HZ
-        )
-
         state = pipeline.robot.get_state()
-        # Match SimulationLoop: align motion root XY and yaw to robot's current pose.
-        qpos[0:2] = np.asarray(state.base_pos[:2], dtype=np.float64)
-        align_motion_qpos_yaw(np.asarray(state.quat, dtype=np.float32), qpos)
+        preparation = loop._step_runner.prepare_motion_command(retargeted, state)
         obs = loop._build_observation(
             state=state,
-            mimic_obs=mimic_obs,
-            last_action=loop._last_action,
-            retarget_qpos=qpos,
+            motion_prep=preparation,
+            last_action=loop._step_runner.last_action,
         )
         policy_obs = loop._validate_observation_for_policy(obs)
         action = np.asarray(
@@ -426,8 +418,7 @@ def render_sim2sim(
                 pipeline.robot.set_action(torque)
                 pipeline.robot.step()
 
-        loop._last_action = action
-        loop._last_retarget_qpos = qpos.copy()
+        loop._step_runner.finish_step(action, preparation.qpos)
 
         cam.lookat[:] = [data.qpos[0], data.qpos[1], 0.8]
 

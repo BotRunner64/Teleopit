@@ -459,3 +459,101 @@ class MjlabObservationBuilder:
             "MjlabObservationBuilder requires full motion qpos and joint velocities. "
             "Use build(robot_state, motion_qpos, motion_joint_vel, last_action)."
         )
+
+
+# Unit gravity direction (pointing down in world frame).
+_GRAVITY_UNIT_W = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+
+
+@final
+class VelCmdObservationBuilder:
+    """Observation builder extending MjlabObservationBuilder with velocity-command terms.
+
+    Appends 12D to the base 154D observation:
+        projected_gravity(3) + ref_base_lin_vel_b(3) +
+        ref_base_ang_vel_b(3) + ref_projected_gravity_b(3).
+
+    Total: 166D.
+    """
+
+    def __init__(self, cfg: ConfigType) -> None:
+        self._base = MjlabObservationBuilder(cfg)
+        self.num_actions = self._base.num_actions
+        self.total_obs_size: int = self._base.total_obs_size + 12
+
+    def reset(self) -> None:
+        self._base.reset()
+
+    def build(
+        self,
+        robot_state: RobotState,
+        motion_qpos: FloatVec,
+        motion_joint_vel: FloatVec,
+        last_action: FloatVec,
+        motion_anchor_lin_vel_w: FloatVec,
+        motion_anchor_ang_vel_w: FloatVec,
+    ) -> FloatVec:
+        """Build 166D policy observation.
+
+        Args:
+            robot_state: Current robot state.
+            motion_qpos: Retargeted motion qpos (7D root + 29D joints).
+            motion_joint_vel: Motion target joint velocities (29D).
+            last_action: Previous action (29D).
+            motion_anchor_lin_vel_w: Reference anchor linear velocity in world frame (3D).
+            motion_anchor_ang_vel_w: Reference anchor angular velocity in world frame (3D).
+        """
+        base_obs = self._base.build(robot_state, motion_qpos, motion_joint_vel, last_action)
+
+        robot_quat = np.asarray(robot_state.quat, dtype=np.float32).reshape(-1)
+
+        # Run FK on motion qpos to get motion anchor quaternion.
+        motion = np.asarray(motion_qpos, dtype=np.float32).reshape(-1)
+        self._base._run_fk(motion[0:3], motion[3:7], motion[7:7 + self.num_actions])
+        motion_anchor_quat = self._base._get_body_quat(self._base._anchor_body_id)
+
+        # Run FK on robot to get robot anchor quaternion.
+        qpos = np.asarray(robot_state.qpos, dtype=np.float32).reshape(-1)[:self.num_actions]
+        robot_base_pos = np.zeros(3, dtype=np.float32)
+        if robot_state.base_pos is not None:
+            robot_base_pos = np.asarray(robot_state.base_pos, dtype=np.float32).reshape(-1)
+        self._base._run_fk(robot_base_pos, robot_quat, qpos)
+        robot_anchor_quat = self._base._get_body_quat(self._base._anchor_body_id)
+
+        ref_lin_vel_w = np.asarray(motion_anchor_lin_vel_w, dtype=np.float32).reshape(3)
+        ref_ang_vel_w = np.asarray(motion_anchor_ang_vel_w, dtype=np.float32).reshape(3)
+
+        # projected_gravity: gravity in robot body frame
+        projected_gravity = _quat_rotate_np(_quat_inv_np(robot_anchor_quat), _GRAVITY_UNIT_W)
+
+        # ref velocities in robot body frame
+        robot_inv = _quat_inv_np(robot_anchor_quat)
+        ref_base_lin_vel_b = _quat_rotate_np(robot_inv, ref_lin_vel_w)
+        ref_base_ang_vel_b = _quat_rotate_np(robot_inv, ref_ang_vel_w)
+
+        # ref projected gravity: gravity in reference body frame
+        ref_projected_gravity_b = _quat_rotate_np(_quat_inv_np(motion_anchor_quat), _GRAVITY_UNIT_W)
+
+        velcmd_obs = np.concatenate([
+            projected_gravity,        # 3
+            ref_base_lin_vel_b,       # 3
+            ref_base_ang_vel_b,       # 3
+            ref_projected_gravity_b,  # 3
+        ], dtype=np.float32)
+
+        obs = np.concatenate([base_obs, velcmd_obs], dtype=np.float32)
+        if obs.shape[0] != self.total_obs_size:
+            raise ValueError(f"Expected {self.total_obs_size}D velcmd observation, got {obs.shape[0]}")
+        return obs
+
+    def build_observation(
+        self,
+        state: RobotState,
+        history: list[FloatVec],
+        action_mimic: FloatVec,
+    ) -> FloatVec:
+        raise ValueError(
+            "VelCmdObservationBuilder requires full motion data. "
+            "Use build(robot_state, motion_qpos, motion_joint_vel, last_action, "
+            "motion_anchor_lin_vel_w, motion_anchor_ang_vel_w)."
+        )

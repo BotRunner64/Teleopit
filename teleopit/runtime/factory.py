@@ -115,11 +115,10 @@ def _build_policy_components(
 
     controller = controller_cls(controller_cfg)
     obs_type = str(cfg_get(robot_cfg, "obs_builder", "mjlab")).lower()
-    if obs_type != "mjlab":
+    if obs_type not in ("mjlab", "velcmd"):
         raise ValueError(
             f"Unsupported robot.obs_builder='{obs_type}'. "
-            "TWIST2 policy path is deprecated; use mjlab-aligned policy and set "
-            "robot.obs_builder=mjlab."
+            "Supported values: 'mjlab', 'velcmd'."
         )
 
     has_state_estimation = bool(cfg_get(robot_cfg, "has_state_estimation", False))
@@ -129,13 +128,12 @@ def _build_policy_components(
         if has_state_estimation:
             raise ValueError(
                 "Sim2real requires robot.has_state_estimation=false. The real robot does "
-                "not provide base_pos/base_lin_vel, so only 154D mjlab ONNX policies "
-                "exported from *-NoStateEst tasks are supported."
+                "not provide base_pos/base_lin_vel, so only 154D/166D mjlab ONNX policies "
+                "exported from *-NoStateEst or *-VelCmdHistory tasks are supported."
             )
-        if policy_dim is not None and policy_dim != 154:
+        if policy_dim is not None and policy_dim not in (154, 166):
             raise ValueError(
-                f"Sim2real only supports 154D mjlab ONNX policies exported from "
-                f"*-NoStateEst tasks; got {policy_dim}D."
+                f"Sim2real only supports 154D or 166D mjlab ONNX policies; got {policy_dim}D."
             )
 
     obs_cfg = {
@@ -146,7 +144,13 @@ def _build_policy_components(
         "has_state_estimation": has_state_estimation,
         "yaw_only": bool(cfg_get(robot_cfg, "yaw_only", False)),
     }
-    obs_builder = obs_builder_cls(obs_cfg)
+
+    # Select observation builder class based on config or auto-detect from policy dim.
+    if obs_type == "velcmd" or (policy_dim is not None and policy_dim == 166):
+        from teleopit.controllers.observation import VelCmdObservationBuilder
+        obs_builder = VelCmdObservationBuilder(obs_cfg)
+    else:
+        obs_builder = obs_builder_cls(obs_cfg)
 
     builder_dim = getattr(obs_builder, "total_obs_size", None)
     if policy_dim is not None and builder_dim is not None and policy_dim != builder_dim:

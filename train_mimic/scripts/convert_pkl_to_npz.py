@@ -57,6 +57,13 @@ from train_mimic.data.motion_fk import (
     quat_xyzw_to_wxyz,
 )
 
+SEED_CSV_FPS = 120
+# Column layout: Frame(1) + root_translate(3) + root_rotate(3) + joint_dof(29) = 36
+_SEED_CSV_EXPECTED_COLS = 36
+_SEED_CSV_ROOT_TRANSLATE_COLS = slice(1, 4)   # X, Y, Z in cm
+_SEED_CSV_ROOT_ROTATE_COLS = slice(4, 7)      # X, Y, Z Euler degrees
+_SEED_CSV_JOINT_DOF_COLS = slice(7, 36)       # 29 DOFs in degrees
+
 
 # mjlab G1 robot body ordering (matches robot.body_names from G1_ROBOT_CFG).
 # mjlab's MotionLoader uses robot body indices to index into NPZ body_pos_w,
@@ -144,6 +151,87 @@ def convert_pkl_to_arrays(
     )
     body_lin_vel_w, body_ang_vel_w = compute_body_velocities(body_pos_w, body_quat_w, dt)
     _validate_fk_outputs(body_quat_w, body_ang_vel_w, pkl_path)
+
+    return {
+        "fps": fps,
+        "joint_pos": dof_pos,
+        "joint_vel": joint_vel,
+        "body_pos_w": body_pos_w,
+        "body_quat_w": body_quat_w.astype(np.float32),
+        "body_lin_vel_w": body_lin_vel_w,
+        "body_ang_vel_w": body_ang_vel_w,
+        "body_names": np.array(_MJLAB_G1_BODY_NAMES, dtype=str),
+    }
+
+
+def convert_seed_csv_to_pkl_arrays(csv_path: str) -> dict[str, Any]:
+    """Convert a SEED CSV motion file to a PKL-compatible dict.
+
+    SEED CSV format (120 fps):
+        Frame, root_translateXYZ (cm), root_rotateXYZ (Euler degrees), 29 joint DOFs (degrees).
+        Joint ordering matches MuJoCo G1 29-DOF exactly.
+
+    Returns a dict matching PKL convention:
+        fps, root_pos (m), root_rot (xyzw quat), dof_pos (rad), link_body_list.
+    """
+    from scipy.spatial.transform import Rotation
+
+    data = np.loadtxt(csv_path, delimiter=",", skiprows=1, dtype=np.float64)
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+    if data.shape[1] != _SEED_CSV_EXPECTED_COLS:
+        raise ValueError(
+            f"SEED CSV expected {_SEED_CSV_EXPECTED_COLS} columns, got {data.shape[1]} in {csv_path}"
+        )
+    if data.shape[0] < 2:
+        raise ValueError(f"SEED CSV has fewer than 2 frames in {csv_path}")
+
+    # root position: cm -> m
+    root_pos = data[:, _SEED_CSV_ROOT_TRANSLATE_COLS] / 100.0
+
+    # root rotation: extrinsic xyz Euler degrees -> xyzw quaternion
+    # SEED uses world-axis (extrinsic) rotations, NOT intrinsic 'XYZ'.
+    # Intrinsic 'XYZ' causes lateral tilt artifacts on clips with large pitch/roll.
+    root_euler_deg = data[:, _SEED_CSV_ROOT_ROTATE_COLS]
+    root_euler_rad = np.deg2rad(root_euler_deg)
+    root_rot_xyzw = Rotation.from_euler("xyz", root_euler_rad).as_quat()  # scipy returns xyzw
+
+    # joint DOFs: degrees -> radians
+    dof_pos = np.deg2rad(data[:, _SEED_CSV_JOINT_DOF_COLS])
+
+    return {
+        "fps": SEED_CSV_FPS,
+        "root_pos": root_pos.astype(np.float64),
+        "root_rot": root_rot_xyzw.astype(np.float64),
+        "dof_pos": dof_pos.astype(np.float64),
+        "link_body_list": list(_MJLAB_G1_BODY_NAMES),
+    }
+
+
+def convert_seed_csv_to_arrays(
+    csv_path: str,
+    *,
+    extractor: MotionFkExtractor | None = None,
+) -> dict[str, Any]:
+    """Convert a SEED CSV motion file to NPZ-ready arrays (same output as convert_pkl_to_arrays)."""
+    pkl_dict = convert_seed_csv_to_pkl_arrays(csv_path)
+
+    fps: int = int(pkl_dict["fps"])
+    dt = 1.0 / fps
+
+    root_pos = np.asarray(pkl_dict["root_pos"], dtype=np.float32)
+    root_rot_xyzw = np.asarray(pkl_dict["root_rot"], dtype=np.float32)
+    dof_pos = np.asarray(pkl_dict["dof_pos"], dtype=np.float32)
+
+    joint_vel = np.gradient(dof_pos, dt, axis=0).astype(np.float32)
+    root_rot_wxyz = normalize_quaternion(quat_xyzw_to_wxyz(root_rot_xyzw))
+
+    fk_extractor = extractor or MotionFkExtractor()
+    body_pos_w, body_quat_w = fk_extractor.extract(
+        root_pos, root_rot_wxyz, dof_pos, _MJLAB_G1_BODY_NAMES,
+    )
+    body_lin_vel_w, body_ang_vel_w = compute_body_velocities(body_pos_w, body_quat_w, dt)
+    _validate_fk_outputs(body_quat_w, body_ang_vel_w, csv_path)
 
     return {
         "fps": fps,

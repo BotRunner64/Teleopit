@@ -71,6 +71,30 @@ def _install_render_sim_fakes(monkeypatch, *, builtin_pd: bool, provider_fps: in
         def retarget(self, human_frame: dict[str, tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
             return np.array([1.0, 2.0, 0.9, 1.0, 0.0, 0.0, 0.0, 0.1], dtype=np.float64)
 
+    class FakeStepRunner:
+        def __init__(self) -> None:
+            self.last_action = np.zeros(num_actions, dtype=np.float32)
+            self.last_retarget_qpos = None
+
+        def prepare_motion_command(self, retargeted, state):
+            from types import SimpleNamespace
+            qpos = np.asarray(retargeted, dtype=np.float64).copy()
+            robot_xy = np.asarray(state.base_pos[:2], dtype=np.float64)
+            qpos[0:2] = robot_xy
+            from teleopit.controllers.observation import align_motion_qpos_yaw
+            align_motion_qpos_yaw(np.asarray(state.quat, dtype=np.float32), qpos)
+            return SimpleNamespace(
+                qpos=qpos,
+                retarget_viewer_qpos=qpos.copy(),
+                mimic_obs=np.zeros(1, dtype=np.float32),
+                motion_anchor_lin_vel_w=None,
+                motion_anchor_ang_vel_w=None,
+            )
+
+        def finish_step(self, action, qpos):
+            self.last_action = np.asarray(action, dtype=np.float32).reshape(-1)
+            self.last_retarget_qpos = qpos.copy()
+
     class FakeLoop:
         def __init__(self) -> None:
             self.decimation = 2
@@ -78,19 +102,15 @@ def _install_render_sim_fakes(monkeypatch, *, builtin_pd: bool, provider_fps: in
             self._kps = np.array([100.0], dtype=np.float32)
             self._kds = np.array([0.0], dtype=np.float32)
             self._torque_limits = np.array([1000.0], dtype=np.float32)
-            self._last_action = np.zeros(num_actions, dtype=np.float32)
-            self._last_retarget_qpos = None
-
-        def _retarget_to_qpos(self, retargeted: np.ndarray) -> np.ndarray:
-            return np.asarray(retargeted, dtype=np.float64).copy()
+            self._step_runner = FakeStepRunner()
 
         def _build_observation(
             self,
             state: object,
-            mimic_obs: np.ndarray,
+            motion_prep: object,
             last_action: np.ndarray,
-            retarget_qpos: np.ndarray,
         ) -> np.ndarray:
+            retarget_qpos = getattr(motion_prep, "qpos", np.zeros(2))
             captured["aligned_root_xy"].append(np.asarray(retarget_qpos[:2], dtype=np.float64).copy())
             return np.array([0.0], dtype=np.float32)
 

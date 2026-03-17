@@ -7,8 +7,9 @@ from copy import deepcopy
 from mjlab.asset_zoo.robots import G1_ACTION_SCALE, get_g1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
-from mjlab.managers.observation_manager import ObservationGroupCfg
+from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
+from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
 from train_mimic.tasks.tracking import mdp
 from train_mimic.tasks.tracking.config.constants import DEFAULT_TRAIN_MOTION_FILE
@@ -188,4 +189,64 @@ def make_history_cnn_tracking_env_cfg(
     if play:
         cfg.observations["actor_history"].enable_corruption = False
         cfg.observations["critic_history"].enable_corruption = False
+    return cfg
+
+
+_VELCMD_ACTOR_TERMS: dict[str, ObservationTermCfg] = {
+    "projected_gravity": ObservationTermCfg(
+        func=mdp.projected_gravity,
+        noise=Unoise(n_min=-0.05, n_max=0.05),
+    ),
+    "ref_base_lin_vel_b": ObservationTermCfg(
+        func=mdp.ref_base_lin_vel_b,
+        params={"command_name": "motion"},
+    ),
+    "ref_base_ang_vel_b": ObservationTermCfg(
+        func=mdp.ref_base_ang_vel_b,
+        params={"command_name": "motion"},
+    ),
+    "ref_projected_gravity_b": ObservationTermCfg(
+        func=mdp.ref_projected_gravity_b,
+        params={"command_name": "motion"},
+    ),
+}
+
+_VELCMD_CRITIC_TERMS: dict[str, ObservationTermCfg] = {
+    "projected_gravity": ObservationTermCfg(func=mdp.projected_gravity),
+    "ref_base_lin_vel_b": ObservationTermCfg(
+        func=mdp.ref_base_lin_vel_b,
+        params={"command_name": "motion"},
+    ),
+    "ref_base_ang_vel_b": ObservationTermCfg(
+        func=mdp.ref_base_ang_vel_b,
+        params={"command_name": "motion"},
+    ),
+    "ref_projected_gravity_b": ObservationTermCfg(
+        func=mdp.ref_projected_gravity_b,
+        params={"command_name": "motion"},
+    ),
+}
+
+
+def make_velcmd_history_tracking_env_cfg(
+    *, play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+    """Create the G1 tracking env with velocity-command obs + history CNN.
+
+    Extends the base HistoryCNN config by appending projected_gravity,
+    ref_base_lin_vel_b, ref_base_ang_vel_b, and ref_projected_gravity_b
+    to both actor and critic observation groups.
+    """
+    cfg = make_tracking_env_cfg_for_profile(OFFICIAL_UNIFORM_PROFILE, play=play)
+
+    # Append velocity-command terms to actor and critic groups.
+    cfg.observations["actor"].terms.update(deepcopy(_VELCMD_ACTOR_TERMS))
+    cfg.observations["critic"].terms.update(deepcopy(_VELCMD_CRITIC_TERMS))
+
+    _add_history_obs_groups(cfg)
+
+    if play:
+        cfg.observations["actor_history"].enable_corruption = False
+        cfg.observations["critic_history"].enable_corruption = False
+
     return cfg

@@ -24,7 +24,11 @@ from train_mimic.data.dataset_lib import (
     write_json,
 )
 from train_mimic.data.motion_fk import MotionFkExtractor, compute_npz_fk_consistency
-from train_mimic.scripts.convert_pkl_to_npz import convert_pkl_to_arrays, convert_pkl_to_npz
+from train_mimic.scripts.convert_pkl_to_npz import (
+    convert_pkl_to_arrays,
+    convert_pkl_to_npz,
+    convert_seed_csv_to_arrays,
+)
 from teleopit.retargeting.export_pkl import convert_bvh_to_retarget_pkl, mocap_xml_path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -32,7 +36,7 @@ DEFAULT_SPEC_PATH = PROJECT_ROOT / "train_mimic" / "configs" / "datasets" / "twi
 DEFAULT_DATASETS_ROOT = PROJECT_ROOT / "data" / "datasets"
 DEFAULT_FK_SAMPLE_CLIPS = 2
 DEFAULT_FK_SAMPLE_FRAMES = 16
-SOURCE_TYPES = {"bvh", "pkl", "npz"}
+SOURCE_TYPES = {"bvh", "pkl", "npz", "seed_csv"}
 BVH_FORMATS = {"lafan1", "hc_mocap", "nokov"}
 SUPPORTED_BVH_ROBOT_NAME = "unitree_g1"
 
@@ -40,6 +44,7 @@ _SOURCE_SUFFIXES = {
     "bvh": ".bvh",
     "pkl": ".pkl",
     "npz": ".npz",
+    "seed_csv": ".csv",
 }
 _DATASET_ROOT_MARKERS = {
     "train.npz",
@@ -69,6 +74,8 @@ class DatasetSourceSpec:
     bvh_format: str | None = None
     robot_name: str = "unitree_g1"
     max_frames: int = 0
+    metadata_csv: str | None = None
+    filters: dict[str, list] | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +97,7 @@ class DatasetClipRow:
     resolved_split: str
     resolved_npz_path: str
     weight: float = 1.0
+    clip_index: int = -1  # index into merged NPZ clip_starts/clip_lengths; -1 = standalone clip
 
 
 @dataclass(frozen=True)
@@ -207,6 +215,13 @@ def load_dataset_spec(path: str | Path) -> DatasetSpec:
         if max_frames < 0:
             raise ValueError(f"source {source_name!r} has negative max_frames: {max_frames}")
 
+        metadata_csv = raw.get("metadata_csv")
+        if metadata_csv is not None:
+            metadata_csv = str(metadata_csv).strip() or None
+        filters = raw.get("filters")
+        if filters is not None and not isinstance(filters, dict):
+            raise ValueError(f"source {source_name!r} filters must be a mapping: {spec_path}")
+
         sources.append(
             DatasetSourceSpec(
                 name=source_name,
@@ -216,6 +231,8 @@ def load_dataset_spec(path: str | Path) -> DatasetSpec:
                 bvh_format=bvh_format,
                 robot_name=robot_name,
                 max_frames=max_frames,
+                metadata_csv=metadata_csv,
+                filters=filters,
             )
         )
 
@@ -269,6 +286,66 @@ def _resolve_bvh_xml_path(source: DatasetSourceSpec) -> Path:
     return xml_path
 
 
+def _filter_seed_csv_by_metadata(
+    source: DatasetSourceSpec,
+    all_files: list[SourceInputFile],
+    input_dir: Path,
+) -> list[SourceInputFile]:
+    """Filter seed_csv files using metadata_csv + filters from the source spec."""
+    if source.metadata_csv is None or source.filters is None:
+        return all_files
+
+    meta_path = Path(source.metadata_csv).expanduser()
+    if not meta_path.is_absolute():
+        meta_path = (PROJECT_ROOT / meta_path).resolve()
+    if not meta_path.is_file():
+        raise FileNotFoundError(f"metadata_csv not found for {source.name}: {meta_path}")
+
+    with meta_path.open("r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        for col in source.filters:
+            if col not in fieldnames:
+                raise ValueError(
+                    f"filter column {col!r} not found in metadata CSV for {source.name}. "
+                    f"Available: {sorted(fieldnames)}"
+                )
+        if "move_g1_path" not in fieldnames:
+            raise ValueError(f"metadata CSV missing move_g1_path column for {source.name}")
+
+        # Normalize filter values to strings for comparison
+        str_filters: dict[str, set[str]] = {}
+        for col, allowed_values in source.filters.items():
+            str_filters[col] = {str(v) for v in allowed_values}
+
+        rows = []
+        for row in reader:
+            if all(row.get(col, "") in vals for col, vals in str_filters.items()):
+                rows.append(row)
+
+    # Build set of allowed relative paths (without .csv suffix)
+    allowed_rels: set[str] = set()
+    for row in rows:
+        g1_path = row["move_g1_path"]
+        # move_g1_path is like "g1/csv/240918/body_check_001__A548.csv"
+        # input_dir is e.g. data/SEED/g1/csv
+        # Resolve g1_path relative to the SEED root (input_dir's grandparent)
+        try:
+            seed_root = input_dir.parent.parent  # data/SEED
+            full_path = seed_root / g1_path
+            rel_to_input = full_path.relative_to(input_dir).with_suffix("")
+            allowed_rels.add(rel_to_input.as_posix())
+        except ValueError:
+            allowed_rels.add(Path(g1_path).stem)
+
+    filtered = [f for f in all_files if f.rel_no_suffix.as_posix() in allowed_rels]
+    print(
+        f"[FILTER] source={source.name}: {len(filtered)}/{len(all_files)} files "
+        f"after metadata filtering"
+    )
+    return filtered
+
+
 def _collect_source_files(source: DatasetSourceSpec) -> tuple[list[SourceInputFile], Path]:
     input_path = resolve_source_input_path(source)
     _ensure_not_dataset_root_npz_input(source, input_path)
@@ -297,6 +374,15 @@ def _collect_source_files(source: DatasetSourceSpec) -> tuple[list[SourceInputFi
         SourceInputFile(path=path, rel_no_suffix=path.relative_to(input_path).with_suffix(""))
         for path in files
     ]
+
+    # Apply metadata filtering for seed_csv sources
+    if source.type == "seed_csv" and source.metadata_csv is not None:
+        items = _filter_seed_csv_by_metadata(source, items, input_path)
+        if not items:
+            raise ValueError(
+                f"no files remain after metadata filtering for source {source.name}: {input_path}"
+            )
+
     return items, input_path
 
 
@@ -370,6 +456,13 @@ def _convert_task(task: ConversionTask) -> str:
         extractor = _get_fk_extractor()
         if task.source_type == "pkl":
             convert_pkl_to_npz(str(input_path), str(output_path), extractor=extractor)
+            inspect_npz(output_path)
+            return str(output_path)
+
+        if task.source_type == "seed_csv":
+            arrays = convert_seed_csv_to_arrays(str(input_path), extractor=extractor)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez(str(output_path), **arrays)
             inspect_npz(output_path)
             return str(output_path)
 
@@ -618,6 +711,7 @@ def write_manifest_resolved(rows: list[DatasetClipRow], dataset_dir: Path) -> Pa
                 "resolved_split",
                 "resolved_npz_path",
                 "weight",
+                "clip_index",
             ]
         )
         for row in sorted(rows, key=lambda item: item.clip_id):
@@ -631,6 +725,7 @@ def write_manifest_resolved(rows: list[DatasetClipRow], dataset_dir: Path) -> Pa
                     row.resolved_split,
                     row.resolved_npz_path,
                     row.weight,
+                    row.clip_index,
                 ]
             )
     return out_path
@@ -651,31 +746,34 @@ _ARRAY_KEYS = [
 
 
 def _batch_convert_chunk(
-    pkl_paths: list[str],
+    file_paths: list[str],
     weights: list[float],
     target_fps: int,
     output_path: str,
     label: str,
 ) -> dict[str, Any]:
-    """Worker: convert a batch of PKL files and write one merged chunk NPZ.
+    """Worker: convert a batch of PKL/seed_csv files and write one merged chunk NPZ.
 
     Designed to run in a spawned subprocess via ProcessPoolExecutor.
     """
     from train_mimic.data.motion_fk import MotionFkExtractor
-    from train_mimic.scripts.convert_pkl_to_npz import convert_pkl_to_arrays
+    from train_mimic.scripts.convert_pkl_to_npz import convert_pkl_to_arrays, convert_seed_csv_to_arrays
 
     extractor = MotionFkExtractor()
     acc: dict[str, list[np.ndarray]] = {k: [] for k in _ARRAY_KEYS}
     clip_lengths: list[int] = []
     clip_weights: list[float] = []
     body_names: np.ndarray | None = None
-    total = len(pkl_paths)
+    total = len(file_paths)
 
-    for i, (pkl_path, weight) in enumerate(zip(pkl_paths, weights)):
+    for i, (file_path, weight) in enumerate(zip(file_paths, weights)):
         try:
-            arrays = convert_pkl_to_arrays(pkl_path, extractor=extractor)
+            if file_path.endswith(".csv"):
+                arrays = convert_seed_csv_to_arrays(file_path, extractor=extractor)
+            else:
+                arrays = convert_pkl_to_arrays(file_path, extractor=extractor)
         except Exception as exc:
-            raise RuntimeError(f"failed converting {pkl_path}: {exc}") from exc
+            raise RuntimeError(f"failed converting {file_path}: {exc}") from exc
 
         fps = arrays.pop("fps")
         body_names = arrays.pop("body_names")
@@ -789,13 +887,13 @@ def _batch_convert_split(
     if not clips:
         raise ValueError(f"no clips for split {split_name}")
 
-    pkl_paths = [c[0] for c in clips]
+    file_paths = [c[0] for c in clips]
     weights = [c[1] for c in clips]
     num_workers = min(jobs, len(clips))
 
     if num_workers <= 1:
         return _batch_convert_chunk(
-            pkl_paths, weights, target_fps, str(output_path), split_name,
+            file_paths, weights, target_fps, str(output_path), split_name,
         )
 
     # Split into chunks, one per worker
@@ -808,7 +906,7 @@ def _batch_convert_split(
             break
         chunk_out = str(output_path.parent / f".{split_name}_chunk_{i}.npz")
         chunk_args.append((
-            pkl_paths[start:end],
+            file_paths[start:end],
             weights[start:end],
             target_fps,
             chunk_out,
@@ -832,7 +930,7 @@ def _batch_convert_split(
     except (PermissionError, OSError):
         print(f"[WARN] process pool unavailable; falling back to serial for {split_name}")
         return _batch_convert_chunk(
-            pkl_paths, weights, target_fps, str(output_path), split_name,
+            file_paths, weights, target_fps, str(output_path), split_name,
         )
 
     # Merge chunk files into final output
@@ -913,18 +1011,34 @@ def _build_dataset_batch(
         spec.target_fps, val_out, jobs, "val",
     )
 
-    # 3. Write manifest
+    # 3. Read back per-clip frame counts from merged NPZ files
+    train_clip_lengths = np.load(train_out, allow_pickle=True)["clip_lengths"]
+    val_clip_lengths = np.load(val_out, allow_pickle=True)["clip_lengths"]
+
+    # 4. Write manifest with correct num_frames and clip_index
+    # Clip order within each split matches the order of train_entries / val_entries
+    train_idx = 0
+    val_idx = 0
     rows: list[DatasetClipRow] = []
     for path, clip_id, source, weight, split in clip_entries:
+        if split == "train":
+            num_frames = int(train_clip_lengths[train_idx])
+            clip_index = train_idx
+            train_idx += 1
+        else:
+            num_frames = int(val_clip_lengths[val_idx])
+            clip_index = val_idx
+            val_idx += 1
         rows.append(DatasetClipRow(
             clip_id=clip_id,
             source=source,
             file_rel=_display_path(Path(path)),
-            num_frames=0,
+            num_frames=num_frames,
             fps=spec.target_fps,
             resolved_split=split,
             resolved_npz_path=str(train_out if split == "train" else val_out),
             weight=weight,
+            clip_index=clip_index,
         ))
     manifest_path = write_manifest_resolved(rows, paths.dataset_dir)
 
@@ -969,9 +1083,9 @@ def build_dataset_from_spec(
 ) -> dict[str, Any]:
     paths = resolve_dataset_paths(spec, output_root=output_root)
 
-    # Use batch mode for pkl-only datasets (no intermediate clip files)
-    all_pkl = all(source.type == "pkl" for source in spec.sources)
-    if all_pkl:
+    # Use batch mode for pkl/seed_csv-only datasets (no intermediate clip files)
+    all_batch_eligible = all(source.type in ("pkl", "seed_csv") for source in spec.sources)
+    if all_batch_eligible:
         return _build_dataset_batch(
             spec,
             paths=paths,

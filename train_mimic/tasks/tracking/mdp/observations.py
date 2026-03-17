@@ -6,6 +6,8 @@ import torch
 
 from mjlab.utils.lab_api.math import (
     matrix_from_quat,
+    quat_apply,
+    quat_inv,
     subtract_frame_transforms,
     yaw_quat,
 )
@@ -68,6 +70,41 @@ def robot_body_ori_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     )
     mat = matrix_from_quat(ori_b)
     return mat[..., :2].reshape(mat.shape[0], -1)
+
+
+# ---------------------------------------------------------------------------
+# Velocity-command observation terms: reference velocities and projected
+# gravity for the VelCmd task variant.
+# ---------------------------------------------------------------------------
+
+
+def ref_base_lin_vel_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+    """Reference anchor linear velocity in the robot's body frame. (N, 3)"""
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    return quat_apply(quat_inv(command.robot_anchor_quat_w), command.anchor_lin_vel_w)
+
+
+def ref_base_ang_vel_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+    """Reference anchor angular velocity in the robot's body frame. (N, 3)"""
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    return quat_apply(quat_inv(command.robot_anchor_quat_w), command.anchor_ang_vel_w)
+
+
+def ref_projected_gravity_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+    """Gravity direction in the reference anchor's body frame. (N, 3)
+
+    Encodes the reference body tilt — analogous to ``projected_gravity`` but
+    for the motion reference rather than the robot.
+    """
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    asset = env.scene[command.cfg.entity_name]
+    return quat_apply(quat_inv(command.anchor_quat_w), asset.data.gravity_vec_w)
+
+
+def ref_base_height(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+    """Reference anchor height (z-coordinate). (N, 1) — critic privileged."""
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    return command.anchor_pos_w[:, 2:3]
 
 
 # ---------------------------------------------------------------------------
