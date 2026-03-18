@@ -59,35 +59,46 @@ class MotionLib:
     Loads a merged NPZ that contains flat motion arrays plus per-clip metadata
     (``clip_starts``, ``clip_lengths``, ``clip_fps``, ``clip_weights``).  Falls
     back to single-clip mode when the metadata keys are absent (legacy format).
+
+    Motion data is kept on CPU (numpy arrays) to avoid GPU OOM on large
+    datasets.  Only the small per-batch interpolated frames are transferred to
+    GPU each step (~6 MB for 4096 envs, negligible vs PCIe bandwidth).
     """
 
     def __init__(
         self, motion_file: str, body_indexes: torch.Tensor, device: str = "cpu"
     ) -> None:
+        self._device = device
+
+        # .npz is a zip archive — mmap_mode is ignored by np.load for .npz.
+        # We load one array at a time and immediately body-filter + keep only
+        # the numpy result, so the full unfiltered array can be GC'd before
+        # the next one is loaded.
         data = np.load(motion_file, allow_pickle=True)
+        body_idx_np = body_indexes.cpu().numpy()
 
-        self.joint_pos = torch.tensor(data["joint_pos"], dtype=torch.float32, device=device)
-        self.joint_vel = torch.tensor(data["joint_vel"], dtype=torch.float32, device=device)
-        self._body_pos_w = torch.tensor(
-            data["body_pos_w"], dtype=torch.float32, device=device
-        )
-        self._body_quat_w = torch.tensor(
-            data["body_quat_w"], dtype=torch.float32, device=device
-        )
-        self._body_lin_vel_w = torch.tensor(
-            data["body_lin_vel_w"], dtype=torch.float32, device=device
-        )
-        self._body_ang_vel_w = torch.tensor(
-            data["body_ang_vel_w"], dtype=torch.float32, device=device
-        )
-        self._body_indexes = body_indexes
-        self.body_pos_w = self._body_pos_w[:, self._body_indexes]
-        self.body_quat_w = self._body_quat_w[:, self._body_indexes]
-        self.body_lin_vel_w = self._body_lin_vel_w[:, self._body_indexes]
-        self.body_ang_vel_w = self._body_ang_vel_w[:, self._body_indexes]
-        self.time_step_total = self.joint_pos.shape[0]
+        self._joint_pos = np.asarray(data["joint_pos"], dtype=np.float32)  # (T, 29)
+        self._joint_vel = np.asarray(data["joint_vel"], dtype=np.float32)  # (T, 29)
 
-        # --- clip-aware metadata ---
+        # Body arrays: index by selected bodies immediately.  Accessing an
+        # NpzFile key inflates that array from the zip; the intermediate full
+        # array is released once we slice and discard the reference.
+        self._body_pos_w = np.asarray(
+            data["body_pos_w"], dtype=np.float32
+        )[:, body_idx_np]
+        self._body_quat_w = np.asarray(
+            data["body_quat_w"], dtype=np.float32
+        )[:, body_idx_np]
+        self._body_lin_vel_w = np.asarray(
+            data["body_lin_vel_w"], dtype=np.float32
+        )[:, body_idx_np]
+        self._body_ang_vel_w = np.asarray(
+            data["body_ang_vel_w"], dtype=np.float32
+        )[:, body_idx_np]
+
+        self.time_step_total = self._joint_pos.shape[0]
+
+        # --- clip-aware metadata (small — lives on GPU for sampling) ---
         if "clip_starts" in data:
             self.clip_starts = torch.tensor(data["clip_starts"], dtype=torch.long, device=device)
             self.clip_lengths = torch.tensor(data["clip_lengths"], dtype=torch.long, device=device)
@@ -145,6 +156,9 @@ class MotionLib:
         """Look up interpolated motion state for ``(motion_id, time)`` pairs.
 
         Handles time wrapping (loop) and sub-frame linear / slerp interpolation.
+        Frame indices are computed on GPU (where motion_ids / motion_times
+        live), then transferred to CPU for numpy-based indexing and
+        interpolation.  The small interpolated result is sent back to GPU.
         """
         fps = self.clip_fps[motion_ids]
         starts = self.clip_starts[motion_ids]
@@ -169,30 +183,45 @@ class MotionLib:
         idx0 = starts + frame_i0
         idx1 = starts + frame_i1
 
+        # --- Transfer indices to CPU for numpy indexing ---
+        idx0_np = idx0.cpu().numpy()
+        idx1_np = idx1.cpu().numpy()
+        alpha_np = alpha.cpu().numpy()
+
         result: dict[str, torch.Tensor] = {}
 
         # Linear interpolation for 2-D arrays (n, D)
-        a1 = alpha.unsqueeze(-1)
-        for key in ("joint_pos", "joint_vel"):
-            arr = getattr(self, key)
-            result[key] = arr[idx0] + a1 * (arr[idx1] - arr[idx0])
+        a1 = alpha_np[:, None]
+        for key, arr in (("joint_pos", self._joint_pos), ("joint_vel", self._joint_vel)):
+            v0, v1 = arr[idx0_np], arr[idx1_np]
+            result[key] = torch.from_numpy(v0 + a1 * (v1 - v0)).to(
+                self._device, non_blocking=True
+            )
 
         # Linear interpolation for 3-D arrays (n, B, D)
-        a2 = alpha.unsqueeze(-1).unsqueeze(-1)
-        for key in ("body_pos_w", "body_lin_vel_w", "body_ang_vel_w"):
-            arr = getattr(self, key)
-            result[key] = arr[idx0] + a2 * (arr[idx1] - arr[idx0])
+        a2 = alpha_np[:, None, None]
+        for key, arr in (
+            ("body_pos_w", self._body_pos_w),
+            ("body_lin_vel_w", self._body_lin_vel_w),
+            ("body_ang_vel_w", self._body_ang_vel_w),
+        ):
+            v0, v1 = arr[idx0_np], arr[idx1_np]
+            result[key] = torch.from_numpy(v0 + a2 * (v1 - v0)).to(
+                self._device, non_blocking=True
+            )
 
-        # Slerp for quaternions (n, B, 4)
-        q0 = self.body_quat_w[idx0]
-        q1 = self.body_quat_w[idx1]
-        # Flatten body dim for slerp, then reshape back
+        # Slerp for quaternions (n, B, 4) — done in torch on CPU, then to GPU
+        q0 = torch.from_numpy(np.ascontiguousarray(self._body_quat_w[idx0_np]))
+        q1 = torch.from_numpy(np.ascontiguousarray(self._body_quat_w[idx1_np]))
+        alpha_t = torch.from_numpy(alpha_np)
         n, nb = q0.shape[0], q0.shape[1]
         q0_flat = q0.reshape(n * nb, 4)
         q1_flat = q1.reshape(n * nb, 4)
-        alpha_flat = alpha.unsqueeze(-1).expand(n, nb).reshape(n * nb)
-        result["body_quat_w"] = _batched_quat_slerp(q0_flat, q1_flat, alpha_flat).reshape(
-            n, nb, 4
+        alpha_flat = alpha_t.unsqueeze(-1).expand(n, nb).reshape(n * nb)
+        result["body_quat_w"] = (
+            _batched_quat_slerp(q0_flat, q1_flat, alpha_flat)
+            .reshape(n, nb, 4)
+            .to(self._device, non_blocking=True)
         )
 
         return result

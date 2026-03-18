@@ -16,12 +16,14 @@ class _OnnxMotionModel(nn.Module):
     def __init__(self, actor, motion):
         super().__init__()
         self.policy = actor.as_onnx(verbose=False)
-        self.register_buffer("joint_pos", motion.joint_pos.to("cpu"))
-        self.register_buffer("joint_vel", motion.joint_vel.to("cpu"))
-        self.register_buffer("body_pos_w", motion.body_pos_w.to("cpu"))
-        self.register_buffer("body_quat_w", motion.body_quat_w.to("cpu"))
-        self.register_buffer("body_lin_vel_w", motion.body_lin_vel_w.to("cpu"))
-        self.register_buffer("body_ang_vel_w", motion.body_ang_vel_w.to("cpu"))
+        # torch.from_numpy shares memory with the underlying numpy array
+        # (zero-copy).  The arrays are already writable (loaded from .npz).
+        self.register_buffer("joint_pos", torch.from_numpy(motion._joint_pos))
+        self.register_buffer("joint_vel", torch.from_numpy(motion._joint_vel))
+        self.register_buffer("body_pos_w", torch.from_numpy(motion._body_pos_w))
+        self.register_buffer("body_quat_w", torch.from_numpy(motion._body_quat_w))
+        self.register_buffer("body_lin_vel_w", torch.from_numpy(motion._body_lin_vel_w))
+        self.register_buffer("body_ang_vel_w", torch.from_numpy(motion._body_ang_vel_w))
         self.time_step_total: int = self.joint_pos.shape[0]  # type: ignore[index]
 
     def forward(self, *args):
