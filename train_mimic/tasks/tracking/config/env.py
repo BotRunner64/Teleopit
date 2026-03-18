@@ -16,6 +16,7 @@ from train_mimic.tasks.tracking.config.constants import DEFAULT_TRAIN_MOTION_FIL
 from train_mimic.tasks.tracking.config.profiles import (
     OFFICIAL_UNIFORM_PROFILE,
     TrackingTaskProfile,
+    VELCMD_HISTORY_ADAPTIVE_PROFILE,
 )
 from train_mimic.tasks.tracking.mdp import MotionCommandCfg
 from train_mimic.tasks.tracking.tracking_env_cfg import make_tracking_env_cfg
@@ -240,6 +241,24 @@ def make_velcmd_history_tracking_env_cfg(
     cfg = make_tracking_env_cfg_for_profile(OFFICIAL_UNIFORM_PROFILE, play=play)
 
     # Append velocity-command terms to actor and critic groups.
+    cfg.observations["actor"].terms.update(deepcopy(_VELCMD_ACTOR_TERMS))
+    cfg.observations["critic"].terms.update(deepcopy(_VELCMD_CRITIC_TERMS))
+
+    _add_history_obs_groups(cfg)
+
+    if play:
+        cfg.observations["actor_history"].enable_corruption = False
+        cfg.observations["critic_history"].enable_corruption = False
+
+    return cfg
+
+
+def make_velcmd_history_adaptive_tracking_env_cfg(
+    *, play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+    """Create the adaptive VelCmd + HistoryCNN tracking env."""
+    cfg = make_tracking_env_cfg_for_profile(VELCMD_HISTORY_ADAPTIVE_PROFILE, play=play)
+
     cfg.observations["actor"].terms.update(deepcopy(_VELCMD_ACTOR_TERMS))
     cfg.observations["critic"].terms.update(deepcopy(_VELCMD_CRITIC_TERMS))
 

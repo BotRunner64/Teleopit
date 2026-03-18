@@ -53,6 +53,20 @@ def _batched_quat_slerp(
     return result / result.norm(dim=-1, keepdim=True)
 
 
+def _compute_clip_failure_rate(
+    motion_ids: torch.Tensor, episode_failed: torch.Tensor, bin_count: int
+) -> torch.Tensor:
+    """Compute per-clip failure rate for the current adaptive-sampling window."""
+    exposure_count = torch.bincount(motion_ids, minlength=bin_count).float()
+    failure_count = torch.bincount(
+        motion_ids[episode_failed], minlength=bin_count
+    ).float()
+    failure_rate = torch.zeros(bin_count, dtype=torch.float32, device=motion_ids.device)
+    valid = exposure_count > 0
+    failure_rate[valid] = failure_count[valid] / exposure_count[valid]
+    return failure_rate
+
+
 class MotionLib:
     """Clip-aware motion library.
 
@@ -277,15 +291,14 @@ class MotionCommand(CommandTerm):
         self.body_lin_vel_b = torch.zeros(self.num_envs, nb, 3, device=self.device)
         self.body_ang_vel_b = torch.zeros(self.num_envs, nb, 3, device=self.device)
 
-        # Adaptive sampling — bins are now per-clip.
-        # Kernel smoothing is disabled because adjacent clip IDs have no
-        # temporal or semantic adjacency; convolving would leak failure
-        # statistics into unrelated clips.
+        # Adaptive sampling — bins are now per-clip and track an EMA of
+        # failure rate rather than raw failure count to avoid scaling the
+        # adaptive signal with num_envs.
         self.bin_count = max(self.motion.num_clips, 1)
-        self.bin_failed_count = torch.zeros(
+        self.bin_failed_rate = torch.zeros(
             self.bin_count, dtype=torch.float, device=self.device
         )
-        self._current_bin_failed = torch.zeros(
+        self._current_bin_failed_rate = torch.zeros(
             self.bin_count, dtype=torch.float, device=self.device
         )
         self.kernel = torch.ones(1, device=self.device)
@@ -482,17 +495,17 @@ class MotionCommand(CommandTerm):
     # ------------------------------------------------------------------
 
     def _adaptive_sampling(self, env_ids: torch.Tensor):
+        current_motion_ids = self.motion_ids[env_ids]
         episode_failed = self._env.termination_manager.terminated[env_ids]
-        if torch.any(episode_failed):
-            fail_clip_ids = self.motion_ids[env_ids][episode_failed]
-            self._current_bin_failed[:] = torch.bincount(
-                fail_clip_ids, minlength=self.bin_count
-            ).float()
+        self._current_bin_failed_rate[:] = _compute_clip_failure_rate(
+            current_motion_ids, episode_failed, self.bin_count
+        )
 
-        # Per-clip failure probability.  No spatial smoothing: adjacent clip IDs
-        # have no semantic adjacency, so convolving would leak statistics.
+        # Per-clip failure probability.  The adaptive state is an EMA of the
+        # observed failure rate, so the signal remains stable as num_envs
+        # changes.
         sampling_probabilities = (
-            self.bin_failed_count + self.cfg.adaptive_uniform_ratio / float(self.bin_count)
+            self.bin_failed_rate + self.cfg.adaptive_uniform_ratio / float(self.bin_count)
         )
         sampling_probabilities = sampling_probabilities / sampling_probabilities.sum()
 
@@ -647,11 +660,11 @@ class MotionCommand(CommandTerm):
         self._refresh_body_local_cache()
 
         if self.cfg.sampling_mode == "adaptive":
-            self.bin_failed_count = (
-                self.cfg.adaptive_alpha * self._current_bin_failed
-                + (1 - self.cfg.adaptive_alpha) * self.bin_failed_count
+            self.bin_failed_rate = (
+                self.cfg.adaptive_alpha * self._current_bin_failed_rate
+                + (1 - self.cfg.adaptive_alpha) * self.bin_failed_rate
             )
-            self._current_bin_failed.zero_()
+            self._current_bin_failed_rate.zero_()
 
     # ------------------------------------------------------------------
     # Visualization

@@ -24,3 +24,9 @@ OFFICIAL_UNIFORM_PROFILE = TrackingTaskProfile(
     experiment_name="g1_tracking",
     sampling_mode="uniform",
 )
+
+VELCMD_HISTORY_ADAPTIVE_PROFILE = TrackingTaskProfile(
+    name="velcmd_history_adaptive",
+    experiment_name="g1_tracking_velcmd_history_adaptive",
+    sampling_mode="adaptive",
+)

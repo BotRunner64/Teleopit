@@ -10,8 +10,9 @@
 - 额外支持 `Tracking-Flat-G1-HistoryCNN`：在相同当前帧观测之外，再给 actor/critic 提供未展平的时间历史 `(B, T, D)`，由 1-D CNN 编码
 - `Tracking-Flat-G1-NoStateEst` 对应 **154D no-state-estimation** actor 观测，也是当前 sim2real 唯一支持的训练路径
 - `Tracking-Flat-G1-HistoryCNN` 目前同样基于 no-state-estimation 观测，但导出的 ONNX 是双输入模型：`obs` + `obs_history`
+- `Tracking-Flat-G1-VelCmdHistoryAdaptive` 是内部实验 task：在 `VelCmdHistory` 基础上启用 adaptive sampling，仍沿用双输入 HistoryCNN policy
 - `Tracking-Flat-G1-v0*`、`Tracking-Flat-G1-v1*`、`Tracking-Flat-G1-v2-NoStateEst`、state-estimation 任务都不再是正式支持接口
-- adaptive sampling 相关实现仍保留在代码里作为内部参考，但不再通过公开 task 暴露
+- adaptive sampling 相关实现仍以内部实验形式保留；`VelCmdHistoryAdaptive` 不属于官方推荐主线
 
 ## 环境安装
 
@@ -97,6 +98,16 @@ python train_mimic/scripts/train.py \
     --motion_file data/datasets/twist2_full/train.npz
 ```
 
+VelCmd adaptive 实验训练：
+
+```bash
+python train_mimic/scripts/train.py \
+    --task Tracking-Flat-G1-VelCmdHistoryAdaptive \
+    --num_envs 4096 \
+    --max_iterations 30000 \
+    --motion_file data/datasets/twist2_full/train.npz
+```
+
 单机多卡：
 
 ```bash
@@ -138,6 +149,8 @@ python train_mimic/scripts/save_onnx.py \
 - 标准 MLP policy 导出为单输入 ONNX：`obs`
 - `HistoryCNN` policy 导出为双输入 ONNX：`obs`、`obs_history`
 - 当前仓库的 `teleopit.controllers.rl_policy.RLPolicyController` 已支持双输入 history buffer，并会在 pipeline 启动或循环输入源 reset 时清空缓存
+- `Tracking-Flat-G1-VelCmdHistoryAdaptive` 复用同一套双输入导出接口；区别只在训练时 motion command 使用 adaptive sampling
+- 当前 adaptive sampling 只统计 true termination，不把 `time_out` 记作失败
 
 播放 checkpoint：
 
@@ -213,3 +226,4 @@ train_mimic/
 - manifest/review/export/migrate 那套 legacy 数据脚本已移除
 - `Tracking-Flat-G1-v0*`、`Tracking-Flat-G1-v1*`、`Tracking-Flat-G1-v2-NoStateEst` 已退出正式支持面
 - `Tracking-Flat-G1-HistoryCNN` 已注册为训练变体，但它不是 sim2real 官方默认路径；真机仍只支持 154D 单帧 no-state-estimation 推理
+- `Tracking-Flat-G1-VelCmdHistoryAdaptive` 已注册为内部实验 task，用于对比 `VelCmdHistory` 的 adaptive sampling 效果，不作为正式默认路径
