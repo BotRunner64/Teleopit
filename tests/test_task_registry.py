@@ -64,6 +64,8 @@ def test_velcmd_history_adaptive_task_is_registered() -> None:
     assert "actor_history" in env_cfg.observations
     assert "critic_history" in env_cfg.observations
     assert env_cfg.commands["motion"].sampling_mode == "adaptive"
+    assert env_cfg.commands["motion"].adaptive_sync_steps == 24
+    assert env_cfg.commands["motion"].adaptive_log_interval == 50
     assert play_cfg.commands["motion"].sampling_mode == "start"
     assert play_cfg.observations["actor_history"].enable_corruption is False
     assert play_cfg.observations["critic_history"].enable_corruption is False
