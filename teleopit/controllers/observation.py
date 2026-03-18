@@ -523,8 +523,9 @@ class VelCmdObservationBuilder:
         ref_lin_vel_w = np.asarray(motion_anchor_lin_vel_w, dtype=np.float32).reshape(3)
         ref_ang_vel_w = np.asarray(motion_anchor_ang_vel_w, dtype=np.float32).reshape(3)
 
-        # projected_gravity: gravity in robot body frame
-        projected_gravity = _quat_rotate_np(_quat_inv_np(robot_anchor_quat), _GRAVITY_UNIT_W)
+        # projected_gravity matches mjlab asset.data.projected_gravity_b, which
+        # is defined in the robot root-link frame rather than the torso anchor frame.
+        projected_gravity = _quat_rotate_np(_quat_inv_np(robot_quat), _GRAVITY_UNIT_W)
 
         # ref velocities in robot body frame
         robot_inv = _quat_inv_np(robot_anchor_quat)

@@ -226,7 +226,13 @@ class Sim2RealController:
         anchor_lin_vel_w: Float32Array | None = None
         anchor_ang_vel_w: Float32Array | None = None
         if isinstance(self.obs_builder, VelCmdObservationBuilder):
-            anchor_lin_vel_w, anchor_ang_vel_w = self._compute_anchor_velocities(qpos)
+            if self._qpos_interpolator.is_active:
+                # Transition smoothing is an inference-only artifact, so do not
+                # feed its synthetic anchor velocities back into a VelCmd policy.
+                anchor_lin_vel_w = np.zeros(3, dtype=np.float32)
+                anchor_ang_vel_w = np.zeros(3, dtype=np.float32)
+            else:
+                anchor_lin_vel_w, anchor_ang_vel_w = self._compute_anchor_velocities(qpos)
 
         if qpos.shape[0] < 7 + self.num_actions:
             raise ValueError(
@@ -373,8 +379,7 @@ class Sim2RealController:
         init_qpos[3:7] = state.quat.astype(np.float64)
         init_qpos[7:36] = state.qpos.astype(np.float64)
         self._last_retarget_qpos = init_qpos
-        self._last_action = np.zeros(self.num_actions, dtype=np.float32)
-        self.obs_builder.reset()
+        self._reset_policy_state()
 
         self.mode = RobotMode.STANDING
         logger.info("Mode -> STANDING (RL policy maintaining balance at default pose)")
@@ -447,11 +452,8 @@ class Sim2RealController:
         init_qpos[3:7] = state.quat.astype(np.float64)
         init_qpos[7:36] = state.qpos.astype(np.float64)
         self._last_retarget_qpos = init_qpos
-        self._last_action = np.zeros(self.num_actions, dtype=np.float32)
         self._qpos_interpolator.start(init_qpos)
-
-        # Reset observation builder history
-        self.obs_builder.reset()
+        self._reset_policy_state()
 
         self.mode = RobotMode.MOCAP
         logger.info("Mode -> MOCAP (tracking motion commands)")
@@ -501,6 +503,13 @@ class Sim2RealController:
                 "Use a matching mjlab-aligned ONNX policy; automatic pad/trim is disabled."
             )
         return obs
+
+    def _reset_policy_state(self) -> None:
+        self._last_action = np.zeros(self.num_actions, dtype=np.float32)
+        reset_policy = getattr(self.policy, "reset", None)
+        if callable(reset_policy):
+            reset_policy()
+        self.obs_builder.reset()
 
     @staticmethod
     def _sleep_until(t0: float, dt: float) -> None:

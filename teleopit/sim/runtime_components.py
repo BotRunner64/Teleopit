@@ -156,9 +156,15 @@ class PolicyStepRunner:
         motion_anchor_lin_vel_w: Float32Array | None = None
         motion_anchor_ang_vel_w: Float32Array | None = None
         if isinstance(self.obs_builder, VelCmdObservationBuilder):
-            motion_anchor_lin_vel_w, motion_anchor_ang_vel_w = (
-                self._compute_anchor_velocities(qpos)
-            )
+            if self.qpos_interpolator.is_active:
+                # Keep VelCmd observations aligned with the true reference
+                # motion instead of the temporary transition interpolation.
+                motion_anchor_lin_vel_w = np.zeros(3, dtype=np.float32)
+                motion_anchor_ang_vel_w = np.zeros(3, dtype=np.float32)
+            else:
+                motion_anchor_lin_vel_w, motion_anchor_ang_vel_w = (
+                    self._compute_anchor_velocities(qpos)
+                )
 
         return MotionPreparation(
             qpos=qpos,

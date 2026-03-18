@@ -8,7 +8,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from teleopit.controllers.observation import TWIST2ObservationBuilder, MjlabObservationBuilder, quatToEuler
+from teleopit.controllers.observation import (
+    MjlabObservationBuilder,
+    TWIST2ObservationBuilder,
+    VelCmdObservationBuilder,
+    _quat_inv_np,
+    _quat_rotate_np,
+    quatToEuler,
+)
 from teleopit.interfaces import RobotState
 from conftest import NUM_ACTIONS, DEFAULT_ANGLES, ANKLE_IDX, requires_mujoco
 
@@ -292,3 +299,41 @@ class TestMjlabObsDimBasics:
     def test_160d_total_obs_size(self):
         builder = MjlabObservationBuilder(_mjlab_cfg(has_state_estimation=True))
         assert builder.total_obs_size == 160
+
+
+@requires_mujoco
+@_skip_no_xml
+class TestVelCmdObservationBuilder:
+    def test_projected_gravity_uses_root_quat_not_anchor_quat(self, monkeypatch):
+        builder = VelCmdObservationBuilder(_mjlab_cfg(has_state_estimation=False))
+        builder._base.build = lambda *args, **kwargs: np.zeros(154, dtype=np.float32)  # type: ignore[method-assign]
+        builder._base._run_fk = lambda *args, **kwargs: None  # type: ignore[method-assign]
+        builder._base._anchor_body_id = 0
+        builder._base._get_body_quat = lambda _body_id: np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # type: ignore[method-assign]
+
+        root_quat = np.array(
+            [np.cos(np.pi / 4), np.sin(np.pi / 4), 0.0, 0.0],
+            dtype=np.float32,
+        )
+        state = RobotState(
+            qpos=np.zeros(NUM_ACTIONS, dtype=np.float32),
+            qvel=np.zeros(NUM_ACTIONS, dtype=np.float32),
+            quat=root_quat,
+            ang_vel=np.zeros(3, dtype=np.float32),
+            timestamp=0.0,
+        )
+
+        obs = builder.build(
+            state,
+            _make_motion_qpos(),
+            np.zeros(NUM_ACTIONS, dtype=np.float32),
+            np.zeros(NUM_ACTIONS, dtype=np.float32),
+            np.zeros(3, dtype=np.float32),
+            np.zeros(3, dtype=np.float32),
+        )
+
+        expected_projected_gravity = _quat_rotate_np(
+            _quat_inv_np(root_quat),
+            np.array([0.0, 0.0, -1.0], dtype=np.float32),
+        )
+        np.testing.assert_allclose(obs[154:157], expected_projected_gravity, atol=1e-6)
