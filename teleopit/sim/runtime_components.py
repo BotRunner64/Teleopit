@@ -13,6 +13,8 @@ from teleopit.controllers.observation import (
     MjlabObservationBuilder,
     VelCmdObservationBuilder,
     align_motion_qpos_yaw,
+    compute_fixed_yaw_alignment_quat,
+    rotate_motion_qpos_by_yaw,
 )
 from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.interfaces import MessageBus, ObservationBuilder, Recorder, Robot
@@ -118,6 +120,7 @@ class PolicyStepRunner:
         torque_limits: Float32Array,
         default_dof_pos: Float32Array,
         qpos_interpolator: QposInterpolator,
+        fixed_ref_yaw_alignment: bool = True,
     ) -> None:
         self.robot = robot
         self.controller = controller
@@ -130,13 +133,27 @@ class PolicyStepRunner:
         self.torque_limits = torque_limits
         self.default_dof_pos = default_dof_pos
         self.qpos_interpolator = qpos_interpolator
+        self.fixed_ref_yaw_alignment = bool(fixed_ref_yaw_alignment)
         self.last_action: Float32Array = np.zeros((self.num_actions,), dtype=np.float32)
         self.last_retarget_qpos: Float64Array | None = None
         self.last_reference_qpos: Float64Array | None = None
         self._pending_reference_qpos: Float64Array | None = None
+        self._fixed_reference_yaw_quat: Float32Array | None = None
+        self._fixed_reference_pivot_pos_w: Float32Array | None = None
+
+    def reset(self) -> None:
+        self.last_action = np.zeros((self.num_actions,), dtype=np.float32)
+        self.last_retarget_qpos = None
+        self.last_reference_qpos = None
+        self._pending_reference_qpos = None
+        self._fixed_reference_yaw_quat = None
+        self._fixed_reference_pivot_pos_w = None
+        self.qpos_interpolator.reset()
 
     def prepare_motion_command(self, retargeted: object, state: object) -> MotionPreparation:
         reference_qpos = self._retarget_to_qpos(retargeted)
+        if isinstance(self.obs_builder, VelCmdObservationBuilder) and self.fixed_ref_yaw_alignment:
+            reference_qpos = self._align_velcmd_reference_yaw(reference_qpos, state)
         self._pending_reference_qpos = reference_qpos.copy()
 
         if self.last_retarget_qpos is None and self.qpos_interpolator.duration > 0:
@@ -184,6 +201,23 @@ class PolicyStepRunner:
             motion_anchor_lin_vel_w=motion_anchor_lin_vel_w,
             motion_anchor_ang_vel_w=motion_anchor_ang_vel_w,
         )
+
+    def _align_velcmd_reference_yaw(self, reference_qpos: Float64Array, state: object) -> Float64Array:
+        if self._fixed_reference_yaw_quat is None:
+            robot_quat = np.asarray(getattr(state, "quat"), dtype=np.float32)
+            self._fixed_reference_yaw_quat = compute_fixed_yaw_alignment_quat(
+                robot_quat,
+                np.asarray(reference_qpos[3:7], dtype=np.float32),
+            )
+            self._fixed_reference_pivot_pos_w = np.asarray(reference_qpos[0:3], dtype=np.float32).copy()
+
+        aligned_qpos = reference_qpos.copy()
+        rotate_motion_qpos_by_yaw(
+            aligned_qpos,
+            cast(Float32Array, self._fixed_reference_yaw_quat),
+            cast(Float32Array, self._fixed_reference_pivot_pos_w),
+        )
+        return aligned_qpos
 
     def _compute_anchor_velocities(
         self, qpos: Float64Array

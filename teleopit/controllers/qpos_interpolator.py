@@ -66,6 +66,12 @@ class QposInterpolator:
     def last_alpha(self) -> float:
         return float(self._last_alpha)
 
+    def reset(self) -> None:
+        self._step = 0
+        self._start_qpos = None
+        self._active = False
+        self._last_alpha = np.float64(1.0)
+
     def start(self, start_qpos: NDArray) -> None:
         """Begin interpolation from *start_qpos* toward future targets."""
         if self._total_steps <= 0:

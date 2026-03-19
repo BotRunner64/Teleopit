@@ -235,6 +235,46 @@ def align_motion_qpos_yaw(
     return motion_qpos
 
 
+def compute_fixed_yaw_alignment_quat(
+    robot_quat_wxyz: FloatVec,
+    motion_quat_wxyz: FloatVec,
+) -> FloatVec:
+    """Compute a fixed yaw-only world-frame offset that aligns motion to robot."""
+    robot_quat = np.asarray(robot_quat_wxyz, dtype=np.float32)
+    motion_quat = np.asarray(motion_quat_wxyz, dtype=np.float32)
+    delta = _quat_mul_np(robot_quat, _quat_inv_np(motion_quat))
+    return _yaw_quat_np(delta)
+
+
+def rotate_motion_qpos_by_yaw(
+    motion_qpos: np.ndarray,
+    yaw_offset_quat_wxyz: FloatVec,
+    pivot_pos_w: FloatVec | None = None,
+) -> np.ndarray:
+    """Rotate a motion qpos in world frame by a fixed yaw offset.
+
+    The root quaternion is left-multiplied by ``yaw_offset_quat_wxyz`` and the
+    root position is rotated around ``pivot_pos_w``. When ``pivot_pos_w`` is
+    omitted, the current motion root position is used so the first aligned
+    frame keeps its original world position.
+    """
+    yaw_offset = np.asarray(yaw_offset_quat_wxyz, dtype=np.float32).reshape(4)
+    pivot = (
+        np.asarray(motion_qpos[0:3], dtype=np.float32)
+        if pivot_pos_w is None
+        else np.asarray(pivot_pos_w, dtype=np.float32).reshape(3)
+    )
+    base_pos = np.asarray(motion_qpos[0:3], dtype=np.float32)
+    base_quat = np.asarray(motion_qpos[3:7], dtype=np.float32)
+
+    rotated_pos = _quat_rotate_np(yaw_offset, base_pos - pivot) + pivot
+    rotated_quat = _quat_mul_np(yaw_offset, base_quat)
+
+    motion_qpos[0:3] = rotated_pos.astype(motion_qpos.dtype)
+    motion_qpos[3:7] = rotated_quat.astype(motion_qpos.dtype)
+    return motion_qpos
+
+
 def _quat_to_rot6d_np(q: FloatVec) -> FloatVec:
     """Convert wxyz quaternion to 6D rotation matching PyTorch matrix[:, :2].reshape(-1).
 

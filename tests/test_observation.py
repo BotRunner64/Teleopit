@@ -12,9 +12,11 @@ from teleopit.controllers.observation import (
     MjlabObservationBuilder,
     TWIST2ObservationBuilder,
     VelCmdObservationBuilder,
+    compute_fixed_yaw_alignment_quat,
     _quat_inv_np,
     _quat_rotate_np,
     quatToEuler,
+    rotate_motion_qpos_by_yaw,
 )
 from teleopit.interfaces import RobotState
 from conftest import NUM_ACTIONS, DEFAULT_ANGLES, ANKLE_IDX, requires_mujoco
@@ -41,6 +43,25 @@ class TestQuatToEuler:
     def test_wrong_shape_raises(self):
         with pytest.raises(ValueError, match="4D"):
             quatToEuler(np.zeros(3, dtype=np.float32))
+
+    def test_compute_fixed_yaw_alignment_quat_extracts_yaw_only(self):
+        robot_quat = np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32)
+        motion_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+
+        yaw_offset = compute_fixed_yaw_alignment_quat(robot_quat, motion_quat)
+
+        np.testing.assert_allclose(yaw_offset, robot_quat, atol=1e-6)
+
+    def test_rotate_motion_qpos_by_yaw_keeps_first_frame_position_with_pivot(self):
+        qpos = np.zeros(36, dtype=np.float32)
+        qpos[0:3] = np.array([1.5, 4.5, 0.82], dtype=np.float32)
+        qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        yaw_offset = np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32)
+
+        rotate_motion_qpos_by_yaw(qpos, yaw_offset, pivot_pos_w=np.array([1.5, 4.5, 0.82], dtype=np.float32))
+
+        np.testing.assert_allclose(qpos[0:3], np.array([1.5, 4.5, 0.82], dtype=np.float32), atol=1e-6)
+        np.testing.assert_allclose(qpos[3:7], yaw_offset, atol=1e-6)
 
 
 class TestTWIST2ObservationBuilder:

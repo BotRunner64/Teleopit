@@ -26,6 +26,8 @@ from teleopit.controllers.observation import (
     _quat_inv_np,
     _quat_mul_np,
     align_motion_qpos_yaw,
+    compute_fixed_yaw_alignment_quat,
+    rotate_motion_qpos_by_yaw,
 )
 from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.controllers.rl_policy import RLPolicyController
@@ -68,6 +70,7 @@ class Sim2RealController:
         # Motion command transition smoothing
         transition_dur = float(cfg_get(cfg, "transition_duration", 0.0) or 0.0)
         self._qpos_interpolator = QposInterpolator(transition_dur, self.policy_hz)
+        self._fixed_ref_yaw_alignment = bool(cfg_get(cfg, "velcmd_fixed_ref_yaw_alignment", True))
 
         # ---- Real robot (SDK) ----
         real_cfg = cfg_get(cfg, "real_robot")
@@ -104,7 +107,10 @@ class Sim2RealController:
         # ---- Policy state (shared by STANDING and MOCAP) ----
         self._last_action: Float32Array = np.zeros(self.num_actions, dtype=np.float32)
         self._last_retarget_qpos: Float64Array | None = None
+        self._last_reference_qpos: Float64Array | None = None
         self._mocap_reentry_armed: bool = False
+        self._fixed_reference_yaw_quat: Float32Array | None = None
+        self._fixed_reference_pivot_pos_w: Float32Array | None = None
 
         # ---- Mocap switch safety ----
         mocap_sw = cfg_get(cfg, "mocap_switch", {})
@@ -213,11 +219,12 @@ class Sim2RealController:
 
         # Retarget -> mimic observation
         retargeted = self.retargeter.retarget(human_frame)
-        qpos = self._retarget_to_qpos(retargeted)
-        qpos = self._qpos_interpolator.apply(qpos)
-
+        reference_qpos = self._retarget_to_qpos(retargeted)
         # Robot state from SDK
         robot_state = self.robot.get_state()
+        if isinstance(self.obs_builder, VelCmdObservationBuilder) and self._fixed_ref_yaw_alignment:
+            reference_qpos = self._align_velcmd_reference_yaw(reference_qpos, robot_state=robot_state)
+        qpos = self._qpos_interpolator.apply(reference_qpos)
 
         if not isinstance(self.obs_builder, VelCmdObservationBuilder):
             # Non-VelCmd policies keep the legacy yaw alignment path.
@@ -232,12 +239,12 @@ class Sim2RealController:
         anchor_ang_vel_w: Float32Array | None = None
         if isinstance(self.obs_builder, VelCmdObservationBuilder):
             if self._qpos_interpolator.is_active:
-                # Transition smoothing is an inference-only artifact, so do not
-                # feed its synthetic anchor velocities back into a VelCmd policy.
-                anchor_lin_vel_w = np.zeros(3, dtype=np.float32)
-                anchor_ang_vel_w = np.zeros(3, dtype=np.float32)
+                true_lin_vel_w, true_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
+                blend = np.float32(self._qpos_interpolator.last_alpha)
+                anchor_lin_vel_w = np.asarray(true_lin_vel_w * blend, dtype=np.float32)
+                anchor_ang_vel_w = np.asarray(true_ang_vel_w * blend, dtype=np.float32)
             else:
-                anchor_lin_vel_w, anchor_ang_vel_w = self._compute_anchor_velocities(qpos)
+                anchor_lin_vel_w, anchor_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
 
         if qpos.shape[0] < 7 + self.num_actions:
             raise ValueError(
@@ -272,6 +279,7 @@ class Sim2RealController:
         # Update state
         self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
         self._last_retarget_qpos = qpos.copy()
+        self._last_reference_qpos = reference_qpos.copy()
 
     def _compute_anchor_velocities(
         self, qpos: Float64Array,
@@ -286,10 +294,10 @@ class Sim2RealController:
         builder._run_fk(cur_pos, cur_quat, cur_joints)
         cur_anchor_pos = builder._get_body_pos(builder._anchor_body_id).copy()
 
-        if self._last_retarget_qpos is None:
+        if self._last_reference_qpos is None:
             return np.zeros(3, dtype=np.float32), np.zeros(3, dtype=np.float32)
 
-        prev = self._last_retarget_qpos
+        prev = self._last_reference_qpos
         prev_pos = np.asarray(prev[0:3], dtype=np.float32)
         prev_quat = np.asarray(prev[3:7], dtype=np.float32)
         prev_joints = np.asarray(prev[7:7 + self.num_actions], dtype=np.float32)
@@ -389,6 +397,7 @@ class Sim2RealController:
         init_qpos[3:7] = state.quat.astype(np.float64)
         init_qpos[7:36] = state.qpos.astype(np.float64)
         self._last_retarget_qpos = init_qpos
+        self._last_reference_qpos = None
         self._reset_policy_state()
         self._mocap_reentry_armed = prev_mode == RobotMode.MOCAP
 
@@ -463,6 +472,10 @@ class Sim2RealController:
         init_qpos[3:7] = state.quat.astype(np.float64)
         init_qpos[7:36] = state.qpos.astype(np.float64)
         self._last_retarget_qpos = init_qpos
+        self._last_reference_qpos = None
+        self._fixed_reference_yaw_quat = None
+        self._fixed_reference_pivot_pos_w = None
+        self._qpos_interpolator.reset()
         self._qpos_interpolator.start(init_qpos)
         self._reset_policy_state()
         self._mocap_reentry_armed = False
@@ -484,6 +497,7 @@ class Sim2RealController:
             self.robot.exit_debug_mode()
 
         self.mode = RobotMode.DAMPING
+        self._last_reference_qpos = None
         self._mocap_reentry_armed = False
         logger.info("Mode -> DAMPING (press Start to re-enter STANDING)")
 
@@ -503,6 +517,30 @@ class Sim2RealController:
         if qpos.shape[0] < 36:
             raise ValueError(f"Retargeted qpos too short: {qpos.shape[0]} (need >= 36)")
         return qpos
+
+    def _align_velcmd_reference_yaw(
+        self,
+        qpos: Float64Array,
+        robot_state: object | None,
+    ) -> Float64Array:
+        aligned_qpos = qpos.copy()
+
+        if self._fixed_reference_yaw_quat is None:
+            if robot_state is None:
+                robot_state = self.robot.get_state()
+            robot_quat = np.asarray(getattr(robot_state, "quat"), dtype=np.float32)
+            self._fixed_reference_yaw_quat = compute_fixed_yaw_alignment_quat(
+                robot_quat,
+                np.asarray(aligned_qpos[3:7], dtype=np.float32),
+            )
+            self._fixed_reference_pivot_pos_w = np.asarray(aligned_qpos[0:3], dtype=np.float32).copy()
+
+        rotate_motion_qpos_by_yaw(
+            aligned_qpos,
+            self._fixed_reference_yaw_quat,
+            self._fixed_reference_pivot_pos_w,
+        )
+        return aligned_qpos
 
     def _validate_observation_for_policy(self, obs: Float32Array) -> Float32Array:
         """Fail-fast validation for policy input observation dimension."""

@@ -268,6 +268,8 @@ class SimulationLoop:
         # Motion command transition smoothing
         transition_dur = float(self._try_get_cfg("transition_duration") or 0.0)
         self._qpos_interpolator = QposInterpolator(transition_dur, self.policy_hz)
+        raw_fixed_ref_yaw_alignment = self._try_get_cfg("velcmd_fixed_ref_yaw_alignment")
+        fixed_ref_yaw_alignment = True if raw_fixed_ref_yaw_alignment is None else bool(raw_fixed_ref_yaw_alignment)
 
         self._viewers: set[str] = set(viewers or set())
         self._step_runner = PolicyStepRunner(
@@ -282,6 +284,7 @@ class SimulationLoop:
             torque_limits=self._torque_limits,
             default_dof_pos=self._default_dof_pos,
             qpos_interpolator=self._qpos_interpolator,
+            fixed_ref_yaw_alignment=fixed_ref_yaw_alignment,
         )
         self._publisher = RuntimePublisher(self.bus)
         self._recorder_helper = RunRecorder()
@@ -299,6 +302,7 @@ class SimulationLoop:
         num_steps: int,
         recorder: Recorder | None = None,
     ) -> dict[str, float | int]:
+        self._step_runner.reset()
         self._viewer_manager.ensure_bvh_viewer(cast(object, input_provider))
 
         steps_done = 0

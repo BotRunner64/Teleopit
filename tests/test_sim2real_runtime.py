@@ -195,7 +195,7 @@ def test_state_machine_allows_mocap_reentry_after_returning_to_standing(monkeypa
     assert ctrl.mode == RobotMode.MOCAP
 
 
-def test_mocap_step_zeroes_velcmd_during_transition(monkeypatch) -> None:
+def test_mocap_step_ramps_velcmd_during_transition(monkeypatch) -> None:
     from teleopit.sim2real.controller import Sim2RealController
 
     policy = DummyPolicy()
@@ -216,8 +216,9 @@ def test_mocap_step_zeroes_velcmd_during_transition(monkeypatch) -> None:
     )
 
     ctrl._mocap_step()
+    ctrl._mocap_step()
 
-    assert len(obs_builder.build_calls) == 1
+    assert len(obs_builder.build_calls) == 2
     np.testing.assert_allclose(
         obs_builder.build_calls[0]["motion_anchor_lin_vel_w"],
         np.zeros(3, dtype=np.float32),
@@ -226,9 +227,19 @@ def test_mocap_step_zeroes_velcmd_during_transition(monkeypatch) -> None:
         obs_builder.build_calls[0]["motion_anchor_ang_vel_w"],
         np.zeros(3, dtype=np.float32),
     )
+    np.testing.assert_allclose(
+        obs_builder.build_calls[1]["motion_anchor_lin_vel_w"],
+        np.array([0.01, 0.02, 0.03], dtype=np.float32),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        obs_builder.build_calls[1]["motion_anchor_ang_vel_w"],
+        np.array([0.04, 0.05, 0.06], dtype=np.float32),
+        atol=1e-6,
+    )
 
 
-def test_mocap_step_velcmd_preserves_reference_heading(monkeypatch) -> None:
+def test_mocap_step_velcmd_applies_fixed_initial_yaw_alignment(monkeypatch) -> None:
     from teleopit.sim2real.controller import Sim2RealController
 
     policy = DummyPolicy()
@@ -238,6 +249,68 @@ def test_mocap_step_velcmd_preserves_reference_heading(monkeypatch) -> None:
     _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
 
     ctrl = Sim2RealController(_make_cfg(transition_duration=0.0))
+    ctrl.robot._state.quat = np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32)
+    monkeypatch.setattr(
+        ctrl,
+        "_compute_anchor_velocities",
+        lambda _qpos: (
+            np.zeros(3, dtype=np.float32),
+            np.zeros(3, dtype=np.float32),
+        ),
+    )
+
+    ctrl._mocap_step()
+
+    np.testing.assert_allclose(
+        obs_builder.build_calls[0]["motion_qpos"][3:7],
+        np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32),
+        atol=1e-6,
+    )
+
+
+def test_mocap_step_velcmd_keeps_fixed_yaw_after_start(monkeypatch) -> None:
+    from teleopit.sim2real.controller import Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    target_qpos = np.zeros(36, dtype=np.float64)
+    target_qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
+
+    ctrl = Sim2RealController(_make_cfg(transition_duration=0.0))
+    monkeypatch.setattr(
+        ctrl,
+        "_compute_anchor_velocities",
+        lambda _qpos: (
+            np.zeros(3, dtype=np.float32),
+            np.zeros(3, dtype=np.float32),
+        ),
+    )
+
+    ctrl.robot._state.quat = np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32)
+    ctrl._mocap_step()
+    ctrl.robot._state.quat = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+    ctrl._mocap_step()
+
+    np.testing.assert_allclose(
+        obs_builder.build_calls[1]["motion_qpos"][3:7],
+        np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32),
+        atol=1e-6,
+    )
+
+
+def test_mocap_step_velcmd_can_disable_fixed_yaw_alignment(monkeypatch) -> None:
+    from teleopit.sim2real.controller import Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    target_qpos = np.zeros(36, dtype=np.float64)
+    target_qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
+
+    cfg = _make_cfg(transition_duration=0.0)
+    cfg["velcmd_fixed_ref_yaw_alignment"] = False
+    ctrl = Sim2RealController(cfg)
     ctrl.robot._state.quat = np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32)
     monkeypatch.setattr(
         ctrl,
