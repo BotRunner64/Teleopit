@@ -36,12 +36,16 @@ class DummyRobot:
 
 class DummyRemote:
     def __init__(self) -> None:
-        button = SimpleNamespace(pressed=False, on_pressed=False)
-        self.LB = button
-        self.RB = button
-        self.start = button
-        self.Y = button
-        self.X = button
+        self.LB = SimpleNamespace(pressed=False, on_pressed=False)
+        self.RB = SimpleNamespace(pressed=False, on_pressed=False)
+        self.start = SimpleNamespace(pressed=False, on_pressed=False)
+        self.Y = SimpleNamespace(pressed=False, on_pressed=False)
+        self.X = SimpleNamespace(pressed=False, on_pressed=False)
+
+
+def _set_button(button: SimpleNamespace, *, pressed: bool, on_pressed: bool) -> None:
+    button.pressed = pressed
+    button.on_pressed = on_pressed
 
 
 class DummyProvider:
@@ -155,6 +159,40 @@ def test_mode_transitions_reset_stateful_policy(monkeypatch) -> None:
 
     assert policy.reset_calls == 2
     assert obs_builder.reset_calls == 2
+
+
+def test_state_machine_allows_mocap_reentry_after_returning_to_standing(monkeypatch) -> None:
+    from teleopit.sim2real.controller import RobotMode, Sim2RealController
+
+    policy = DummyPolicy(expected_obs_dim=154)
+    obs_builder = DummyVelCmdObservationBuilder()
+    _install_controller_mocks(
+        monkeypatch,
+        policy=policy,
+        obs_builder=obs_builder,
+        qpos=np.zeros(36, dtype=np.float64),
+    )
+
+    ctrl = Sim2RealController(_make_cfg())
+
+    _set_button(ctrl.remote.start, pressed=True, on_pressed=True)
+    ctrl._handle_transitions()
+    assert ctrl.mode == RobotMode.STANDING
+
+    _set_button(ctrl.remote.start, pressed=False, on_pressed=False)
+    _set_button(ctrl.remote.Y, pressed=True, on_pressed=True)
+    ctrl._handle_transitions()
+    assert ctrl.mode == RobotMode.MOCAP
+
+    _set_button(ctrl.remote.Y, pressed=False, on_pressed=False)
+    _set_button(ctrl.remote.X, pressed=True, on_pressed=True)
+    ctrl._handle_transitions()
+    assert ctrl.mode == RobotMode.STANDING
+
+    _set_button(ctrl.remote.X, pressed=False, on_pressed=False)
+    _set_button(ctrl.remote.Y, pressed=True, on_pressed=False)
+    ctrl._handle_transitions()
+    assert ctrl.mode == RobotMode.MOCAP
 
 
 def test_mocap_step_zeroes_velcmd_during_transition(monkeypatch) -> None:

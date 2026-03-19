@@ -11,7 +11,7 @@ Config: Hydra/OmegaConf YAML files in `teleopit/configs/`
 ## Architecture
 
 ```
-InputProvider (BVH file / UDP realtime / Pico4 VR) → Retargeter (GMR) → ObservationBuilder (mjlab 160D sim / 154D real) → Controller (ONNX RL) → Robot (MuJoCo + PD / Unitree SDK)
+InputProvider (BVH file / UDP realtime / Pico4 VR) → Retargeter (GMR) → ObservationBuilder (mjlab 160D / 154D / 166D) → Controller (ONNX RL) → Robot (MuJoCo + PD / Unitree SDK)
 ```
 
 Module-internal isolation: all modules run in-process, communicate via `InProcessBus` (zero-copy). Core interfaces defined as `typing.Protocol` in `teleopit/interfaces.py`.
@@ -153,10 +153,11 @@ python scripts/run_sim2real.py --config-name pico4_sim2real controller.policy_pa
 - `bvh_provider.py` 的 `fps` 属性返回降采样后的实际帧率（hc_mocap 60→30fps）
 
 ### Inference Observation
-- Inference policy observation is **mjlab-aligned**, with two modes controlled by `has_state_estimation`:
+- Inference policy observation is **mjlab-aligned**, with two modes controlled by `has_state_estimation` and policy variant:
   - **160D** (`has_state_estimation=true`): `command(58) + motion_anchor_pos_b(3) + motion_anchor_ori_b(6) + base_lin_vel(3) + base_ang_vel(3) + joint_pos_rel(29) + joint_vel(29) + last_action(29)`.
   - **154D** (current default, `has_state_estimation=false`): `command(58) + motion_anchor_ori_b(6) + base_ang_vel(3) + joint_pos_rel(29) + joint_vel(29) + last_action(29)`. Omits `motion_anchor_pos_b` and `base_lin_vel` (unavailable without state estimation).
-- `has_state_estimation` is **not** set in `robot/g1.yaml` (shared config). Current inference defaults are `false` in both `pipeline.py` and `sim2real/controller.py`. Users may override it to `true` for MuJoCo/sim2sim 160D inference, but sim2real must stay `false` and only supports 154D ONNX.
+  - **166D** (`has_state_estimation=false`, VelCmd variant): `154D base obs + projected_gravity(3) + ref_base_lin_vel_b(3) + ref_base_ang_vel_b(3) + ref_projected_gravity_b(3)`.
+- `has_state_estimation` is **not** set in `robot/g1.yaml` (shared config). Current inference defaults are `false` in both `pipeline.py` and `sim2real/controller.py`. Users may override it to `true` for MuJoCo/sim2sim 160D inference, but sim2real must stay `false` and only supports 154D/166D no-state-estimation ONNX.
 - At startup, obs_builder dimension is validated against the ONNX policy input dimension; mismatches raise `ValueError` immediately.
 - Legacy TWIST2 1402D policy path is deprecated and rejected at runtime.
 

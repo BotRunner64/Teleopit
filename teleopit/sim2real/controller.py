@@ -104,6 +104,7 @@ class Sim2RealController:
         # ---- Policy state (shared by STANDING and MOCAP) ----
         self._last_action: Float32Array = np.zeros(self.num_actions, dtype=np.float32)
         self._last_retarget_qpos: Float64Array | None = None
+        self._mocap_reentry_armed: bool = False
 
         # ---- Mocap switch safety ----
         mocap_sw = cfg_get(cfg, "mocap_switch", {})
@@ -336,9 +337,13 @@ class Sim2RealController:
                 self._enter_standing()
 
         elif self.mode == RobotMode.STANDING:
-            if self.remote.Y.on_pressed:
+            reentry_request = self._mocap_reentry_armed and self.remote.Y.pressed
+            if self.remote.Y.on_pressed or reentry_request:
                 if self._can_switch_to_mocap():
-                    logger.info("Y pressed -> entering MOCAP")
+                    if reentry_request and not self.remote.Y.on_pressed:
+                        logger.info("Y held after STANDING return -> re-entering MOCAP")
+                    else:
+                        logger.info("Y pressed -> entering MOCAP")
                     self._transition_to_mocap()
                 else:
                     logger.warning("Cannot switch to MOCAP -- input check failed")
@@ -362,6 +367,7 @@ class Sim2RealController:
 
         Works from IDLE, MOCAP (already in debug mode), or DAMPING.
         """
+        prev_mode = self.mode
         already_in_debug = self.mode in (RobotMode.STANDING, RobotMode.MOCAP)
 
         if not already_in_debug:
@@ -384,6 +390,7 @@ class Sim2RealController:
         init_qpos[7:36] = state.qpos.astype(np.float64)
         self._last_retarget_qpos = init_qpos
         self._reset_policy_state()
+        self._mocap_reentry_armed = prev_mode == RobotMode.MOCAP
 
         self.mode = RobotMode.STANDING
         logger.info("Mode -> STANDING (RL policy maintaining balance at default pose)")
@@ -458,6 +465,7 @@ class Sim2RealController:
         self._last_retarget_qpos = init_qpos
         self._qpos_interpolator.start(init_qpos)
         self._reset_policy_state()
+        self._mocap_reentry_armed = False
 
         self.mode = RobotMode.MOCAP
         logger.info("Mode -> MOCAP (tracking motion commands)")
@@ -476,6 +484,7 @@ class Sim2RealController:
             self.robot.exit_debug_mode()
 
         self.mode = RobotMode.DAMPING
+        self._mocap_reentry_armed = False
         logger.info("Mode -> DAMPING (press Start to re-enter STANDING)")
 
     # ------------------------------------------------------------------
