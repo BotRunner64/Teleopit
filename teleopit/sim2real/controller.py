@@ -35,6 +35,7 @@ from teleopit.inputs.udp_bvh_provider import UDPBVHInputProvider
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.runtime.common import cfg_get
 from teleopit.runtime.factory import build_sim2real_mocap_components
+from teleopit.sim.reference_timeline import ReferenceTimeline, ReferenceWindowBuilder
 from teleopit.sim2real.remote import UnitreeRemote
 from teleopit.sim2real.unitree_g1 import UnitreeG1Robot
 
@@ -91,6 +92,40 @@ class Sim2RealController:
         self.retargeter = mocap_components.retargeter
         self.policy = mocap_components.controller
         self.obs_builder = mocap_components.obs_builder
+        raw_retarget_buffer_enabled = cfg_get(cfg, "retarget_buffer_enabled", True)
+        self._retarget_buffer_enabled = bool(raw_retarget_buffer_enabled)
+        self._retarget_buffer_window_s = float(cfg_get(cfg, "retarget_buffer_window_s", 0.5))
+        if self._retarget_buffer_window_s <= 0.0:
+            raise ValueError("retarget_buffer_window_s must be > 0")
+        self._reference_window_builder = ReferenceWindowBuilder(
+            policy_dt_s=1.0 / self.policy_hz,
+            reference_steps=cfg_get(cfg, "reference_steps", [0]),
+        )
+        if not self._retarget_buffer_enabled and self._reference_window_builder.requires_timeline:
+            raise ValueError(
+                "Non-zero reference_steps require retarget_buffer_enabled=true in sim2real so "
+                "the realtime reference timeline can sample future/history horizons."
+            )
+        self._reference_debug_log = bool(cfg_get(cfg, "reference_debug_log", False))
+        raw_reference_delay_s = cfg_get(cfg, "retarget_buffer_delay_s", cfg_get(cfg, "realtime_input_delay_s", None))
+        provider_fps = float(getattr(self.input_provider, "fps", self.policy_hz))
+        self._reference_delay_s = (
+            1.0 / provider_fps
+            if raw_reference_delay_s in (None, "", "null")
+            else float(raw_reference_delay_s)
+        )
+        if self._retarget_buffer_enabled:
+            self._reference_window_builder.validate_runtime_support(
+                delay_s=self._reference_delay_s,
+                window_s=self._retarget_buffer_window_s,
+                config_label="Sim2Real reference timeline",
+            )
+        self._reference_timeline: ReferenceTimeline | None = (
+            ReferenceTimeline(window_s=self._retarget_buffer_window_s)
+            if self._retarget_buffer_enabled
+            else None
+        )
+        self._last_live_packet_seq = -1
 
         # Default standing pose (29-DOF)
         self.default_angles = np.asarray(
@@ -205,15 +240,42 @@ class Sim2RealController:
             return
 
         try:
-            human_frame = self.input_provider.get_frame()
+            get_packet = getattr(self.input_provider, "get_frame_packet", None)
+            if callable(get_packet):
+                human_frame, frame_timestamp, frame_seq = get_packet()
+            else:
+                human_frame = self.input_provider.get_frame()
+                frame_timestamp = time.monotonic()
+                frame_seq = self._last_live_packet_seq + 1
         except (TimeoutError, RuntimeError):
             logger.warning("Input provider error -- entering damping")
             self._enter_damping()
             return
 
-        # Retarget -> mimic observation
-        retargeted = self.retargeter.retarget(human_frame)
-        reference_qpos = self._retarget_to_qpos(retargeted)
+        if self._reference_timeline is not None:
+            if int(frame_seq) != self._last_live_packet_seq:
+                retargeted = self.retargeter.retarget(human_frame)
+                self._reference_timeline.append(
+                    self._retarget_to_qpos(retargeted),
+                    float(frame_timestamp),
+                )
+                self._last_live_packet_seq = int(frame_seq)
+            reference_window = self._reference_window_builder.sample(
+                self._reference_timeline,
+                time.monotonic() - self._reference_delay_s,
+            )
+            if self._reference_debug_log and any(reference_window.fallback_mask()):
+                logger.warning(
+                    "Reference timeline fallback | buffer_len=%d | steps=%s | modes=%s",
+                    len(self._reference_timeline),
+                    list(reference_window.reference_steps),
+                    list(reference_window.modes()),
+                )
+            reference_qpos = reference_window.current_sample().qpos
+        else:
+            retargeted = self.retargeter.retarget(human_frame)
+            reference_qpos = self._retarget_to_qpos(retargeted)
+
         # Robot state from SDK
         robot_state = self.robot.get_state()
         if self._fixed_ref_yaw_alignment:
@@ -473,6 +535,9 @@ class Sim2RealController:
 
         self.mode = RobotMode.DAMPING
         self._last_reference_qpos = None
+        if self._reference_timeline is not None:
+            self._reference_timeline.clear()
+        self._last_live_packet_seq = -1
         self._mocap_reentry_armed = False
         logger.info("Mode -> DAMPING (press Start to re-enter STANDING)")
 
@@ -532,6 +597,9 @@ class Sim2RealController:
 
     def _reset_policy_state(self) -> None:
         self._last_action = np.zeros(self.num_actions, dtype=np.float32)
+        if self._reference_timeline is not None:
+            self._reference_timeline.clear()
+        self._last_live_packet_seq = -1
         reset_policy = getattr(self.policy, "reset", None)
         if callable(reset_policy):
             reset_policy()

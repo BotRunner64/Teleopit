@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 
 class DummyRobot:
@@ -53,12 +54,17 @@ class DummyProvider:
         self._xrt = SimpleNamespace(is_body_data_available=lambda: True)
         self._frame = {"Pelvis": (np.zeros(3, dtype=np.float64), np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64))}
         self.fps = 30
+        self._frame_seq = 0
+        self._frame_timestamp = 1.0
 
     def is_available(self) -> bool:
         return True
 
     def get_frame(self) -> dict[str, tuple[np.ndarray, np.ndarray]]:
         return self._frame
+
+    def get_frame_packet(self) -> tuple[dict[str, tuple[np.ndarray, np.ndarray]], float, int]:
+        return self._frame, self._frame_timestamp, self._frame_seq
 
 
 class DummyRetargeter:
@@ -159,6 +165,54 @@ def test_mode_transitions_reset_stateful_policy(monkeypatch) -> None:
 
     assert policy.reset_calls == 2
     assert obs_builder.reset_calls == 2
+
+
+def test_reset_policy_state_clears_reference_timeline(monkeypatch) -> None:
+    from teleopit.sim2real.controller import Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=np.zeros(36, dtype=np.float64))
+
+    ctrl = Sim2RealController(_make_cfg())
+    assert ctrl._reference_timeline is not None
+    ctrl._reference_timeline.append(np.zeros(36, dtype=np.float64), 1.0)
+    ctrl._last_live_packet_seq = 7
+
+    ctrl._reset_policy_state()
+
+    assert len(ctrl._reference_timeline) == 0
+    assert ctrl._last_live_packet_seq == -1
+
+
+def test_sim2real_rejects_nonzero_reference_steps_without_buffer(monkeypatch) -> None:
+    from teleopit.sim2real.controller import Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=np.zeros(36, dtype=np.float64))
+
+    cfg = _make_cfg()
+    cfg["retarget_buffer_enabled"] = False
+    cfg["reference_steps"] = [0, 1]
+
+    with pytest.raises(ValueError, match="retarget_buffer_enabled=true"):
+        Sim2RealController(cfg)
+
+
+def test_sim2real_rejects_reference_horizon_with_insufficient_delay(monkeypatch) -> None:
+    from teleopit.sim2real.controller import Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=np.zeros(36, dtype=np.float64))
+
+    cfg = _make_cfg()
+    cfg["reference_steps"] = [0, 2]
+    cfg["retarget_buffer_delay_s"] = 0.01
+
+    with pytest.raises(ValueError, match="retarget_buffer_delay_s"):
+        Sim2RealController(cfg)
 
 
 def test_state_machine_allows_mocap_reentry_after_returning_to_standing(monkeypatch) -> None:

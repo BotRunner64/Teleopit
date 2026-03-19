@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from conftest import requires_mujoco
 from teleopit.bus.in_process import InProcessBus
@@ -53,10 +54,40 @@ class _DummyController:
 class _DummyObsBuilder:
     def __init__(self) -> None:
         self.mimic_obs_calls: list[np.ndarray] = []
+        self._base = _DummyObsBuilderBase()
 
-    def build(self, state: object, mimic_obs: np.ndarray, last_action: np.ndarray) -> np.ndarray:
-        self.mimic_obs_calls.append(np.asarray(mimic_obs, dtype=np.float32).copy())
+    def build(
+        self,
+        state: object,
+        motion_qpos: np.ndarray,
+        motion_joint_vel: np.ndarray,
+        last_action: np.ndarray,
+        motion_anchor_lin_vel_w: np.ndarray,
+        motion_anchor_ang_vel_w: np.ndarray,
+    ) -> np.ndarray:
+        del state, motion_joint_vel, last_action, motion_anchor_lin_vel_w, motion_anchor_ang_vel_w
+        self.mimic_obs_calls.append(np.asarray(motion_qpos[:1], dtype=np.float32).copy())
         return np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
+
+
+class _DummyObsBuilderBase:
+    def __init__(self) -> None:
+        self._anchor_body_id = 0
+        self._last_pos = np.zeros(3, dtype=np.float32)
+        self._last_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+
+    def _run_fk(self, pos: np.ndarray, quat: np.ndarray, joints: np.ndarray) -> None:
+        del joints
+        self._last_pos = np.asarray(pos, dtype=np.float32).copy()
+        self._last_quat = np.asarray(quat, dtype=np.float32).copy()
+
+    def _get_body_pos(self, body_id: int) -> np.ndarray:
+        del body_id
+        return self._last_pos
+
+    def _get_body_quat(self, body_id: int) -> np.ndarray:
+        del body_id
+        return self._last_quat
 
 
 class _DummyInputProvider:
@@ -187,3 +218,33 @@ def test_simulation_loop_interpolates_realtime_input_with_one_frame_delay(monkey
     assert result["steps"] == 2
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[0], np.array([0.0], dtype=np.float32))
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[1], np.array([0.5], dtype=np.float32), atol=1e-6)
+
+
+@requires_mujoco
+def test_simulation_loop_rejects_nonzero_reference_steps_without_realtime_timeline() -> None:
+    from teleopit.sim.loop import SimulationLoop
+
+    bus = InProcessBus()
+    robot = _DummyRobot()
+    loop = SimulationLoop(
+        robot=robot,
+        controller=_DummyController(),
+        obs_builder=_DummyObsBuilder(),
+        bus=bus,
+        cfg={
+            "policy_hz": 50.0,
+            "pd_hz": 50.0,
+            "realtime": False,
+            "transition_duration": 0.0,
+            "retarget_buffer_enabled": True,
+            "reference_steps": [0, 1],
+        },
+        viewers=set(),
+    )
+
+    with pytest.raises(ValueError, match="get_frame_packet"):
+        loop.run(
+            input_provider=_DummyInputProvider(),
+            retargeter=_DummyRetargeter(),
+            num_steps=1,
+        )

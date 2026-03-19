@@ -17,6 +17,7 @@ from teleopit.sim.reference_motion import (
     interpolate_human_frames,
     interpolate_retarget_qpos,
 )
+from teleopit.sim.reference_timeline import ReferenceTimeline, ReferenceWindow, ReferenceWindowBuilder
 from teleopit.sim.runtime_components import PolicyStepRunner, RunRecorder, RuntimePublisher, ViewerManager
 
 Float32Array = NDArray[np.float32]
@@ -273,9 +274,35 @@ class SimulationLoop:
         self._qpos_interpolator = QposInterpolator(transition_dur, self.policy_hz)
         raw_fixed_ref_yaw_alignment = self._try_get_cfg("velcmd_fixed_ref_yaw_alignment")
         fixed_ref_yaw_alignment = True if raw_fixed_ref_yaw_alignment is None else bool(raw_fixed_ref_yaw_alignment)
+        raw_retarget_buffer_enabled = self._try_get_cfg("retarget_buffer_enabled")
+        self._retarget_buffer_enabled = True if raw_retarget_buffer_enabled is None else bool(raw_retarget_buffer_enabled)
+        raw_retarget_buffer_window_s = self._try_get_cfg("retarget_buffer_window_s")
+        self._retarget_buffer_window_s = float(
+            0.5 if raw_retarget_buffer_window_s in (None, "", "null") else raw_retarget_buffer_window_s
+        )
+        if self._retarget_buffer_window_s <= 0.0:
+            raise ValueError("retarget_buffer_window_s must be > 0")
+        raw_reference_steps = self._try_get_cfg("reference_steps")
+        self._reference_window_builder = ReferenceWindowBuilder(
+            policy_dt_s=1.0 / self.policy_hz,
+            reference_steps=[0] if raw_reference_steps is None else cast(object, raw_reference_steps),
+        )
+        if not self._retarget_buffer_enabled and self._reference_window_builder.requires_timeline:
+            raise ValueError(
+                "Non-zero reference_steps require retarget_buffer_enabled=true so realtime buffering "
+                "can sample future/history horizons."
+            )
+        raw_reference_debug_log = self._try_get_cfg("reference_debug_log")
+        self._reference_debug_log = False if raw_reference_debug_log is None else bool(raw_reference_debug_log)
+        raw_retarget_buffer_delay_s = self._try_get_cfg("retarget_buffer_delay_s")
         raw_realtime_input_delay_s = self._try_get_cfg("realtime_input_delay_s")
-        self._realtime_input_delay_s: float | None = (
-            None if raw_realtime_input_delay_s in (None, "", "null") else float(raw_realtime_input_delay_s)
+        selected_delay = (
+            raw_retarget_buffer_delay_s
+            if raw_retarget_buffer_delay_s not in (None, "", "null")
+            else raw_realtime_input_delay_s
+        )
+        self._reference_delay_s: float | None = (
+            None if selected_delay in (None, "", "null") else float(selected_delay)
         )
 
         self._viewers: set[str] = set(viewers or set())
@@ -336,9 +363,23 @@ class SimulationLoop:
         )
         realtime_input_delay_s = (
             1.0 / input_fps
-            if realtime_interpolated_input and self._realtime_input_delay_s is None
-            else float(self._realtime_input_delay_s or 0.0)
+            if realtime_interpolated_input and self._reference_delay_s is None
+            else float(self._reference_delay_s or 0.0)
         )
+        if self._reference_window_builder.requires_timeline and not realtime_interpolated_input:
+            raise ValueError(
+                "Non-zero reference_steps are only supported for realtime input providers exposing "
+                "get_frame_packet(); offline/current-only input paths do not provide a future/history "
+                "reference timeline."
+            )
+        reference_timeline: ReferenceTimeline | None = None
+        if realtime_interpolated_input and self._retarget_buffer_enabled:
+            self._reference_window_builder.validate_runtime_support(
+                delay_s=realtime_input_delay_s,
+                window_s=self._retarget_buffer_window_s,
+                config_label="SimulationLoop reference timeline",
+            )
+            reference_timeline = ReferenceTimeline(window_s=self._retarget_buffer_window_s)
         last_live_packet_seq = -1
         previous_live_human_frame: dict | None = None
         previous_live_retargeted: Float64Array | None = None
@@ -356,6 +397,7 @@ class SimulationLoop:
                     "policy_hz": self.policy_hz,
                     "pd_hz": self.pd_hz,
                     "input_fps": input_fps,
+                    "reference_steps": list(self._reference_window_builder.reference_steps),
                 },
             )
 
@@ -366,6 +408,7 @@ class SimulationLoop:
 
                 policy_time = steps_done * policy_dt
                 frame_f = policy_time * input_fps
+                reference_window: ReferenceWindow | None = None
                 if offline_reference is not None:
                     sampled = offline_reference.sample(policy_time)
                     if sampled is None:
@@ -384,27 +427,28 @@ class SimulationLoop:
                     new_bvh_frame = frame_seq != last_live_packet_seq
                     if new_bvh_frame:
                         previous_live_human_frame = latest_live_human_frame
-                        previous_live_retargeted = latest_live_retargeted
                         previous_live_timestamp = latest_live_timestamp
                         latest_live_human_frame = human_frame
-                        latest_live_retargeted = self._step_runner._retarget_to_qpos(
-                            retargeter.retarget(human_frame)
-                        )
+                        retargeted_qpos = self._step_runner._retarget_to_qpos(retargeter.retarget(human_frame))
+                        if reference_timeline is not None:
+                            reference_timeline.append(retargeted_qpos, float(frame_timestamp))
+                        else:
+                            previous_live_retargeted = latest_live_retargeted
+                            latest_live_retargeted = retargeted_qpos
                         latest_live_timestamp = float(frame_timestamp)
                         last_live_packet_seq = int(frame_seq)
 
-                    if latest_live_human_frame is None or latest_live_retargeted is None:
+                    if latest_live_human_frame is None:
                         raise RuntimeError("Realtime input did not provide an initial frame")
 
+                    target_base_time = time.monotonic() - realtime_input_delay_s
                     if (
                         previous_live_human_frame is not None
-                        and previous_live_retargeted is not None
                         and previous_live_timestamp is not None
                         and latest_live_timestamp is not None
                         and latest_live_timestamp > previous_live_timestamp + 1e-6
                     ):
-                        target_time = time.monotonic() - realtime_input_delay_s
-                        alpha = (target_time - previous_live_timestamp) / (
+                        alpha = (target_base_time - previous_live_timestamp) / (
                             latest_live_timestamp - previous_live_timestamp
                         )
                         alpha = float(np.clip(alpha, 0.0, 1.0))
@@ -413,14 +457,34 @@ class SimulationLoop:
                             latest_live_human_frame,
                             alpha,
                         )
-                        cached_retargeted = interpolate_retarget_qpos(
-                            previous_live_retargeted,
-                            latest_live_retargeted,
-                            alpha,
-                        )
                     else:
                         cached_human_frame = latest_live_human_frame
-                        cached_retargeted = latest_live_retargeted
+
+                    if reference_timeline is not None:
+                        reference_window = self._reference_window_builder.sample(reference_timeline, target_base_time)
+                        if self._reference_debug_log and any(reference_window.fallback_mask()):
+                            self._log_reference_window(reference_window, len(reference_timeline))
+                        cached_retargeted = reference_window.current_sample().qpos
+                    else:
+                        if latest_live_retargeted is None:
+                            raise RuntimeError("Realtime input did not provide an initial retargeted frame")
+                        if (
+                            previous_live_retargeted is not None
+                            and previous_live_timestamp is not None
+                            and latest_live_timestamp is not None
+                            and latest_live_timestamp > previous_live_timestamp + 1e-6
+                        ):
+                            alpha = (target_base_time - previous_live_timestamp) / (
+                                latest_live_timestamp - previous_live_timestamp
+                            )
+                            alpha = float(np.clip(alpha, 0.0, 1.0))
+                            cached_retargeted = interpolate_retarget_qpos(
+                                previous_live_retargeted,
+                                latest_live_retargeted,
+                                alpha,
+                            )
+                        else:
+                            cached_retargeted = latest_live_retargeted
                 else:
                     bvh_idx = int(frame_f)
                     new_bvh_frame = bvh_idx != last_bvh_idx
@@ -488,6 +552,41 @@ class SimulationLoop:
                             else np.asarray(final_base_pos, dtype=np.float32)
                         ),
                         torque=np.asarray(torque, dtype=np.float32),
+                        reference_base_time_s=(
+                            None
+                            if reference_window is None
+                            else np.asarray(reference_window.base_time_s, dtype=np.float64)
+                        ),
+                        reference_steps=(
+                            None
+                            if reference_window is None
+                            else np.asarray(reference_window.reference_steps, dtype=np.int64)
+                        ),
+                        reference_sample_modes=(
+                            None
+                            if reference_window is None
+                            else np.asarray(reference_window.modes(), dtype=np.str_)
+                        ),
+                        reference_sample_alphas=(
+                            None
+                            if reference_window is None
+                            else np.asarray(reference_window.alphas(), dtype=np.float32)
+                        ),
+                        reference_sample_used_fallback=(
+                            None
+                            if reference_window is None
+                            else np.asarray(reference_window.fallback_mask(), dtype=np.bool_)
+                        ),
+                        reference_sample_timestamps=(
+                            None
+                            if reference_window is None
+                            else np.asarray(reference_window.timestamps(), dtype=np.float64)
+                        ),
+                        reference_buffer_len=(
+                            None
+                            if reference_timeline is None
+                            else np.asarray(len(reference_timeline), dtype=np.int64)
+                        ),
                     )
 
                 # Real-time pacing
@@ -604,3 +703,14 @@ class SimulationLoop:
         if qpos_state.shape[0] >= 3:
             return float(qpos_state[2])
         raise ValueError("Unable to infer root height from robot state")
+
+    def _log_reference_window(self, reference_window: ReferenceWindow, buffer_len: int) -> None:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Reference timeline fallback | buffer_len=%d | base_time=%.6f | steps=%s | modes=%s",
+            buffer_len,
+            reference_window.base_time_s,
+            list(reference_window.reference_steps),
+            list(reference_window.modes()),
+        )

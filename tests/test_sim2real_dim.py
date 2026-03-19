@@ -74,6 +74,7 @@ def _apply_sim2real_mocks(monkeypatch, policy_mock: MagicMock) -> None:
 
     dummy_provider = MagicMock()
     dummy_provider.human_format = "hc_mocap"
+    dummy_provider.fps = 30
     monkeypatch.setattr(
         "teleopit.sim2real.controller.UDPBVHInputProvider",
         lambda **kw: dummy_provider,

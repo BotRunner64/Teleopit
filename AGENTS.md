@@ -21,6 +21,7 @@ Module-internal isolation: all modules run in-process and communicate via `InPro
 - Only supported training task: `Tracking-Flat-G1-VelCmdHistory`
 - Only supported inference observation: 166D VelCmdHistory
 - Only supported ONNX signature: dual inputs `obs` and `obs_history`
+- Realtime inference uses a short retargeted-reference timeline before observation build; `reference_steps` defaults to `[0]` and future/history horizons are a runtime concern, not a second observation builder
 - Adaptive sampling, old no-state-estimation MLP tasks, and other legacy task variants are removed
 
 ## Directory Structure
@@ -119,18 +120,23 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - A daemon thread receives packets and stores only the latest processed frame
 - `get_frame()` always returns the newest frame; `is_available()` stays `True`
 - `fps=30` is fixed for the UDP provider
+- Realtime control writes retargeted `qpos` into a short reference timeline and samples from that timeline at `time.monotonic() - retarget_buffer_delay_s`
+- `reference_steps=[0]` is the current production path; non-zero future/history steps are supported by the runtime timeline for future policy upgrades
+- Non-zero `reference_steps` must satisfy `retarget_buffer_delay_s >= max_future_step / policy_hz` and `retarget_buffer_window_s >= retarget_buffer_delay_s + abs(min_history_step) / policy_hz`; runtime now fails fast on static misconfiguration instead of silently living on fallback samples
 
 ### Pico4 Realtime Input
 - `Pico4InputProvider` reads realtime body tracking from `xrobotoolkit_sdk`
 - Bone naming follows `xrobot_to_g1.json`
 - The provider applies an input-space transform to match the current retarget config
 - Do not hardcode that transform as a public coordinate-system contract; validate against actual retarget/sim2sim behavior when SDK or firmware changes
+- Pico4 realtime control uses the same retargeted-reference timeline path as UDP realtime input
 
 ### SimulationLoop Runtime Behavior
 - `realtime=true` enforces wall-clock pacing even without a viewer
 - `num_steps=0` means infinite loop (`max_steps = 2**63`)
 - `KeyboardInterrupt` is handled for clean shutdown
 - BVH frame alignment is time-based: `bvh_idx = int(policy_time × input_fps)`
+- Realtime reference buffering is controlled by `retarget_buffer_enabled`, `retarget_buffer_window_s`, `retarget_buffer_delay_s`, and `reference_steps`
 
 ### Inference Observation
 The only supported observation is **166D VelCmdHistory**:

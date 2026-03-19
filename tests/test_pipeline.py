@@ -82,6 +82,10 @@ def test_pipeline_inherits_robot_action_decode_config(monkeypatch, tmp_path: Pat
             "policy_hz": 50,
             "pd_hz": 1000,
             "transition_duration": 1.5,
+            "retarget_buffer_enabled": True,
+            "retarget_buffer_window_s": 0.75,
+            "retarget_buffer_delay_s": 0.02,
+            "reference_steps": [0, 1, -1],
             "realtime": True,
             "viewers": ["retarget", "sim2sim"],
         }
@@ -101,6 +105,10 @@ def test_pipeline_inherits_robot_action_decode_config(monkeypatch, tmp_path: Pat
     assert list(controller_cfg.default_dof_pos) == robot_default_angles
     assert list(controller_cfg.action_scale) == robot_action_scale
     assert loop_cfg["transition_duration"] == pytest.approx(1.5)
+    assert loop_cfg["retarget_buffer_enabled"] is True
+    assert loop_cfg["retarget_buffer_window_s"] == pytest.approx(0.75)
+    assert loop_cfg["retarget_buffer_delay_s"] == pytest.approx(0.02)
+    assert list(loop_cfg["reference_steps"]) == [0, 1, -1]
     assert loop_cfg["realtime"] is True
     assert captured["loop_kwargs"]["viewers"] == {"retarget", "sim2sim"}
 
