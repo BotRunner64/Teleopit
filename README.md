@@ -96,7 +96,16 @@ python train_mimic/scripts/save_onnx.py           --checkpoint logs/rsl_rl/g1_tr
 - 唯一 ONNX 签名：`obs` + `obs_history`
 - 训练采样模式：`uniform`
 - playback / benchmark 采样模式：`start`
+- 训练 motion 数据默认使用 `window_steps=[0]`；底层数据集和采样器已经支持 future/history window 元数据
 - realtime reference 配置入口：`retarget_buffer_enabled`、`retarget_buffer_window_s`、`retarget_buffer_delay_s`、`reference_steps`
+
+## Dataset Flow
+
+训练数据主线现在是：`typed source YAML -> preprocess/filter -> merged NPZ(train/val)`。
+
+- dataset spec 支持 `preprocess` 段，用于 root xy 归一化、脚底对地和基础过滤
+- dataset spec 支持 `window.reference_steps`，builder 会把有效采样范围写入 merged NPZ
+- 当前训练默认仍是 `window_steps=[0]`，但 `MotionLib` 已可按 future/history window 约束采样并读取多帧 window
 
 ## Constraints
 

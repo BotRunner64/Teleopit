@@ -2,6 +2,11 @@ name: seed_v1_smoke
 target_fps: 30
 val_percent: 5
 hash_salt: ""
+preprocess:
+  normalize_root_xy: true
+  ground_align: clip_min_foot
+window:
+  reference_steps: [0]
 sources:
   - name: seed_smoke
     type: seed_csv

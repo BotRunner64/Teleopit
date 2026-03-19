@@ -21,6 +21,9 @@ REVIEW_COLUMNS = [
     "duration_s",
     "weight",
     "clip_index",
+    "sample_start",
+    "sample_end",
+    "window_steps",
     "decision",
     "difficulty",
     "issue_tags",
@@ -44,6 +47,9 @@ class ReviewRow:
     duration_s: float
     weight: float = 1.0
     clip_index: int = -1  # index into merged NPZ clip_starts/clip_lengths; -1 = standalone clip
+    sample_start: int = 0
+    sample_end: int = 0
+    window_steps: str = "[0]"
     decision: str = ""
     difficulty: str = ""
     issue_tags: str = ""
@@ -74,12 +80,15 @@ def load_review_state(path: Path) -> list[ReviewRow]:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
             raise ValueError(f"review state is empty: {path}")
-        # clip_index is optional for backward compatibility with old review files
-        required = [c for c in REVIEW_COLUMNS if c != "clip_index"]
+        optional = {"clip_index", "sample_start", "sample_end", "window_steps"}
+        required = [c for c in REVIEW_COLUMNS if c not in optional]
         missing = [c for c in required if c not in reader.fieldnames]
         if missing:
             raise ValueError(f"review state missing columns: {missing}")
         has_clip_index = "clip_index" in reader.fieldnames
+        has_sample_start = "sample_start" in reader.fieldnames
+        has_sample_end = "sample_end" in reader.fieldnames
+        has_window_steps = "window_steps" in reader.fieldnames
 
         rows: list[ReviewRow] = []
         for idx, raw in enumerate(reader, start=2):
@@ -95,6 +104,9 @@ def load_review_state(path: Path) -> list[ReviewRow]:
                     duration_s=float(raw["duration_s"]),
                     weight=float(raw["weight"]),
                     clip_index=int(raw["clip_index"]) if has_clip_index else -1,
+                    sample_start=int(raw["sample_start"]) if has_sample_start else 0,
+                    sample_end=int(raw["sample_end"]) if has_sample_end else 0,
+                    window_steps=raw["window_steps"].strip() if has_window_steps else "[0]",
                     decision=raw["decision"].strip(),
                     difficulty=raw["difficulty"].strip(),
                     issue_tags=raw["issue_tags"].strip(),
@@ -131,6 +143,9 @@ def save_review_state(rows: list[ReviewRow], path: Path) -> None:
                 f"{row.duration_s:.4f}",
                 row.weight,
                 row.clip_index,
+                row.sample_start,
+                row.sample_end,
+                row.window_steps,
                 row.decision,
                 row.difficulty,
                 row.issue_tags,

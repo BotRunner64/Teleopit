@@ -32,6 +32,7 @@ def test_velcmd_history_task_is_registered() -> None:
     assert "actor_history" in env_cfg.observations
     assert "critic_history" in env_cfg.observations
     assert env_cfg.commands["motion"].sampling_mode == "uniform"
+    assert env_cfg.commands["motion"].window_steps == (0,)
     assert load_rl_cfg(DEFAULT_TASK).experiment_name == VELCMD_HISTORY_EXPERIMENT_NAME
     assert load_runner_cls(DEFAULT_TASK) is MotionTrackingOnPolicyRunner
 
@@ -48,6 +49,7 @@ def test_play_env_disables_corruption_and_random_push() -> None:
     assert play_cfg.observations["critic_history"].enable_corruption is False
     assert "push_robot" not in play_cfg.events
     assert play_cfg.commands["motion"].sampling_mode == "start"
+    assert play_cfg.commands["motion"].window_steps == (0,)
 
 
 def test_removed_task_variants_are_not_registered() -> None:

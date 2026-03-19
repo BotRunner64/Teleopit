@@ -130,6 +130,7 @@ def make_velcmd_history_tracking_env_cfg(
     motion_cmd.body_names = _TRACKING_BODY_NAMES
     motion_cmd.motion_file = DEFAULT_TRAIN_MOTION_FILE
     motion_cmd.sampling_mode = "uniform"
+    motion_cmd.window_steps = (0,)
 
     cfg.events["foot_friction"].params[
         "asset_cfg"

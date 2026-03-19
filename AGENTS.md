@@ -166,9 +166,15 @@ The only supported training task is `Tracking-Flat-G1-VelCmdHistory`.
 
 - Training env uses `sampling_mode="uniform"`
 - Playback/benchmark use `play=True`, which switches motion sampling to `start`
+- Training env defaults to `window_steps=[0]`; future/history windows are now carried by the dataset format and runtime sampler
 - Actor/critic both use `TemporalCNNModel`
 - Exported ONNX always has dual inputs: `obs` and `obs_history`
 - Adaptive sampling is removed; command sampling now supports only `uniform` and `start`
+
+### Dataset Pipeline
+- Dataset build spec supports a `preprocess` section for root-xy normalization, ground alignment, and basic clip filtering
+- Dataset build spec supports `window.reference_steps`; merged `train.npz` / `val.npz` now store `window_steps`, `clip_sample_starts`, and `clip_sample_ends`
+- `MotionLib` samples only valid center frames for the configured `window_steps`; `window_steps=[0]` preserves the current production behavior
 
 Quick reference:
 

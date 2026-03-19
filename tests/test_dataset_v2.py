@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from train_mimic.data import dataset_builder
 from train_mimic.data.dataset_builder import (
     DatasetClipRow,
     DatasetSourceSpec,
@@ -109,6 +110,35 @@ sources:
     assert spec.sources[0].weight == 2.5
     assert spec.sources[1].type == "bvh"
     assert spec.sources[1].bvh_format == "lafan1"
+    assert spec.window_steps == (0,)
+
+
+def test_load_dataset_spec_parses_preprocess_and_window(tmp_path: Path) -> None:
+    spec_path = tmp_path / "windowed.yaml"
+    spec_path.write_text(
+        f"""name: demo
+target_fps: 30
+val_percent: 5
+hash_salt: ""
+preprocess:
+  normalize_root_xy: true
+  ground_align: clip_min_foot
+  min_frames: 10
+window:
+  reference_steps: [0, 2, -1]
+sources:
+  - name: clips
+    type: npz
+    input: {tmp_path / 'npz_source'}
+""",
+        encoding="utf-8",
+    )
+
+    spec = load_dataset_spec(spec_path)
+    assert spec.preprocess.normalize_root_xy is True
+    assert spec.preprocess.ground_align == "clip_min_foot"
+    assert spec.preprocess.min_frames == 10
+    assert spec.window_steps == (0, 2, -1)
 
 
 def test_load_dataset_spec_rejects_bvh_without_format(tmp_path: Path) -> None:
@@ -262,6 +292,55 @@ def test_build_dataset_from_spec_writes_single_directory_outputs(tmp_path: Path)
     assert (dataset_dir / "manifest_resolved.csv").is_file()
     assert (dataset_dir / "build_info.json").is_file()
     assert report["clip_counts"]["total"] == 2
+    assert report["window"]["reference_steps"] == [0]
+
+    train_data = np.load(dataset_dir / "train.npz", allow_pickle=True)
+    assert np.array_equal(train_data["window_steps"], np.asarray([0], dtype=np.int64))
+    assert "clip_sample_starts" in train_data.files
+    assert "clip_sample_ends" in train_data.files
+
+
+def test_convert_source_to_npz_clips_applies_preprocess(tmp_path: Path) -> None:
+    npz_input = tmp_path / "npz_source"
+    _write_npz_from_pkl(npz_input / "clip_a.npz")
+
+    source = DatasetSourceSpec(name="npz_src", type="npz", input=str(npz_input))
+    output_dir = tmp_path / "dataset" / "clips" / "npz_src"
+    report = convert_source_to_npz_clips(
+        source,
+        output_dir,
+        jobs=1,
+        preprocess=DatasetSpec(
+            name="unused",
+            target_fps=30,
+            val_percent=5,
+            hash_salt="",
+            sources=[source],
+        ).preprocess,
+    )
+
+    assert report["clips"] == 1
+
+    from train_mimic.data.preprocess import DatasetPreprocessSpec
+
+    output_dir_2 = tmp_path / "dataset2" / "clips" / "npz_src"
+    convert_source_to_npz_clips(
+        source,
+        output_dir_2,
+        jobs=1,
+        preprocess=DatasetPreprocessSpec(
+            normalize_root_xy=True,
+            ground_align="clip_min_foot",
+        ),
+    )
+    clip = np.load(output_dir_2 / "clip_a.npz", allow_pickle=True)
+    body_names = [str(name) for name in clip["body_names"].tolist()]
+    pelvis_idx = body_names.index("pelvis")
+    left_idx = body_names.index("left_ankle_roll_link")
+    right_idx = body_names.index("right_ankle_roll_link")
+    assert np.allclose(clip["body_pos_w"][0, pelvis_idx, :2], 0.0)
+    foot_z = clip["body_pos_w"][:, [left_idx, right_idx], 2]
+    assert np.isclose(float(np.min(foot_z)), 0.0)
 
 
 def test_merge_clip_dicts_rejects_inconsistent_body_names(tmp_path: Path) -> None:
@@ -285,3 +364,63 @@ def test_merge_clip_dicts_rejects_non_positive_target_fps(tmp_path: Path) -> Non
 
     with pytest.raises(ValueError, match="target_fps must be > 0"):
         merge_clip_dicts([clip_dict], tmp_path / "merged.npz", target_fps=0)
+
+
+def test_merge_clip_dicts_accepts_single_frame_current_only_window(tmp_path: Path) -> None:
+    clip_path = tmp_path / "clip_single.npz"
+    _write_npz_from_pkl(clip_path)
+    clip_dict = dict(np.load(clip_path, allow_pickle=True))
+    for key in [
+        "joint_pos",
+        "joint_vel",
+        "body_pos_w",
+        "body_quat_w",
+        "body_lin_vel_w",
+        "body_ang_vel_w",
+    ]:
+        clip_dict[key] = np.asarray(clip_dict[key])[:1]
+
+    merge_clip_dicts([clip_dict], tmp_path / "merged_single.npz", window_steps=(0,))
+
+    merged = np.load(tmp_path / "merged_single.npz", allow_pickle=True)
+    assert merged["clip_lengths"].tolist() == [1]
+    assert merged["clip_sample_starts"].tolist() == [0]
+    assert merged["clip_sample_ends"].tolist() == [1]
+
+
+def test_batch_convert_chunk_preprocess_sees_resampled_target_fps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pkl_path = tmp_path / "clip.pkl"
+    pkl_path.write_bytes(b"placeholder")
+
+    clip_npz = tmp_path / "clip.npz"
+    _write_npz_from_pkl(clip_npz)
+    arrays = dict(np.load(clip_npz, allow_pickle=True))
+    arrays["fps"] = 60
+
+    observed_fps: list[int] = []
+
+    monkeypatch.setattr(
+        "train_mimic.scripts.convert_pkl_to_npz.convert_pkl_to_arrays",
+        lambda *_args, **_kwargs: arrays.copy(),
+    )
+
+    def _capture(clip_dict, *, preprocess, clip_label):
+        observed_fps.append(int(clip_dict["fps"]))
+        return clip_dict
+
+    monkeypatch.setattr(dataset_builder, "_maybe_preprocess_clip_dict", _capture)
+
+    dataset_builder._batch_convert_chunk(
+        [str(pkl_path)],
+        [1.0],
+        30,
+        str(tmp_path / "merged.npz"),
+        "train",
+        preprocess=dataset_builder.DatasetPreprocessSpec(),
+        window_steps=(0,),
+    )
+
+    assert observed_fps == [30]

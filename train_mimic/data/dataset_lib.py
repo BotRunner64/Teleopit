@@ -8,7 +8,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -33,31 +33,98 @@ class NpzMeta:
     num_bodies: int
 
 
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def parse_window_steps(raw: object | None) -> tuple[int, ...]:
+    """Parse future/history window steps in the runtime-compatible order.
+
+    Accepted format mirrors realtime ``reference_steps``:
+    ``[0, ...future/non-negative, ...history/negative]``.
+    """
+    if raw is None:
+        return (0,)
+    if isinstance(raw, np.ndarray):
+        raw = raw.tolist()
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        raise ValueError(f"window_steps must be a sequence of ints, got {raw!r}")
+
+    steps: list[int] = []
+    for value in raw:
+        if isinstance(value, np.generic):
+            value = value.item()
+        if not isinstance(value, int):
+            raise ValueError(f"window_steps entries must be ints, got {value!r}")
+        steps.append(int(value))
+    if not steps:
+        raise ValueError("window_steps must contain at least one step")
+    if 0 not in steps:
+        raise ValueError(f"window_steps must contain 0, got {steps}")
+
+    zero_idx = steps.index(0)
+    if zero_idx != 0:
+        raise ValueError(
+            "window_steps format must be [0, ...future/non-negative, ...history/negative]. "
+            f"Got {steps}."
+        )
+    seen_history = False
+    for step in steps[1:]:
+        if step < 0:
+            seen_history = True
+        elif seen_history:
+            raise ValueError(
+                "window_steps format must be [0, ...future/non-negative, ...history/negative]. "
+                f"Got {steps}."
+            )
+    return tuple(steps)
 
 
-def inspect_npz(path: Path) -> NpzMeta:
-    if not path.is_file():
-        raise FileNotFoundError(f"npz not found: {path}")
+def compute_clip_sample_ranges(
+    clip_lengths: np.ndarray,
+    *,
+    window_steps: Sequence[int] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return per-clip valid center-frame ranges as ``[start, end)``."""
+    lengths = np.asarray(clip_lengths, dtype=np.int64)
+    if lengths.ndim != 1:
+        raise ValueError(f"clip_lengths must be 1-D, got {lengths.shape}")
+    if np.any(lengths <= 0):
+        raise ValueError(f"clip_lengths must be > 0, got {lengths.tolist()}")
 
-    data = np.load(path, allow_pickle=True)
-    keys = set(data.files)
+    steps = parse_window_steps(window_steps)
+    max_future = max((step for step in steps if step > 0), default=0)
+    min_history = min((step for step in steps if step < 0), default=0)
+    starts = np.full_like(lengths, -min_history, dtype=np.int64)
+    # Motion interpolation wraps at ``(clip_len - 1) / fps``. Keep the sampled
+    # center time strictly below that boundary, and below any requested future step.
+    ends = lengths - 1 - max_future
+    # A single-frame clip still has one valid current-only sample at frame 0.
+    if max_future == 0 and min_history == 0:
+        ends = np.where(lengths == 1, 1, ends)
+    invalid = np.where(ends <= starts)[0]
+    if invalid.size > 0:
+        bad_idx = int(invalid[0])
+        raise ValueError(
+            "window_steps leave no valid center frames for clip "
+            f"{bad_idx}: length={int(lengths[bad_idx])}, steps={list(steps)}"
+        )
+    return starts, ends
+
+
+def inspect_clip_dict(payload: Mapping[str, Any]) -> NpzMeta:
+    keys = set(payload.keys())
     missing = [k for k in REQUIRED_NPZ_KEYS if k not in keys]
     if missing:
         raise ValueError(f"missing NPZ keys: {missing}")
 
-    fps = int(data["fps"])
+    fps = int(payload["fps"])
     if fps <= 0:
         raise ValueError(f"invalid fps={fps}")
 
-    joint_pos = np.asarray(data["joint_pos"])
-    joint_vel = np.asarray(data["joint_vel"])
-    body_pos_w = np.asarray(data["body_pos_w"])
-    body_quat_w = np.asarray(data["body_quat_w"])
-    body_lin_vel_w = np.asarray(data["body_lin_vel_w"])
-    body_ang_vel_w = np.asarray(data["body_ang_vel_w"])
-    body_names = np.asarray(data["body_names"])
+    joint_pos = np.asarray(payload["joint_pos"])
+    joint_vel = np.asarray(payload["joint_vel"])
+    body_pos_w = np.asarray(payload["body_pos_w"])
+    body_quat_w = np.asarray(payload["body_quat_w"])
+    body_lin_vel_w = np.asarray(payload["body_lin_vel_w"])
+    body_ang_vel_w = np.asarray(payload["body_ang_vel_w"])
+    body_names = np.asarray(payload["body_names"])
 
     if joint_pos.ndim != 2 or joint_pos.shape[1] != NUM_ACTIONS:
         raise ValueError(f"joint_pos must be (T,{NUM_ACTIONS}), got {joint_pos.shape}")
@@ -99,7 +166,40 @@ def inspect_npz(path: Path) -> NpzMeta:
     if np.min(quat_norm) < 1e-6:
         raise ValueError("body_quat_w contains near-zero norms")
 
+    if "window_steps" in payload:
+        parse_window_steps(payload["window_steps"])
+    if "clip_sample_starts" in payload or "clip_sample_ends" in payload:
+        if "clip_sample_starts" not in payload or "clip_sample_ends" not in payload:
+            raise ValueError("clip_sample_starts and clip_sample_ends must be provided together")
+        starts = np.asarray(payload["clip_sample_starts"], dtype=np.int64)
+        ends = np.asarray(payload["clip_sample_ends"], dtype=np.int64)
+        if starts.ndim != 1 or ends.ndim != 1 or starts.shape != ends.shape:
+            raise ValueError(
+                "clip_sample_starts/clip_sample_ends must be matching 1-D arrays, "
+                f"got {starts.shape} and {ends.shape}"
+            )
+        if "clip_lengths" in payload:
+            clip_lengths = np.asarray(payload["clip_lengths"], dtype=np.int64)
+            if clip_lengths.shape != starts.shape:
+                raise ValueError(
+                    "clip_lengths must match clip_sample_starts/clip_sample_ends shape, "
+                    f"got {clip_lengths.shape} vs {starts.shape}"
+                )
+            if np.any(starts < 0) or np.any(ends > clip_lengths) or np.any(ends <= starts):
+                raise ValueError("invalid clip sample ranges")
+
     return NpzMeta(fps=fps, num_frames=t, num_bodies=nb)
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def inspect_npz(path: Path) -> NpzMeta:
+    if not path.is_file():
+        raise FileNotFoundError(f"npz not found: {path}")
+    data = np.load(path, allow_pickle=True)
+    return inspect_clip_dict({key: data[key] for key in data.files})
 
 
 def hash_split(clip_id: str, val_percent: int, salt: str = "") -> str:
@@ -134,6 +234,7 @@ def merge_npz_files(
     *,
     target_fps: int | None = None,
     weights: list[float] | None = None,
+    window_steps: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     if not npz_files:
         raise ValueError("no npz files to merge")
@@ -222,6 +323,12 @@ def merge_npz_files(
     merged["clip_lengths"] = clip_lengths
     merged["clip_fps"] = np.array(per_clip_fps, dtype=np.int64)
     merged["clip_weights"] = np.array(per_clip_weights, dtype=np.float64)
+    sample_starts, sample_ends = compute_clip_sample_ranges(
+        clip_lengths, window_steps=window_steps
+    )
+    merged["window_steps"] = np.asarray(parse_window_steps(window_steps), dtype=np.int64)
+    merged["clip_sample_starts"] = sample_starts
+    merged["clip_sample_ends"] = sample_ends
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(output_path, **merged)
@@ -272,6 +379,7 @@ def merge_clip_dicts(
     *,
     target_fps: int | None = None,
     weights: list[float] | None = None,
+    window_steps: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     """Merge a list of in-memory clip array dicts into a single NPZ.
 
@@ -337,6 +445,12 @@ def merge_clip_dicts(
     merged["clip_lengths"] = clip_lengths
     merged["clip_fps"] = np.array(per_clip_fps, dtype=np.int64)
     merged["clip_weights"] = np.array(per_clip_weights, dtype=np.float64)
+    sample_starts, sample_ends = compute_clip_sample_ranges(
+        clip_lengths, window_steps=window_steps
+    )
+    merged["window_steps"] = np.asarray(parse_window_steps(window_steps), dtype=np.int64)
+    merged["clip_sample_starts"] = sample_starts
+    merged["clip_sample_ends"] = sample_ends
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(output_path, **merged)

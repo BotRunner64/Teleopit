@@ -10,6 +10,8 @@ import mujoco
 import numpy as np
 import torch
 
+from train_mimic.data.dataset_lib import compute_clip_sample_ranges, parse_window_steps
+
 from mjlab.managers import CommandTerm, CommandTermCfg
 from mjlab.utils.lab_api.math import (
     matrix_from_quat,
@@ -68,9 +70,14 @@ class MotionLib:
     """
 
     def __init__(
-        self, motion_file: str, body_indexes: torch.Tensor, device: str = "cpu"
+        self,
+        motion_file: str,
+        body_indexes: torch.Tensor,
+        device: str = "cpu",
+        window_steps: tuple[int, ...] | list[int] | None = None,
     ) -> None:
         self._device = device
+        self.window_steps = parse_window_steps(window_steps)
 
         # .npz is a zip archive — mmap_mode is ignored by np.load for .npz.
         # We load one array at a time and immediately body-filter + keep only
@@ -127,6 +134,31 @@ class MotionLib:
         self.num_clips = len(self.clip_starts)
         self.clip_dt = 1.0 / self.clip_fps
         self.clip_duration_s = (self.clip_lengths.float() - 1.0) * self.clip_dt
+        file_window_steps = parse_window_steps(data["window_steps"]) if "window_steps" in data else (0,)
+        if (
+            "clip_sample_starts" in data
+            and "clip_sample_ends" in data
+            and file_window_steps == self.window_steps
+        ):
+            self.clip_sample_starts = torch.tensor(
+                data["clip_sample_starts"], dtype=torch.long, device=device
+            )
+            self.clip_sample_ends = torch.tensor(
+                data["clip_sample_ends"], dtype=torch.long, device=device
+            )
+        else:
+            clip_sample_starts, clip_sample_ends = compute_clip_sample_ranges(
+                self.clip_lengths.cpu().numpy(),
+                window_steps=self.window_steps,
+            )
+            self.clip_sample_starts = torch.tensor(
+                clip_sample_starts, dtype=torch.long, device=device
+            )
+            self.clip_sample_ends = torch.tensor(
+                clip_sample_ends, dtype=torch.long, device=device
+            )
+        self.clip_sample_start_s = self.clip_sample_starts.float() * self.clip_dt
+        self.clip_sample_end_s = self.clip_sample_ends.float() * self.clip_dt
 
     # ------------------------------------------------------------------
     # Sampling helpers
@@ -144,9 +176,109 @@ class MotionLib:
         return torch.multinomial(probs, n, replacement=True)
 
     def sample_times(self, motion_ids: torch.Tensor) -> torch.Tensor:
-        """Uniform random time in [0, clip_duration_s) for each motion id."""
+        """Uniform random time over valid center frames for each motion id."""
+        sample_starts = self.clip_sample_starts[motion_ids].float()
+        sample_ends = self.clip_sample_ends[motion_ids].float()
+        valid_lengths = sample_ends - sample_starts
+        if torch.any(valid_lengths <= 0):
+            raise ValueError(
+                "Requested window_steps leave no valid frames for one or more sampled clips. "
+                f"window_steps={list(self.window_steps)}"
+            )
+        frame_f = sample_starts + torch.rand_like(sample_starts) * valid_lengths
+        return frame_f / self.clip_fps[motion_ids]
+
+    def sample_start_times(self, motion_ids: torch.Tensor) -> torch.Tensor:
+        """Return the earliest valid center time for each motion id."""
+        return self.clip_sample_start_s[motion_ids]
+
+    def _compute_interpolation_state(
+        self,
+        motion_ids: torch.Tensor,
+        motion_times: torch.Tensor,
+        steps: tuple[int, ...],
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+        fps = self.clip_fps[motion_ids]
+        starts = self.clip_starts[motion_ids]
+        lengths = self.clip_lengths[motion_ids]
         durations = self.clip_duration_s[motion_ids]
-        return torch.rand_like(durations) * durations
+
+        safe_dur = torch.clamp(durations, min=1e-6)
+        motion_times = torch.fmod(motion_times, safe_dur)
+        motion_times = torch.where(motion_times < 0, motion_times + safe_dur, motion_times)
+
+        step_offsets = torch.tensor(steps, dtype=torch.float32, device=self._device)
+        frame_f = motion_times[:, None] * fps[:, None] + step_offsets[None, :]
+        frame_i0 = frame_f.long()
+        frame_i1 = frame_i0 + 1
+        alpha = frame_f - frame_i0.float()
+
+        zero = torch.zeros_like(frame_i0)
+        max_frame = (lengths - 1)[:, None].expand_as(frame_i0)
+        frame_i0 = torch.clamp(frame_i0, min=zero, max=max_frame)
+        frame_i1 = torch.clamp(frame_i1, min=zero, max=max_frame)
+
+        idx0 = starts[:, None] + frame_i0
+        idx1 = starts[:, None] + frame_i1
+        window = len(steps)
+        return (
+            idx0.cpu().numpy().reshape(-1),
+            idx1.cpu().numpy().reshape(-1),
+            alpha.cpu().numpy().reshape(-1),
+            window,
+        )
+
+    def get_window_frames(
+        self,
+        motion_ids: torch.Tensor,
+        motion_times: torch.Tensor,
+        *,
+        window_steps: tuple[int, ...] | list[int] | None = None,
+    ) -> dict[str, torch.Tensor]:
+        steps = parse_window_steps(self.window_steps if window_steps is None else window_steps)
+        idx0_np, idx1_np, alpha_np, window = self._compute_interpolation_state(
+            motion_ids,
+            motion_times,
+            steps,
+        )
+        batch = motion_ids.shape[0]
+
+        result: dict[str, torch.Tensor] = {}
+        a1 = alpha_np[:, None]
+        for key, arr in (("joint_pos", self._joint_pos), ("joint_vel", self._joint_vel)):
+            v0, v1 = arr[idx0_np], arr[idx1_np]
+            interp = v0 + a1 * (v1 - v0)
+            result[key] = torch.from_numpy(interp.reshape(batch, window, -1)).to(
+                self._device,
+                non_blocking=True,
+            )
+
+        a2 = alpha_np[:, None, None]
+        for key, arr in (
+            ("body_pos_w", self._body_pos_w),
+            ("body_lin_vel_w", self._body_lin_vel_w),
+            ("body_ang_vel_w", self._body_ang_vel_w),
+        ):
+            v0, v1 = arr[idx0_np], arr[idx1_np]
+            interp = v0 + a2 * (v1 - v0)
+            result[key] = torch.from_numpy(interp.reshape(batch, window, *interp.shape[1:])).to(
+                self._device,
+                non_blocking=True,
+            )
+
+        q0 = torch.from_numpy(np.ascontiguousarray(self._body_quat_w[idx0_np]))
+        q1 = torch.from_numpy(np.ascontiguousarray(self._body_quat_w[idx1_np]))
+        alpha_t = torch.from_numpy(alpha_np)
+        nb = q0.shape[1]
+        q0_flat = q0.reshape(batch * window * nb, 4)
+        q1_flat = q1.reshape(batch * window * nb, 4)
+        alpha_flat = alpha_t.unsqueeze(-1).expand(batch * window, nb).reshape(batch * window * nb)
+        result["body_quat_w"] = (
+            _batched_quat_slerp(q0_flat, q1_flat, alpha_flat)
+            .reshape(batch, window, nb, 4)
+            .to(self._device, non_blocking=True)
+        )
+        return result
 
     # ------------------------------------------------------------------
     # Frame interpolation
@@ -162,71 +294,10 @@ class MotionLib:
         live), then transferred to CPU for numpy-based indexing and
         interpolation.  The small interpolated result is sent back to GPU.
         """
-        fps = self.clip_fps[motion_ids]
-        starts = self.clip_starts[motion_ids]
-        lengths = self.clip_lengths[motion_ids]
-        durations = self.clip_duration_s[motion_ids]
-
-        # Wrap for looping
-        safe_dur = torch.clamp(durations, min=1e-6)
-        motion_times = torch.fmod(motion_times, safe_dur)
-        motion_times = torch.where(motion_times < 0, motion_times + safe_dur, motion_times)
-
-        # Fractional frame index within clip
-        frame_f = motion_times * fps
-        frame_i0 = frame_f.long()
-        frame_i1 = frame_i0 + 1
-        alpha = frame_f - frame_i0.float()
-
-        max_frame = lengths - 1
-        frame_i0 = torch.clamp(frame_i0, min=torch.zeros_like(frame_i0), max=max_frame)
-        frame_i1 = torch.clamp(frame_i1, min=torch.zeros_like(frame_i1), max=max_frame)
-
-        idx0 = starts + frame_i0
-        idx1 = starts + frame_i1
-
-        # --- Transfer indices to CPU for numpy indexing ---
-        idx0_np = idx0.cpu().numpy()
-        idx1_np = idx1.cpu().numpy()
-        alpha_np = alpha.cpu().numpy()
-
-        result: dict[str, torch.Tensor] = {}
-
-        # Linear interpolation for 2-D arrays (n, D)
-        a1 = alpha_np[:, None]
-        for key, arr in (("joint_pos", self._joint_pos), ("joint_vel", self._joint_vel)):
-            v0, v1 = arr[idx0_np], arr[idx1_np]
-            result[key] = torch.from_numpy(v0 + a1 * (v1 - v0)).to(
-                self._device, non_blocking=True
-            )
-
-        # Linear interpolation for 3-D arrays (n, B, D)
-        a2 = alpha_np[:, None, None]
-        for key, arr in (
-            ("body_pos_w", self._body_pos_w),
-            ("body_lin_vel_w", self._body_lin_vel_w),
-            ("body_ang_vel_w", self._body_ang_vel_w),
-        ):
-            v0, v1 = arr[idx0_np], arr[idx1_np]
-            result[key] = torch.from_numpy(v0 + a2 * (v1 - v0)).to(
-                self._device, non_blocking=True
-            )
-
-        # Slerp for quaternions (n, B, 4) — done in torch on CPU, then to GPU
-        q0 = torch.from_numpy(np.ascontiguousarray(self._body_quat_w[idx0_np]))
-        q1 = torch.from_numpy(np.ascontiguousarray(self._body_quat_w[idx1_np]))
-        alpha_t = torch.from_numpy(alpha_np)
-        n, nb = q0.shape[0], q0.shape[1]
-        q0_flat = q0.reshape(n * nb, 4)
-        q1_flat = q1.reshape(n * nb, 4)
-        alpha_flat = alpha_t.unsqueeze(-1).expand(n, nb).reshape(n * nb)
-        result["body_quat_w"] = (
-            _batched_quat_slerp(q0_flat, q1_flat, alpha_flat)
-            .reshape(n, nb, 4)
-            .to(self._device, non_blocking=True)
-        )
-
-        return result
+        windowed = self.get_window_frames(motion_ids, motion_times, window_steps=(0,))
+        return {
+            key: value[:, 0] for key, value in windowed.items()
+        }
 
 
 # Backward compatibility alias
@@ -252,7 +323,10 @@ class MotionCommand(CommandTerm):
         )
 
         self.motion = MotionLib(
-            self.cfg.motion_file, self.body_indexes, device=self.device
+            self.cfg.motion_file,
+            self.body_indexes,
+            device=self.device,
+            window_steps=self.cfg.window_steps,
         )
 
         # Per-env motion state: clip id + elapsed time (seconds)
@@ -483,7 +557,7 @@ class MotionCommand(CommandTerm):
     def _resample_command(self, env_ids: torch.Tensor):
         if self.cfg.sampling_mode == "start":
             self.motion_ids[env_ids] = self.motion.sample_motion_ids(len(env_ids))
-            self.motion_times[env_ids] = 0.0
+            self.motion_times[env_ids] = self.motion.sample_start_times(self.motion_ids[env_ids])
         else:
             self._uniform_sampling(env_ids)
 
@@ -575,8 +649,8 @@ class MotionCommand(CommandTerm):
         self.motion_times += self._step_dt
 
         # Handle clips that exceeded their duration
-        durations = self.motion.clip_duration_s[self.motion_ids]
-        exceeded = self.motion_times >= durations
+        end_times = self.motion.clip_sample_end_s[self.motion_ids]
+        exceeded = self.motion_times >= end_times
 
         env_ids = torch.where(exceeded)[0]
         if env_ids.numel() > 0:
@@ -696,6 +770,7 @@ class MotionCommandCfg(CommandTermCfg):
     velocity_range: dict[str, tuple[float, float]] = field(default_factory=dict)
     joint_position_range: tuple[float, float] = (-0.52, 0.52)
     sampling_mode: Literal["uniform", "start"] = "uniform"
+    window_steps: tuple[int, ...] = (0,)
 
     @dataclass
     class VizCfg:
