@@ -42,7 +42,6 @@ from train_mimic.tasks.tracking.config.constants import DEFAULT_TRAIN_MOTION_FIL
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train G1 tracking policy (mjlab).")
-    parser.add_argument("--task", type=str, default=DEFAULT_TASK)
     parser.add_argument("--num_envs", type=int, default=None)
     parser.add_argument("--max_iterations", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
@@ -255,7 +254,7 @@ def _run_worker(args: argparse.Namespace) -> None:
 
     # Load configs from registry
     _task_name, env_cfg, agent_cfg, runner_cls = load_task_components(
-        args.task,
+        DEFAULT_TASK,
         load_env_cfg=load_env_cfg,
         load_rl_cfg=load_rl_cfg,
         load_runner_cls=load_runner_cls,

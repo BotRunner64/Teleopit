@@ -21,7 +21,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 from teleopit.controllers.observation import (
-    MjlabObservationBuilder,
     VelCmdObservationBuilder,
     _quat_inv_np,
     _quat_mul_np,
@@ -83,7 +82,7 @@ class Sim2RealController:
             cfg,
             self._project_root,
             controller_cls=RLPolicyController,
-            obs_builder_cls=MjlabObservationBuilder,  # factory auto-detects VelCmd from policy dim
+            obs_builder_cls=VelCmdObservationBuilder,
             pico4_input_cls=Pico4InputProvider,
             udp_bvh_input_cls=UDPBVHInputProvider,
             retargeter_cls=RetargetingModule,
@@ -184,16 +183,11 @@ class Sim2RealController:
         motion_joint_vel = np.zeros(self.num_actions, dtype=np.float32)
         motion_qpos = np.asarray(qpos[:7 + self.num_actions], dtype=np.float32)
 
-        if isinstance(self.obs_builder, VelCmdObservationBuilder):
-            obs = self.obs_builder.build(
-                robot_state, motion_qpos, motion_joint_vel, self._last_action,
-                np.zeros(3, dtype=np.float32),
-                np.zeros(3, dtype=np.float32),
-            )
-        else:
-            obs = self.obs_builder.build(
-                robot_state, motion_qpos, motion_joint_vel, self._last_action,
-            )
+        obs = self.obs_builder.build(
+            robot_state, motion_qpos, motion_joint_vel, self._last_action,
+            np.zeros(3, dtype=np.float32),
+            np.zeros(3, dtype=np.float32),
+        )
         obs = self._validate_observation_for_policy(obs)
 
         action = self.policy.compute_action(obs)
@@ -222,29 +216,17 @@ class Sim2RealController:
         reference_qpos = self._retarget_to_qpos(retargeted)
         # Robot state from SDK
         robot_state = self.robot.get_state()
-        if isinstance(self.obs_builder, VelCmdObservationBuilder) and self._fixed_ref_yaw_alignment:
+        if self._fixed_ref_yaw_alignment:
             reference_qpos = self._align_velcmd_reference_yaw(reference_qpos, robot_state=robot_state)
         qpos = self._qpos_interpolator.apply(reference_qpos)
 
-        if not isinstance(self.obs_builder, VelCmdObservationBuilder):
-            # Non-VelCmd policies keep the legacy yaw alignment path.
-            align_motion_qpos_yaw(np.asarray(robot_state.quat, dtype=np.float32), qpos)
-
-        # Compute anchor velocities from the same reference frame that will be
-        # fed to the observation builder. VelCmd policies must preserve the
-        # original reference world-frame heading/translation; otherwise the
-        # commanded velocity degenerates toward the reference frame and loses
-        # the walk/turn signal.
-        anchor_lin_vel_w: Float32Array | None = None
-        anchor_ang_vel_w: Float32Array | None = None
-        if isinstance(self.obs_builder, VelCmdObservationBuilder):
-            if self._qpos_interpolator.is_active:
-                true_lin_vel_w, true_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
-                blend = np.float32(self._qpos_interpolator.last_alpha)
-                anchor_lin_vel_w = np.asarray(true_lin_vel_w * blend, dtype=np.float32)
-                anchor_ang_vel_w = np.asarray(true_ang_vel_w * blend, dtype=np.float32)
-            else:
-                anchor_lin_vel_w, anchor_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
+        if self._qpos_interpolator.is_active:
+            true_lin_vel_w, true_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
+            blend = np.float32(self._qpos_interpolator.last_alpha)
+            anchor_lin_vel_w = np.asarray(true_lin_vel_w * blend, dtype=np.float32)
+            anchor_ang_vel_w = np.asarray(true_ang_vel_w * blend, dtype=np.float32)
+        else:
+            anchor_lin_vel_w, anchor_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
 
         if qpos.shape[0] < 7 + self.num_actions:
             raise ValueError(
@@ -258,16 +240,10 @@ class Sim2RealController:
             motion_joint_vel = (motion_joint_pos - prev_joint_pos) * np.float32(self.policy_hz)
 
         motion_qpos = np.asarray(qpos[:7 + self.num_actions], dtype=np.float32)
-        if isinstance(self.obs_builder, VelCmdObservationBuilder):
-            assert anchor_lin_vel_w is not None and anchor_ang_vel_w is not None
-            obs = self.obs_builder.build(
-                robot_state, motion_qpos, motion_joint_vel, self._last_action,
-                anchor_lin_vel_w, anchor_ang_vel_w,
-            )
-        else:
-            obs = self.obs_builder.build(
-                robot_state, motion_qpos, motion_joint_vel, self._last_action,
-            )
+        obs = self.obs_builder.build(
+            robot_state, motion_qpos, motion_joint_vel, self._last_action,
+            anchor_lin_vel_w, anchor_ang_vel_w,
+        )
         obs = self._validate_observation_for_policy(obs)
 
         action = self.policy.compute_action(obs)
@@ -285,7 +261,6 @@ class Sim2RealController:
         self, qpos: Float64Array,
     ) -> tuple[Float32Array, Float32Array]:
         """Compute motion anchor linear/angular velocity in world frame via finite diff."""
-        assert isinstance(self.obs_builder, VelCmdObservationBuilder)
         builder = self.obs_builder._base
 
         cur_pos = np.asarray(qpos[0:3], dtype=np.float32)

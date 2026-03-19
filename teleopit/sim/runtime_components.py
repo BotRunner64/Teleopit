@@ -10,9 +10,7 @@ from numpy.typing import NDArray
 
 from teleopit.bus.topics import TOPIC_ACTION, TOPIC_MIMIC_OBS, TOPIC_ROBOT_STATE
 from teleopit.controllers.observation import (
-    MjlabObservationBuilder,
     VelCmdObservationBuilder,
-    align_motion_qpos_yaw,
     compute_fixed_yaw_alignment_quat,
     rotate_motion_qpos_by_yaw,
 )
@@ -26,19 +24,6 @@ Float64Array = NDArray[np.float64]
 
 class _SupportsGetTarget(Protocol):
     def get_target_dof_pos(self, raw_action: Float32Array) -> Float32Array: ...
-
-
-class _SupportsBuild(Protocol):
-    def build(self, state: object, mimic_obs: Float32Array, last_action: Float32Array) -> Float32Array: ...
-
-
-class _SupportsBuildObservation(Protocol):
-    def build_observation(
-        self,
-        state: object,
-        history: list[Float32Array],
-        action_mimic: Float32Array,
-    ) -> Float32Array: ...
 
 
 class _SupportsAddFrame(Protocol):
@@ -152,7 +137,7 @@ class PolicyStepRunner:
 
     def prepare_motion_command(self, retargeted: object, state: object) -> MotionPreparation:
         reference_qpos = self._retarget_to_qpos(retargeted)
-        if isinstance(self.obs_builder, VelCmdObservationBuilder) and self.fixed_ref_yaw_alignment:
+        if self.fixed_ref_yaw_alignment:
             reference_qpos = self._align_velcmd_reference_yaw(reference_qpos, state)
         self._pending_reference_qpos = reference_qpos.copy()
 
@@ -166,33 +151,14 @@ class PolicyStepRunner:
 
         mimic_obs = extract_mimic_obs(qpos=qpos, last_qpos=self.last_retarget_qpos, dt=1.0 / self.policy_hz)
         retarget_viewer_qpos = qpos.copy()
-        if not isinstance(self.obs_builder, VelCmdObservationBuilder):
-            robot_xy = np.asarray(state.base_pos[:2], dtype=np.float64)
-            qpos[0:2] = robot_xy
-            align_motion_qpos_yaw(np.asarray(state.quat, dtype=np.float32), qpos)
 
-        # Compute motion anchor velocities from the same reference frame that
-        # will be fed to the observation builder.
-        #
-        # VelCmd policies are different: training consumes the reference motion's
-        # original world-frame translation / heading and then projects the
-        # resulting anchor velocities into the robot frame. If we overwrite root
-        # XY or yaw here, the command collapses toward reference-frame velocity
-        # and loses the walk/turn signal.
-        motion_anchor_lin_vel_w: Float32Array | None = None
-        motion_anchor_ang_vel_w: Float32Array | None = None
-        if isinstance(self.obs_builder, VelCmdObservationBuilder):
-            if self.qpos_interpolator.is_active:
-                # Warm-start the command smoothly instead of snapping from all
-                # zeros to full reference velocity on the final interpolation step.
-                true_lin_vel_w, true_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
-                blend = np.float32(self.qpos_interpolator.last_alpha)
-                motion_anchor_lin_vel_w = np.asarray(true_lin_vel_w * blend, dtype=np.float32)
-                motion_anchor_ang_vel_w = np.asarray(true_ang_vel_w * blend, dtype=np.float32)
-            else:
-                motion_anchor_lin_vel_w, motion_anchor_ang_vel_w = (
-                    self._compute_anchor_velocities(reference_qpos)
-                )
+        if self.qpos_interpolator.is_active:
+            true_lin_vel_w, true_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
+            blend = np.float32(self.qpos_interpolator.last_alpha)
+            motion_anchor_lin_vel_w = np.asarray(true_lin_vel_w * blend, dtype=np.float32)
+            motion_anchor_ang_vel_w = np.asarray(true_ang_vel_w * blend, dtype=np.float32)
+        else:
+            motion_anchor_lin_vel_w, motion_anchor_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
 
         return MotionPreparation(
             qpos=qpos,
@@ -223,7 +189,6 @@ class PolicyStepRunner:
         self, qpos: Float64Array
     ) -> tuple[Float32Array, Float32Array]:
         """Compute motion anchor linear/angular velocity in world frame via finite diff."""
-        assert isinstance(self.obs_builder, VelCmdObservationBuilder)
         builder = self.obs_builder._base
 
         # Current anchor state via FK.
@@ -298,37 +263,17 @@ class PolicyStepRunner:
         motion_prep: MotionPreparation,
         last_action: Float32Array,
     ) -> Float32Array:
-        retarget_qpos = motion_prep.qpos
-        if isinstance(self.obs_builder, VelCmdObservationBuilder):
-            motion_qpos, motion_joint_vel = self._extract_motion_joint_data(retarget_qpos)
-            assert motion_prep.motion_anchor_lin_vel_w is not None
-            assert motion_prep.motion_anchor_ang_vel_w is not None
-            obs = self.obs_builder.build(
-                cast(object, state),
-                motion_qpos,
-                motion_joint_vel,
-                last_action,
-                motion_prep.motion_anchor_lin_vel_w,
-                motion_prep.motion_anchor_ang_vel_w,
-            )
-        elif isinstance(self.obs_builder, MjlabObservationBuilder):
-            motion_qpos, motion_joint_vel = self._extract_motion_joint_data(retarget_qpos)
-            obs = self.obs_builder.build(
-                cast(object, state),
-                motion_qpos,
-                motion_joint_vel,
-                last_action,
-            )
-        elif hasattr(self.obs_builder, "build_observation"):
-            obs = cast(_SupportsBuildObservation, self.obs_builder).build_observation(
-                state, [last_action], motion_prep.mimic_obs,
-            )
-        elif hasattr(self.obs_builder, "build"):
-            obs = cast(_SupportsBuild, cast(object, self.obs_builder)).build(
-                state, motion_prep.mimic_obs, last_action,
-            )
-        else:
-            raise TypeError("ObservationBuilder must provide build_observation() or build().")
+        motion_qpos, motion_joint_vel = self._extract_motion_joint_data(motion_prep.qpos)
+        assert motion_prep.motion_anchor_lin_vel_w is not None
+        assert motion_prep.motion_anchor_ang_vel_w is not None
+        obs = self.obs_builder.build(
+            cast(object, state),
+            motion_qpos,
+            motion_joint_vel,
+            last_action,
+            motion_prep.motion_anchor_lin_vel_w,
+            motion_prep.motion_anchor_ang_vel_w,
+        )
         return np.asarray(obs, dtype=np.float32)
 
     def _extract_motion_joint_data(

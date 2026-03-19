@@ -165,12 +165,10 @@ python train_mimic/scripts/data/check_motion_npz_fk.py \
 
 ```bash
 python train_mimic/scripts/train.py \
-    --task Tracking-Flat-G1-NoStateEst \
     --motion_file data/datasets/twist2_full/train.npz
 
 python train_mimic/scripts/benchmark.py \
-    --task Tracking-Flat-G1-NoStateEst \
-    --checkpoint logs/rsl_rl/g1_tracking/<run>/model_30000.pt \
+    --checkpoint logs/rsl_rl/g1_tracking_velcmd_history/<run>/model_30000.pt \
     --motion_file data/datasets/twist2_full/val.npz \
     --num_envs 1
 ```

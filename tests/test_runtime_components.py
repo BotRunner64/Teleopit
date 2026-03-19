@@ -79,20 +79,3 @@ def test_prepare_motion_command_velcmd_keeps_fixed_yaw_after_start(monkeypatch) 
 
     np.testing.assert_allclose(second.qpos[:2], np.array([1.5, 4.5]), atol=1e-6)
     np.testing.assert_allclose(second.qpos[3:7], first_state.quat, atol=1e-6)
-
-
-def test_prepare_motion_command_non_velcmd_aligns_root_xy_to_robot() -> None:
-    runner = _make_runner(SimpleNamespace())
-
-    retarget_qpos = np.zeros(36, dtype=np.float64)
-    retarget_qpos[:3] = np.array([1.5, 4.5, 0.82], dtype=np.float64)
-    retarget_qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-    state = SimpleNamespace(
-        base_pos=np.array([10.0, 20.0, 0.8], dtype=np.float32),
-        quat=np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32),
-    )
-
-    prep = runner.prepare_motion_command(retarget_qpos, state)
-
-    np.testing.assert_allclose(prep.qpos[:2], np.array([10.0, 20.0]), atol=1e-6)
-    np.testing.assert_allclose(prep.qpos[3:7], state.quat, atol=1e-6)

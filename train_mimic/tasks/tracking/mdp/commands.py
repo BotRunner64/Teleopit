@@ -55,62 +55,6 @@ def _batched_quat_slerp(
     return result / result.norm(dim=-1, keepdim=True)
 
 
-def _compute_clip_failure_counts(
-    motion_ids: torch.Tensor, episode_failed: torch.Tensor, bin_count: int
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute per-clip exposure and failure counts for one adaptive window."""
-    exposure_count = torch.bincount(motion_ids, minlength=bin_count).float()
-    failure_count = torch.bincount(
-        motion_ids[episode_failed], minlength=bin_count
-    ).float()
-    return exposure_count, failure_count
-
-
-def _compute_failure_rate_from_counts(
-    exposure_count: torch.Tensor, failure_count: torch.Tensor
-) -> torch.Tensor:
-    """Convert per-clip exposure and failure counts into failure rates."""
-    failure_rate = torch.zeros_like(exposure_count, dtype=torch.float32)
-    valid = exposure_count > 0
-    failure_rate[valid] = failure_count[valid] / exposure_count[valid]
-    return failure_rate
-
-
-def _compute_clip_failure_rate(
-    motion_ids: torch.Tensor, episode_failed: torch.Tensor, bin_count: int
-) -> torch.Tensor:
-    """Compute per-clip failure rate for the current adaptive-sampling window."""
-    exposure_count, failure_count = _compute_clip_failure_counts(
-        motion_ids, episode_failed, bin_count
-    )
-    return _compute_failure_rate_from_counts(exposure_count, failure_count)
-
-
-def _compute_rank_sample_range(request_counts: torch.Tensor, rank: int) -> tuple[int, int]:
-    """Return the [start, end) slice in a global sample tensor for one rank."""
-    if request_counts.dim() != 1:
-        raise ValueError(f"request_counts must be 1-D, got shape {tuple(request_counts.shape)}")
-    if rank < 0 or rank >= int(request_counts.numel()):
-        raise ValueError(
-            f"rank {rank} is out of range for request_counts with {request_counts.numel()} entries"
-        )
-    if request_counts.numel() == 0:
-        return 0, 0
-    prefix = torch.cumsum(request_counts, dim=0)
-    start = int(prefix[rank - 1].item()) if rank > 0 else 0
-    end = int(prefix[rank].item())
-    return start, end
-
-
-def _compute_windowed_ema_alpha(alpha: float, num_steps: int) -> float:
-    """Convert a per-step EMA alpha into an equivalent ``num_steps`` window alpha."""
-    if not 0.0 <= alpha <= 1.0:
-        raise ValueError(f"alpha must be in [0, 1], got {alpha}")
-    if num_steps <= 0:
-        raise ValueError(f"num_steps must be positive, got {num_steps}")
-    return 1.0 - math.pow(1.0 - alpha, num_steps)
-
-
 class MotionLib:
     """Clip-aware motion library.
 
@@ -335,35 +279,8 @@ class MotionCommand(CommandTerm):
         self.body_lin_vel_b = torch.zeros(self.num_envs, nb, 3, device=self.device)
         self.body_ang_vel_b = torch.zeros(self.num_envs, nb, 3, device=self.device)
 
-        # Adaptive sampling — bins are now per-clip and track an EMA of
-        # failure rate rather than raw failure count to avoid scaling the
-        # adaptive signal with num_envs.
         self.bin_count = max(self.motion.num_clips, 1)
-        self.bin_failed_rate = torch.zeros(
-            self.bin_count, dtype=torch.float, device=self.device
-        )
-        self._adaptive_pending_exposure_count = torch.zeros(
-            self.bin_count, dtype=torch.float, device=self.device
-        )
-        self._adaptive_pending_failure_count = torch.zeros(
-            self.bin_count, dtype=torch.float, device=self.device
-        )
-        self._adaptive_step_counter = 0
-        self._adaptive_sync_counter = 0
-        self._adaptive_resample_counter = 0
-        self._adaptive_sync_alpha = _compute_windowed_ema_alpha(
-            self.cfg.adaptive_alpha, self.cfg.adaptive_sync_steps
-        )
         self.kernel = torch.ones(1, device=self.device)
-
-        if self.cfg.adaptive_sync_steps <= 0:
-            raise ValueError(
-                f"adaptive_sync_steps must be positive, got {self.cfg.adaptive_sync_steps}"
-            )
-        if self.cfg.adaptive_log_interval <= 0:
-            raise ValueError(
-                f"adaptive_log_interval must be positive, got {self.cfg.adaptive_log_interval}"
-            )
 
         self.metrics["error_anchor_pos"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["error_anchor_rot"] = torch.zeros(self.num_envs, device=self.device)
@@ -556,216 +473,6 @@ class MotionCommand(CommandTerm):
     # Sampling
     # ------------------------------------------------------------------
 
-    def _sampling_probabilities(self) -> torch.Tensor:
-        sampling_probabilities = (
-            self.bin_failed_rate + self.cfg.adaptive_uniform_ratio / float(self.bin_count)
-        )
-        total = sampling_probabilities.sum()
-        if not torch.isfinite(total) or total <= 0:
-            raise ValueError(
-                "Adaptive sampling produced an invalid probability mass. "
-                f"sum={total.item() if torch.isfinite(total) else total}, "
-                f"uniform_ratio={self.cfg.adaptive_uniform_ratio}, bin_count={self.bin_count}"
-            )
-        sampling_probabilities = sampling_probabilities / total
-        if not torch.isfinite(sampling_probabilities).all():
-            raise ValueError("Adaptive sampling probabilities contain NaN or Inf values.")
-        return sampling_probabilities
-
-    def _update_sampling_metrics(self, sampling_probabilities: torch.Tensor) -> None:
-        H = -(sampling_probabilities * (sampling_probabilities + 1e-12).log()).sum()
-        H_norm = H / math.log(self.bin_count) if self.bin_count > 1 else 1.0
-        pmax, imax = sampling_probabilities.max(dim=0)
-        self.metrics["sampling_entropy"][:] = H_norm
-        self.metrics["sampling_top1_prob"][:] = pmax
-        self.metrics["sampling_top1_bin"][:] = imax.float() / self.bin_count
-
-    def _distributed_runtime(self) -> tuple[object | None, bool, int, int]:
-        distributed = getattr(torch, "distributed", None)
-        enabled = bool(
-            distributed is not None
-            and distributed.is_available()
-            and distributed.is_initialized()
-        )
-        if not enabled or distributed is None:
-            return distributed, False, 0, 1
-        return distributed, True, int(distributed.get_rank()), int(distributed.get_world_size())
-
-    def _gather_adaptive_request_counts(self, local_count: int) -> torch.Tensor:
-        request_count = torch.tensor([local_count], dtype=torch.long, device=self.device)
-        distributed, dist_enabled, _dist_rank, dist_world_size = self._distributed_runtime()
-        if not dist_enabled or distributed is None:
-            return request_count
-
-        gathered = [torch.zeros_like(request_count) for _ in range(dist_world_size)]
-        distributed.all_gather(gathered, request_count)
-        return torch.cat(gathered)
-
-    def _maybe_log_adaptive_batch(
-        self,
-        request_counts: torch.Tensor,
-        sampling_probabilities: torch.Tensor,
-        sampled_clips: torch.Tensor,
-    ) -> None:
-        _distributed, _dist_enabled, dist_rank, _dist_world_size = self._distributed_runtime()
-        if dist_rank != 0:
-            return
-
-        should_log = self._adaptive_resample_counter % self.cfg.adaptive_log_interval == 0
-        if not should_log:
-            top1_prob = float(sampling_probabilities.max().item())
-            entropy = float(self.metrics["sampling_entropy"][0].item())
-            should_log = (
-                top1_prob >= self.cfg.adaptive_warn_top1_prob
-                or entropy <= self.cfg.adaptive_warn_entropy
-            )
-        if not should_log:
-            return
-
-        sample_hist = torch.bincount(sampled_clips, minlength=self.bin_count).float()
-        topk = min(self.cfg.adaptive_log_topk, self.bin_count)
-        top_counts, top_indices = torch.topk(sample_hist, k=topk)
-        parts = []
-        total_samples = max(int(sampled_clips.numel()), 1)
-        for clip_id, count in zip(top_indices.tolist(), top_counts.tolist(), strict=False):
-            if count <= 0:
-                continue
-            parts.append(
-                f"{clip_id}:count={int(count)},share={count / total_samples:.4f},"
-                f"prob={float(sampling_probabilities[clip_id].item()):.4f}"
-            )
-
-        _LOG.warning(
-            "[adaptive_sampling_batch] batch=%d env_step=%d total_resamples=%d "
-            "request_counts=%s top_draws=[%s]",
-            self._adaptive_resample_counter,
-            self._adaptive_step_counter,
-            int(sampled_clips.numel()),
-            request_counts.tolist(),
-            ", ".join(parts),
-        )
-
-    def _maybe_log_adaptive_sync(
-        self,
-        observed_failure_rate: torch.Tensor,
-        exposure_count: torch.Tensor,
-        sampling_probabilities: torch.Tensor,
-    ) -> None:
-        _distributed, _dist_enabled, dist_rank, dist_world_size = self._distributed_runtime()
-        if dist_rank != 0:
-            return
-
-        should_log = self._adaptive_sync_counter % self.cfg.adaptive_log_interval == 0
-        if not should_log:
-            top1_prob = float(sampling_probabilities.max().item())
-            entropy = float(self.metrics["sampling_entropy"][0].item())
-            should_log = (
-                top1_prob >= self.cfg.adaptive_warn_top1_prob
-                or entropy <= self.cfg.adaptive_warn_entropy
-            )
-        if not should_log:
-            return
-
-        topk = min(self.cfg.adaptive_log_topk, self.bin_count)
-        top_probs, top_indices = torch.topk(sampling_probabilities, k=topk)
-        parts = []
-        for clip_id, prob in zip(top_indices.tolist(), top_probs.tolist(), strict=False):
-            fail_rate = float(observed_failure_rate[clip_id].item())
-            exposures = int(exposure_count[clip_id].item())
-            parts.append(
-                f"{clip_id}:p={prob:.4f},fail={fail_rate:.4f},exp={exposures}"
-            )
-
-        _LOG.warning(
-            "[adaptive_sampling] sync=%d env_step=%d world_size=%d active_clips=%d "
-            "entropy=%.4f top1_prob=%.4f top_bins=[%s]",
-            self._adaptive_sync_counter,
-            self._adaptive_step_counter,
-            dist_world_size,
-            int((exposure_count > 0).sum().item()),
-            float(self.metrics["sampling_entropy"][0].item()),
-            float(self.metrics["sampling_top1_prob"][0].item()),
-            ", ".join(parts),
-        )
-
-    def _sync_adaptive_failure_rate(self) -> None:
-        exposure_count = self._adaptive_pending_exposure_count.clone()
-        failure_count = self._adaptive_pending_failure_count.clone()
-        distributed, dist_enabled, _dist_rank, _dist_world_size = self._distributed_runtime()
-        if dist_enabled and distributed is not None:
-            distributed.all_reduce(exposure_count, op=distributed.ReduceOp.SUM)
-            distributed.all_reduce(failure_count, op=distributed.ReduceOp.SUM)
-
-        observed_failure_rate = _compute_failure_rate_from_counts(
-            exposure_count, failure_count
-        )
-        self.bin_failed_rate = (
-            self._adaptive_sync_alpha * observed_failure_rate
-            + (1 - self._adaptive_sync_alpha) * self.bin_failed_rate
-        )
-        self._adaptive_pending_exposure_count.zero_()
-        self._adaptive_pending_failure_count.zero_()
-        self._adaptive_sync_counter += 1
-
-        sampling_probabilities = self._sampling_probabilities()
-        self._update_sampling_metrics(sampling_probabilities)
-        self._maybe_log_adaptive_sync(
-            observed_failure_rate=observed_failure_rate,
-            exposure_count=exposure_count,
-            sampling_probabilities=sampling_probabilities,
-        )
-
-    def _adaptive_resample_motion_ids(self, env_ids: torch.Tensor) -> None:
-        current_motion_ids = self.motion_ids[env_ids]
-        episode_failed = self._env.termination_manager.terminated[env_ids]
-        exposure_count, failure_count = _compute_clip_failure_counts(
-            current_motion_ids, episode_failed, self.bin_count
-        )
-        self._adaptive_pending_exposure_count += exposure_count
-        self._adaptive_pending_failure_count += failure_count
-
-        request_counts = self._gather_adaptive_request_counts(int(env_ids.numel()))
-        total_samples = int(request_counts.sum().item())
-        if total_samples == 0:
-            return
-
-        sampling_probabilities = self._sampling_probabilities()
-        self._update_sampling_metrics(sampling_probabilities)
-
-        sampled_clips = torch.empty(total_samples, dtype=torch.long, device=self.device)
-        distributed, dist_enabled, dist_rank, _dist_world_size = self._distributed_runtime()
-        if dist_rank == 0:
-            sampled_clips.copy_(
-                torch.multinomial(
-                    sampling_probabilities, total_samples, replacement=True
-                )
-            )
-            self._adaptive_resample_counter += 1
-            self._maybe_log_adaptive_batch(
-                request_counts=request_counts,
-                sampling_probabilities=sampling_probabilities,
-                sampled_clips=sampled_clips,
-            )
-        if dist_enabled and distributed is not None:
-            distributed.broadcast(sampled_clips, src=0)
-            batch_counter = torch.tensor(
-                [self._adaptive_resample_counter], dtype=torch.long, device=self.device
-            )
-            distributed.broadcast(batch_counter, src=0)
-            self._adaptive_resample_counter = int(batch_counter.item())
-
-        start, end = _compute_rank_sample_range(request_counts, dist_rank)
-        local_sampled_clips = sampled_clips[start:end]
-        if local_sampled_clips.numel() != env_ids.numel():
-            raise RuntimeError(
-                "Adaptive sample allocation mismatch across ranks: "
-                f"rank={dist_rank}, allocated={local_sampled_clips.numel()}, "
-                f"requested={env_ids.numel()}, request_counts={request_counts.tolist()}"
-            )
-        if env_ids.numel() > 0:
-            self.motion_ids[env_ids] = local_sampled_clips
-            self.motion_times[env_ids] = self.motion.sample_times(local_sampled_clips)
-
     def _uniform_sampling(self, env_ids: torch.Tensor):
         self.motion_ids[env_ids] = self.motion.sample_motion_ids(len(env_ids))
         self.motion_times[env_ids] = self.motion.sample_times(self.motion_ids[env_ids])
@@ -777,11 +484,8 @@ class MotionCommand(CommandTerm):
         if self.cfg.sampling_mode == "start":
             self.motion_ids[env_ids] = self.motion.sample_motion_ids(len(env_ids))
             self.motion_times[env_ids] = 0.0
-        elif self.cfg.sampling_mode == "uniform":
-            self._uniform_sampling(env_ids)
         else:
-            assert self.cfg.sampling_mode == "adaptive"
-            self._adaptive_resample_motion_ids(env_ids)
+            self._uniform_sampling(env_ids)
 
         if env_ids.numel() == 0:
             return
@@ -867,8 +571,6 @@ class MotionCommand(CommandTerm):
     # ------------------------------------------------------------------
 
     def _update_command(self):
-        self._adaptive_step_counter += 1
-
         # Advance motion time by real elapsed time
         self.motion_times += self._step_dt
 
@@ -877,9 +579,7 @@ class MotionCommand(CommandTerm):
         exceeded = self.motion_times >= durations
 
         env_ids = torch.where(exceeded)[0]
-        if self.cfg.sampling_mode == "adaptive":
-            self._resample_command(env_ids)
-        elif env_ids.numel() > 0:
+        if env_ids.numel() > 0:
             self._resample_command(env_ids)
 
         self._refresh_frame_cache()
@@ -910,11 +610,6 @@ class MotionCommand(CommandTerm):
 
         self._refresh_body_local_cache()
 
-        if (
-            self.cfg.sampling_mode == "adaptive"
-            and self._adaptive_step_counter % self.cfg.adaptive_sync_steps == 0
-        ):
-            self._sync_adaptive_failure_rate()
 
     # ------------------------------------------------------------------
     # Visualization
@@ -1000,16 +695,7 @@ class MotionCommandCfg(CommandTermCfg):
     pose_range: dict[str, tuple[float, float]] = field(default_factory=dict)
     velocity_range: dict[str, tuple[float, float]] = field(default_factory=dict)
     joint_position_range: tuple[float, float] = (-0.52, 0.52)
-    adaptive_kernel_size: int = 1
-    adaptive_lambda: float = 0.8
-    adaptive_uniform_ratio: float = 0.1
-    adaptive_alpha: float = 0.001
-    adaptive_sync_steps: int = 24
-    adaptive_log_interval: int = 50
-    adaptive_log_topk: int = 5
-    adaptive_warn_top1_prob: float = 0.2
-    adaptive_warn_entropy: float = 0.6
-    sampling_mode: Literal["adaptive", "uniform", "start"] = "adaptive"
+    sampling_mode: Literal["uniform", "start"] = "uniform"
 
     @dataclass
     class VizCfg:

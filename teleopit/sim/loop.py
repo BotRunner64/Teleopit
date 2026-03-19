@@ -9,7 +9,6 @@ import mujoco
 import numpy as np
 from numpy.typing import NDArray
 
-from teleopit.controllers.observation import MjlabObservationBuilder
 from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.debug.rollout_trace import RolloutTraceWriter
 from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Recorder, Retargeter, Robot

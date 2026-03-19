@@ -6,7 +6,7 @@ from typing import Any, cast
 from omegaconf import DictConfig
 
 from teleopit.bus.in_process import InProcessBus
-from teleopit.controllers.observation import MjlabObservationBuilder
+from teleopit.controllers.observation import VelCmdObservationBuilder
 from teleopit.controllers.rl_policy import RLPolicyController
 from teleopit.inputs import BVHInputProvider, Pico4InputProvider, UDPBVHInputProvider
 from teleopit.recording.hdf5_recorder import HDF5Recorder
@@ -34,7 +34,7 @@ class TeleopPipeline:
             self._project_root,
             robot_cls=MuJoCoRobot,
             controller_cls=RLPolicyController,
-            obs_builder_cls=MjlabObservationBuilder,
+            obs_builder_cls=VelCmdObservationBuilder,
             bvh_input_cls=BVHInputProvider,
             pico4_input_cls=Pico4InputProvider,
             udp_bvh_input_cls=UDPBVHInputProvider,

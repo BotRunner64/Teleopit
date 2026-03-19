@@ -46,7 +46,7 @@ def test_bvh_to_mujoco_pipeline_stands_and_records(project_root: Path, tmp_dir: 
 
     policy_path, bvh_path, xml_path = _asset_paths(project_root)
     if not policy_path.exists() or not bvh_path.exists() or not xml_path.exists():
-        pytest.skip("set TELEOPIT_TEST_POLICY_ONNX to a compatible 160D ONNX policy to run this e2e test")
+        pytest.skip("set TELEOPIT_TEST_POLICY_ONNX to a compatible 166D VelCmdHistory ONNX policy to run this e2e test")
 
     robot_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "robot" / "g1.yaml")
     controller_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "controller" / "rl_policy.yaml")

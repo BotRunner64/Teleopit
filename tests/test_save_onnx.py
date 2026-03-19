@@ -9,7 +9,7 @@ from train_mimic.scripts.save_onnx import export_policy_as_onnx
 from train_mimic.tasks.tracking.rl.temporal_cnn_model import TemporalCNNModel
 
 
-def _build_temporal_actor_state_dict(obs_dim: int = 154, history_length: int = 10) -> dict[str, torch.Tensor]:
+def _build_temporal_actor_state_dict(obs_dim: int = 166, history_length: int = 10) -> dict[str, torch.Tensor]:
     obs = TensorDict(
         {
             "actor": torch.zeros(1, obs_dim),
@@ -63,7 +63,7 @@ def test_export_temporal_cnn_layout_a_checkpoint(monkeypatch, tmp_path: Path) ->
 
     assert captured["output_path"] == str(tmp_path / "policy.onnx")
     assert captured["input_names"] == ["obs", "obs_history"]
-    assert captured["arg_shapes"] == [(1, 154), (1, 10, 154)]
+    assert captured["arg_shapes"] == [(1, 166), (1, 10, 166)]
 
 
 def test_export_temporal_cnn_accepts_normalizer_mean_var_keys(monkeypatch, tmp_path: Path) -> None:

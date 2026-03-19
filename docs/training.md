@@ -1,18 +1,15 @@
 # 训练指南
 
-本文档描述当前 `train_mimic` 的正式训练主线，以及已接入的 `HistoryCNN` 变体。
+当前 `train_mimic` 只保留一个正式训练任务：`Tracking-Flat-G1-VelCmdHistory`。
 
-> 入口导航：数据准备看 [`docs/dataset.md`](dataset.md)，项目整体边界看 [`docs/architecture.md`](architecture.md)。
+对应约束：
 
-## 当前主线
+- 训练脚本不再暴露 `--task` 参数
+- policy 结构固定为 `TemporalCNNModel`
+- 导出的 ONNX 固定为双输入 `obs` + `obs_history`
+- adaptive sampling 已移除
 
-- 默认训练任务是 `Tracking-Flat-G1-NoStateEst`
-- 额外支持 `Tracking-Flat-G1-HistoryCNN`：在相同当前帧观测之外，再给 actor/critic 提供未展平的时间历史 `(B, T, D)`，由 1-D CNN 编码
-- `Tracking-Flat-G1-NoStateEst` 对应 **154D no-state-estimation** actor 观测，也是当前 sim2real 唯一支持的训练路径
-- `Tracking-Flat-G1-HistoryCNN` 目前同样基于 no-state-estimation 观测，但导出的 ONNX 是双输入模型：`obs` + `obs_history`
-- `Tracking-Flat-G1-VelCmdHistoryAdaptive` 是内部实验 task：在 `VelCmdHistory` 基础上启用 adaptive sampling，仍沿用双输入 HistoryCNN policy
-- `Tracking-Flat-G1-v0*`、`Tracking-Flat-G1-v1*`、`Tracking-Flat-G1-v2-NoStateEst`、state-estimation 任务都不再是正式支持接口
-- adaptive sampling 相关实现仍以内部实验形式保留；`VelCmdHistoryAdaptive` 不属于官方推荐主线
+> 入口导航：数据准备看 [`dataset.md`](dataset.md)，整体边界看 [`architecture.md`](architecture.md)。
 
 ## 环境安装
 
@@ -32,23 +29,18 @@ python -c "import train_mimic.tasks; print('training OK')"
 
 ## 数据集准备
 
-当前唯一推荐的数据构建入口是 YAML spec 驱动的 dataset pipeline：
+推荐入口：
 
 ```bash
-python train_mimic/scripts/data/build_dataset.py \
-    --spec train_mimic/configs/datasets/twist2_full.yaml
+python train_mimic/scripts/data/build_dataset.py             --spec train_mimic/configs/datasets/twist2_full.yaml
 ```
 
 常用变体：
 
 ```bash
-python train_mimic/scripts/data/build_dataset.py \
-    --spec train_mimic/configs/datasets/twist2_full.yaml \
-    --force
+python train_mimic/scripts/data/build_dataset.py             --spec train_mimic/configs/datasets/twist2_full.yaml             --force
 
-python train_mimic/scripts/data/build_dataset.py \
-    --spec train_mimic/configs/datasets/twist2_full.yaml \
-    --jobs 4
+python train_mimic/scripts/data/build_dataset.py             --spec train_mimic/configs/datasets/twist2_full.yaml             --jobs 4
 ```
 
 构建产物：
@@ -57,173 +49,88 @@ python train_mimic/scripts/data/build_dataset.py \
 - `data/datasets/twist2_full/val.npz`
 - `data/datasets/twist2_full/build_info.json`
 - `data/datasets/twist2_full/manifest_resolved.csv`
-- `data/datasets/twist2_full/clips/<source>/<clip>.npz`：仅在 source 需要逐 clip 转换/复用时存在；如果整个 spec 都是 `pkl` source，builder 会直接 batch merge，不再落中间 clip 文件
 
-若要单独检查某个 clip 的 FK 标签一致性：
+FK 一致性检查：
 
 ```bash
-python train_mimic/scripts/data/check_motion_npz_fk.py \
-    --npz data/datasets/twist2_full/clips/<source>/<clip>.npz
+python train_mimic/scripts/data/check_motion_npz_fk.py             --npz data/datasets/twist2_full/clips/<source>/<clip>.npz
 ```
 
 ## 训练
 
-快速 smoke test：
+smoke test：
 
 ```bash
-python train_mimic/scripts/train.py \
-    --task Tracking-Flat-G1-NoStateEst \
-    --num_envs 64 \
-    --max_iterations 100 \
-    --motion_file data/datasets/twist2_full/train.npz
+python train_mimic/scripts/train.py             --num_envs 64             --max_iterations 100             --motion_file data/datasets/twist2_full/train.npz
 ```
 
 完整训练：
 
 ```bash
-python train_mimic/scripts/train.py \
-    --task Tracking-Flat-G1-NoStateEst \
-    --num_envs 4096 \
-    --max_iterations 30000 \
-    --motion_file data/datasets/twist2_full/train.npz
-```
-
-History-CNN 训练：
-
-```bash
-python train_mimic/scripts/train.py \
-    --task Tracking-Flat-G1-HistoryCNN \
-    --num_envs 4096 \
-    --max_iterations 30000 \
-    --motion_file data/datasets/twist2_full/train.npz
-```
-
-VelCmd adaptive 实验训练：
-
-```bash
-python train_mimic/scripts/train.py \
-    --task Tracking-Flat-G1-VelCmdHistoryAdaptive \
-    --num_envs 4096 \
-    --max_iterations 30000 \
-    --motion_file data/datasets/twist2_full/train.npz
+python train_mimic/scripts/train.py             --num_envs 4096             --max_iterations 30000             --motion_file data/datasets/twist2_full/train.npz
 ```
 
 单机多卡：
 
 ```bash
-python train_mimic/scripts/train.py \
-    --task Tracking-Flat-G1-NoStateEst \
-    --gpu_ids 0 1 2 3 \
-    --num_envs 1024 \
-    --max_iterations 30000 \
-    --motion_file data/datasets/twist2_full/train.npz
+python train_mimic/scripts/train.py             --gpu_ids 0 1 2 3             --num_envs 1024             --max_iterations 30000             --motion_file data/datasets/twist2_full/train.npz
 ```
 
 说明：
 
 - `--num_envs` 在多卡模式下表示每张卡的环境数
-- 默认 logger 是 tensorboard；传 `--wandb_project <name>` 才会启用 wandb
+- 默认 logger 是 tensorboard；传 `--wandb_project <name>` 才启用 wandb
 - `--motion_file` 必须指向单个 merged NPZ
+- 默认实验名是 `g1_tracking_velcmd_history`
 
-## 导出与评估
-
-导出 ONNX：
+## 导出 ONNX
 
 ```bash
-python train_mimic/scripts/save_onnx.py \
-    --checkpoint logs/rsl_rl/g1_tracking/<run>/model_30000.pt \
-    --output policy.onnx
+python train_mimic/scripts/save_onnx.py             --checkpoint logs/rsl_rl/g1_tracking_velcmd_history/<run>/model_30000.pt             --output policy.onnx             --history_length 10
 ```
 
-导出 History-CNN ONNX：
+导出结果约束：
+
+- 只支持 VelCmdHistory `TemporalCNN` checkpoint
+- ONNX 输入固定为 `obs` 和 `obs_history`
+- 推理侧只接受 166D 双输入模型
+
+## 播放与评估
+
+playback：
 
 ```bash
-python train_mimic/scripts/save_onnx.py \
-    --checkpoint logs/rsl_rl/g1_tracking_history_cnn/<run>/model_30000.pt \
-    --output policy.onnx \
-    --history_length 10
-```
-
-说明：
-
-- 标准 MLP policy 导出为单输入 ONNX：`obs`
-- `HistoryCNN` policy 导出为双输入 ONNX：`obs`、`obs_history`
-- 当前仓库的 `teleopit.controllers.rl_policy.RLPolicyController` 已支持双输入 history buffer，并会在 pipeline 启动或循环输入源 reset 时清空缓存
-- `Tracking-Flat-G1-VelCmdHistoryAdaptive` 复用同一套双输入导出接口；区别只在训练时 motion command 使用 adaptive sampling
-- 当前 adaptive sampling 只统计 true termination，不把 `time_out` 记作失败
-
-播放 checkpoint：
-
-```bash
-python train_mimic/scripts/play.py \
-    --task Tracking-Flat-G1-NoStateEst \
-    --checkpoint logs/rsl_rl/g1_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/twist2_full/val.npz
+python train_mimic/scripts/play.py             --checkpoint logs/rsl_rl/g1_tracking_velcmd_history/<run>/model_30000.pt             --motion_file data/datasets/twist2_full/val.npz
 ```
 
 benchmark：
 
 ```bash
-python train_mimic/scripts/benchmark.py \
-    --task Tracking-Flat-G1-NoStateEst \
-    --checkpoint logs/rsl_rl/g1_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/twist2_full/val.npz \
-    --num_envs 1
+python train_mimic/scripts/benchmark.py             --checkpoint logs/rsl_rl/g1_tracking_velcmd_history/<run>/model_30000.pt             --motion_file data/datasets/twist2_full/val.npz             --num_envs 1
 ```
 
-录视频：
+benchmark 录视频：
 
 ```bash
-python train_mimic/scripts/benchmark.py \
-    --task Tracking-Flat-G1-NoStateEst \
-    --checkpoint logs/rsl_rl/g1_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/twist2_full/val.npz \
-    --num_envs 1 \
-    --video \
-    --video_length 600
+python train_mimic/scripts/benchmark.py             --checkpoint logs/rsl_rl/g1_tracking_velcmd_history/<run>/model_30000.pt             --motion_file data/datasets/twist2_full/val.npz             --num_envs 1             --video             --video_length 600
 ```
 
 ## 训练侧边界
 
-当前 `train_mimic` 按 4 层组织：
-
 ```text
-scripts
-    -> app helpers
-    -> task registry / env builder / runner cfg
+train_mimic/scripts
+    -> train_mimic/app.py
+    -> single task registry / env builder / runner cfg
     -> mjlab + rsl_rl
 
-scripts/data
+train_mimic/scripts/data
     -> dataset_builder
     -> dataset_lib / motion_fk / convert_pkl_to_npz
 ```
 
-对应目录：
+关键实现：
 
-```text
-train_mimic/
-├── app.py                    # train/play/benchmark 共享应用层
-├── data/
-│   ├── dataset_builder.py    # YAML spec 数据集主线
-│   ├── dataset_lib.py        # NPZ merge / inspect / hash 等通用工具
-│   └── motion_fk.py          # FK consistency 检查
-├── scripts/
-│   ├── train.py
-│   ├── play.py
-│   ├── benchmark.py
-│   ├── save_onnx.py
-│   └── data/build_dataset.py
-└── tasks/tracking/config/
-    ├── registry.py           # 官方 task 注册
-    ├── env.py                # 官方 env builder
-    ├── rl.py                 # 官方 runner cfg
-    └── profiles.py           # 内部 profile / sampling 参考实现
-```
-
-## 迁移说明
-
-- `build_dataset_v2.py` 已并入 `build_dataset.py`
-- manifest/review/export/migrate 那套 legacy 数据脚本已移除
-- `Tracking-Flat-G1-v0*`、`Tracking-Flat-G1-v1*`、`Tracking-Flat-G1-v2-NoStateEst` 已退出正式支持面
-- `Tracking-Flat-G1-HistoryCNN` 已注册为训练变体，但它不是 sim2real 官方默认路径；真机仍只支持 154D 单帧 no-state-estimation 推理
-- `Tracking-Flat-G1-VelCmdHistoryAdaptive` 已注册为内部实验 task，用于对比 `VelCmdHistory` 的 adaptive sampling 效果，不作为正式默认路径
+- `train_mimic/app.py`：train/play/benchmark 共用入口装配
+- `train_mimic/tasks/tracking/config/env.py`：唯一 VelCmdHistory env builder
+- `train_mimic/tasks/tracking/config/rl.py`：唯一 TemporalCNN PPO runner cfg
+- `train_mimic/tasks/tracking/mdp/commands.py`：仅保留 `uniform` / `start` 采样模式

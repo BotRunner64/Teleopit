@@ -18,12 +18,23 @@ def test_pipeline_inherits_robot_action_decode_config(monkeypatch, tmp_path: Pat
             captured["robot_cfg"] = cfg
 
     class DummyController:
+        _expected_obs_dim = 166
+        _multi_input = True
+
         def __init__(self, cfg: object) -> None:
             captured["controller_cfg"] = cfg
 
+        def reset(self) -> None:
+            pass
+
     class DummyObsBuilder:
+        total_obs_size = 166
+
         def __init__(self, cfg: object) -> None:
             captured["obs_cfg"] = cfg
+
+        def reset(self) -> None:
+            pass
 
     class DummyInputProvider:
         human_format = "lafan1"
@@ -78,7 +89,7 @@ def test_pipeline_inherits_robot_action_decode_config(monkeypatch, tmp_path: Pat
 
     monkeypatch.setattr("teleopit.pipeline.MuJoCoRobot", DummyRobot)
     monkeypatch.setattr("teleopit.pipeline.RLPolicyController", DummyController)
-    monkeypatch.setattr("teleopit.pipeline.MjlabObservationBuilder", DummyObsBuilder)
+    monkeypatch.setattr("teleopit.runtime.factory.VelCmdObservationBuilder", DummyObsBuilder)
     monkeypatch.setattr("teleopit.pipeline.BVHInputProvider", DummyInputProvider)
     monkeypatch.setattr("teleopit.pipeline.RetargetingModule", DummyRetargeter)
     monkeypatch.setattr("teleopit.pipeline.SimulationLoop", DummyLoop)
@@ -100,11 +111,22 @@ def test_pipeline_rejects_legacy_viewer_key(monkeypatch, tmp_path: Path) -> None
             pass
 
     class DummyController:
+        _expected_obs_dim = 166
+        _multi_input = True
+
         def __init__(self, cfg: object) -> None:
             pass
 
+        def reset(self) -> None:
+            pass
+
     class DummyObsBuilder:
+        total_obs_size = 166
+
         def __init__(self, cfg: object) -> None:
+            pass
+
+        def reset(self) -> None:
             pass
 
     class DummyInputProvider:
@@ -141,20 +163,13 @@ def test_pipeline_rejects_legacy_viewer_key(monkeypatch, tmp_path: Path) -> None
 
     monkeypatch.setattr("teleopit.pipeline.MuJoCoRobot", DummyRobot)
     monkeypatch.setattr("teleopit.pipeline.RLPolicyController", DummyController)
-    monkeypatch.setattr("teleopit.pipeline.MjlabObservationBuilder", DummyObsBuilder)
+    monkeypatch.setattr("teleopit.runtime.factory.VelCmdObservationBuilder", DummyObsBuilder)
     monkeypatch.setattr("teleopit.pipeline.BVHInputProvider", DummyInputProvider)
     monkeypatch.setattr("teleopit.pipeline.RetargetingModule", DummyRetargeter)
     monkeypatch.setattr("teleopit.pipeline.SimulationLoop", DummyLoop)
 
     with pytest.raises(ValueError, match="Legacy config key 'viewer'"):
         TeleopPipeline(cfg)
-
-
-# =====================================================================
-# Startup dim-validation integration tests
-# These use the REAL MjlabObservationBuilder (not a dummy) so the
-# dim-check branch in _build_obs_builder actually executes.
-# =====================================================================
 
 
 _XML_PATH = find_g1_xml_path()
@@ -169,23 +184,19 @@ _DEFAULT_ANGLES_29 = [
 ]
 
 
-def _pipeline_cfg(tmp_path: Path, has_state_estimation: bool | None = None) -> dict:
-    """Build a pipeline cfg dict. has_state_estimation=None means omit the key."""
+def _pipeline_cfg(tmp_path: Path) -> dict:
     policy_path = tmp_path / "policy.onnx"
     policy_path.write_bytes(b"dummy")
     bvh_path = tmp_path / "input.bvh"
     bvh_path.write_text("HIERARCHY\n", encoding="utf-8")
 
-    robot = {
-        "num_actions": 29,
-        "xml_path": _XML_PATH or "",
-        "default_angles": _DEFAULT_ANGLES_29,
-        "action_scale": [0.5] * 29,
-    }
-    if has_state_estimation is not None:
-        robot["has_state_estimation"] = has_state_estimation
     return {
-        "robot": robot,
+        "robot": {
+            "num_actions": 29,
+            "xml_path": _XML_PATH or "",
+            "default_angles": _DEFAULT_ANGLES_29,
+            "action_scale": [0.5] * 29,
+        },
         "controller": {
             "policy_path": str(policy_path),
             "action_scale": None,
@@ -204,12 +215,15 @@ def _pipeline_cfg(tmp_path: Path, has_state_estimation: bool | None = None) -> d
 
 @requires_mujoco
 @_skip_no_xml
-def test_pipeline_dim_mismatch_raises(monkeypatch, tmp_path: Path) -> None:
-    """154D obs_builder + 160D policy → startup ValueError from _build_obs_builder."""
-
+def test_pipeline_166d_policy_required(monkeypatch, tmp_path: Path) -> None:
     class DummyController160:
         _expected_obs_dim = 160
+        _multi_input = True
+
         def __init__(self, cfg: object) -> None:
+            pass
+
+        def reset(self) -> None:
             pass
 
     class DummyRobot:
@@ -218,38 +232,82 @@ def test_pipeline_dim_mismatch_raises(monkeypatch, tmp_path: Path) -> None:
 
     class DummyInputProvider:
         human_format = "lafan1"
-        def __init__(self, **kw: object) -> None:
+
+        def __init__(self, **kwargs: object) -> None:
             pass
 
     class DummyRetargeter:
-        def __init__(self, **kw: object) -> None:
+        def __init__(self, **kwargs: object) -> None:
             pass
 
     class DummyLoop:
-        def __init__(self, *a: object, **kw: object) -> None:
+        def __init__(self, *args: object, **kwargs: object) -> None:
             pass
 
-    monkeypatch.setattr("teleopit.pipeline.MuJoCoRobot", DummyRobot)
     monkeypatch.setattr("teleopit.pipeline.RLPolicyController", DummyController160)
+    monkeypatch.setattr("teleopit.pipeline.MuJoCoRobot", DummyRobot)
     monkeypatch.setattr("teleopit.pipeline.BVHInputProvider", DummyInputProvider)
     monkeypatch.setattr("teleopit.pipeline.RetargetingModule", DummyRetargeter)
     monkeypatch.setattr("teleopit.pipeline.SimulationLoop", DummyLoop)
-    # NOTE: MjlabObservationBuilder is NOT patched — real builder runs
 
-    cfg = OmegaConf.create(_pipeline_cfg(tmp_path, has_state_estimation=False))
+    cfg = OmegaConf.create(_pipeline_cfg(tmp_path))
+    with pytest.raises(ValueError, match="Only 166D"):
+        TeleopPipeline(cfg)
 
-    with pytest.raises(ValueError, match="mismatch"):
+
+@requires_mujoco
+@_skip_no_xml
+def test_pipeline_requires_dual_input_policy(monkeypatch, tmp_path: Path) -> None:
+    class DummyControllerSingle:
+        _expected_obs_dim = 166
+        _multi_input = False
+
+        def __init__(self, cfg: object) -> None:
+            pass
+
+        def reset(self) -> None:
+            pass
+
+    class DummyRobot:
+        def __init__(self, cfg: object) -> None:
+            pass
+
+    class DummyInputProvider:
+        human_format = "lafan1"
+
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+    class DummyRetargeter:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+    class DummyLoop:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+    monkeypatch.setattr("teleopit.pipeline.RLPolicyController", DummyControllerSingle)
+    monkeypatch.setattr("teleopit.pipeline.MuJoCoRobot", DummyRobot)
+    monkeypatch.setattr("teleopit.pipeline.BVHInputProvider", DummyInputProvider)
+    monkeypatch.setattr("teleopit.pipeline.RetargetingModule", DummyRetargeter)
+    monkeypatch.setattr("teleopit.pipeline.SimulationLoop", DummyLoop)
+
+    cfg = OmegaConf.create(_pipeline_cfg(tmp_path))
+    with pytest.raises(ValueError, match="dual inputs"):
         TeleopPipeline(cfg)
 
 
 @requires_mujoco
 @_skip_no_xml
 def test_pipeline_dim_match_passes(monkeypatch, tmp_path: Path) -> None:
-    """154D obs_builder + 154D policy → no error."""
+    class DummyController166:
+        _expected_obs_dim = 166
+        _multi_input = True
 
-    class DummyController154:
-        _expected_obs_dim = 154
         def __init__(self, cfg: object) -> None:
+            pass
+
+        def reset(self) -> None:
             pass
 
     class DummyRobot:
@@ -258,63 +316,24 @@ def test_pipeline_dim_match_passes(monkeypatch, tmp_path: Path) -> None:
 
     class DummyInputProvider:
         human_format = "lafan1"
-        def __init__(self, **kw: object) -> None:
+
+        def __init__(self, **kwargs: object) -> None:
             pass
 
     class DummyRetargeter:
-        def __init__(self, **kw: object) -> None:
+        def __init__(self, **kwargs: object) -> None:
             pass
 
     class DummyLoop:
-        def __init__(self, *a: object, **kw: object) -> None:
+        def __init__(self, *args: object, **kwargs: object) -> None:
             pass
 
+    monkeypatch.setattr("teleopit.pipeline.RLPolicyController", DummyController166)
     monkeypatch.setattr("teleopit.pipeline.MuJoCoRobot", DummyRobot)
-    monkeypatch.setattr("teleopit.pipeline.RLPolicyController", DummyController154)
     monkeypatch.setattr("teleopit.pipeline.BVHInputProvider", DummyInputProvider)
     monkeypatch.setattr("teleopit.pipeline.RetargetingModule", DummyRetargeter)
     monkeypatch.setattr("teleopit.pipeline.SimulationLoop", DummyLoop)
 
-    cfg = OmegaConf.create(_pipeline_cfg(tmp_path, has_state_estimation=False))
-
+    cfg = OmegaConf.create(_pipeline_cfg(tmp_path))
     pipeline = TeleopPipeline(cfg)
-    assert pipeline.obs_builder.total_obs_size == 154
-
-
-@requires_mujoco
-@_skip_no_xml
-def test_pipeline_154d_default_when_key_omitted(monkeypatch, tmp_path: Path) -> None:
-    """When has_state_estimation is omitted from robot cfg, pipeline defaults to False (154D)."""
-
-    class DummyController154:
-        _expected_obs_dim = 154
-        def __init__(self, cfg: object) -> None:
-            pass
-
-    class DummyRobot:
-        def __init__(self, cfg: object) -> None:
-            pass
-
-    class DummyInputProvider:
-        human_format = "lafan1"
-        def __init__(self, **kw: object) -> None:
-            pass
-
-    class DummyRetargeter:
-        def __init__(self, **kw: object) -> None:
-            pass
-
-    class DummyLoop:
-        def __init__(self, *a: object, **kw: object) -> None:
-            pass
-
-    monkeypatch.setattr("teleopit.pipeline.MuJoCoRobot", DummyRobot)
-    monkeypatch.setattr("teleopit.pipeline.RLPolicyController", DummyController154)
-    monkeypatch.setattr("teleopit.pipeline.BVHInputProvider", DummyInputProvider)
-    monkeypatch.setattr("teleopit.pipeline.RetargetingModule", DummyRetargeter)
-    monkeypatch.setattr("teleopit.pipeline.SimulationLoop", DummyLoop)
-
-    cfg = OmegaConf.create(_pipeline_cfg(tmp_path, has_state_estimation=None))
-
-    pipeline = TeleopPipeline(cfg)
-    assert pipeline.obs_builder.total_obs_size == 154
+    assert pipeline.obs_builder.total_obs_size == 166

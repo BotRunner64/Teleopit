@@ -43,7 +43,6 @@ from train_mimic.app import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Play trained G1 tracking policy.")
-    parser.add_argument("--task", type=str, default=DEFAULT_TASK)
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
     parser.add_argument("--motion_file", type=str, required=True, help="Path to NPZ motion file")
     parser.add_argument("--num_envs", type=int, default=1)
@@ -81,7 +80,7 @@ def main() -> None:
 
     # Load configs (play=True disables corruption, push_robot, etc.)
     task_name, env_cfg, agent_cfg, runner_cls = load_task_components(
-        args.task,
+        DEFAULT_TASK,
         play=True,
         load_env_cfg=_load_env_cfg,
         load_rl_cfg=_load_rl_cfg,

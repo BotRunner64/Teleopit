@@ -7,9 +7,12 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from train_mimic.tasks.tracking.config.constants import DEFAULT_TRAIN_MOTION_FILE, OFFICIAL_TASK
+from train_mimic.tasks.tracking.config.constants import (
+    DEFAULT_TRAIN_MOTION_FILE,
+    VELCMD_HISTORY_TASK,
+)
 
-DEFAULT_TASK = OFFICIAL_TASK
+DEFAULT_TASK = VELCMD_HISTORY_TASK
 
 
 def validate_motion_file(motion_file: str) -> None:
@@ -50,7 +53,7 @@ def import_training_stack() -> tuple[Any, ...]:
 
 
 def load_task_components(
-    task_name: str,
+    task_name: str = DEFAULT_TASK,
     *,
     play: bool = False,
     load_env_cfg: Any | None = None,
@@ -68,6 +71,10 @@ def load_task_components(
             load_runner_cls,
             _configure_torch_backends,
         ) = import_training_stack()
+    if task_name != DEFAULT_TASK:
+        raise ValueError(
+            f"Unsupported task '{task_name}'. The only supported task is '{DEFAULT_TASK}'."
+        )
     env_cfg = load_env_cfg(task_name, play=play)
     agent_cfg = load_rl_cfg(task_name)
     runner_cls = load_runner_cls(task_name)

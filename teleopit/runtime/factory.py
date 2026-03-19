@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from teleopit.controllers.observation import VelCmdObservationBuilder
+
 from .common import cfg_get, cfg_set, normalize_path_in_cfg, parse_viewers, require_section
 
 
@@ -98,8 +100,8 @@ def _prepare_policy_paths(robot_cfg: Any, controller_cfg: Any, project_root: Pat
         base_dir=project_root,
         required=True,
         missing_message=(
-            "controller.policy_path must be set to an ONNX exported from train_mimic "
-            "checkpoint. Deprecated TWIST2 default policy is removed."
+            "controller.policy_path must be set to an ONNX exported from the "
+            "VelCmdHistory train_mimic checkpoint."
         ),
     )
 
@@ -110,57 +112,36 @@ def _build_policy_components(
     controller_cfg: Any,
     project_root: Path,
     controller_cls: type[Any],
-    obs_builder_cls: type[Any],
-    sim2real: bool,
 ) -> tuple[Any, Any]:
     _prepare_policy_paths(robot_cfg, controller_cfg, project_root)
     propagate_controller_defaults(controller_cfg, robot_cfg)
 
     controller = controller_cls(controller_cfg)
-    obs_type = str(cfg_get(robot_cfg, "obs_builder", "mjlab")).lower()
-    if obs_type not in ("mjlab", "velcmd"):
-        raise ValueError(
-            f"Unsupported robot.obs_builder='{obs_type}'. "
-            "Supported values: 'mjlab', 'velcmd'."
-        )
-
-    has_state_estimation = bool(cfg_get(robot_cfg, "has_state_estimation", False))
     policy_dim = getattr(controller, "_expected_obs_dim", None)
-
-    if sim2real:
-        if has_state_estimation:
-            raise ValueError(
-                "Sim2real requires robot.has_state_estimation=false. The real robot does "
-                "not provide base_pos/base_lin_vel, so only 154D/166D mjlab ONNX policies "
-                "exported from *-NoStateEst or *-VelCmdHistory tasks are supported."
-            )
-        if policy_dim is not None and policy_dim not in (154, 166):
-            raise ValueError(
-                f"Sim2real only supports 154D or 166D mjlab ONNX policies; got {policy_dim}D."
-            )
+    if policy_dim is not None and policy_dim != 166:
+        raise ValueError(
+            f"Unsupported policy input dimension: {policy_dim}. "
+            "Only 166D VelCmdHistory ONNX policies are supported."
+        )
+    if getattr(controller, "_multi_input", None) is False:
+        raise ValueError(
+            "Unsupported ONNX policy input signature: VelCmdHistory inference requires "
+            "dual inputs ('obs' and 'obs_history')."
+        )
 
     obs_cfg = {
         "num_actions": int(cfg_get(robot_cfg, "num_actions")),
         "default_dof_pos": list(cfg_get(robot_cfg, "default_angles")),
         "xml_path": str(cfg_get(robot_cfg, "xml_path")),
         "anchor_body_name": cfg_get(robot_cfg, "anchor_body_name", "torso_link"),
-        "has_state_estimation": has_state_estimation,
-        "yaw_only": bool(cfg_get(robot_cfg, "yaw_only", False)),
     }
-
-    # Select observation builder class based on config or auto-detect from policy dim.
-    if obs_type == "velcmd" or (policy_dim is not None and policy_dim == 166):
-        from teleopit.controllers.observation import VelCmdObservationBuilder
-        obs_builder = VelCmdObservationBuilder(obs_cfg)
-    else:
-        obs_builder = obs_builder_cls(obs_cfg)
+    obs_builder = VelCmdObservationBuilder(obs_cfg)
 
     builder_dim = getattr(obs_builder, "total_obs_size", None)
     if policy_dim is not None and builder_dim is not None and policy_dim != builder_dim:
         raise ValueError(
             f"Observation dimension mismatch at startup: obs_builder produces {builder_dim}D "
-            f"but policy expects {policy_dim}D. Check has_state_estimation={has_state_estimation} "
-            "and ensure the ONNX model matches."
+            f"but policy expects {policy_dim}D. Use a matching VelCmdHistory ONNX model."
         )
     return controller, obs_builder
 
@@ -265,6 +246,7 @@ def build_inference_components(
     udp_bvh_input_cls: type[Any],
     retargeter_cls: type[Any],
 ) -> InferenceComponents:
+    del obs_builder_cls
     robot_cfg = require_section(cfg, "robot")
     controller_cfg = require_section(cfg, "controller")
     input_cfg = require_section(cfg, "input")
@@ -275,8 +257,6 @@ def build_inference_components(
         controller_cfg=controller_cfg,
         project_root=project_root,
         controller_cls=controller_cls,
-        obs_builder_cls=obs_builder_cls,
-        sim2real=False,
     )
     robot = robot_cls(robot_cfg)
     input_provider = _build_input_provider(
@@ -286,8 +266,6 @@ def build_inference_components(
         pico4_input_cls=pico4_input_cls,
         udp_bvh_input_cls=udp_bvh_input_cls,
     )
-    # Wire controller reset to looping provider so stateful controllers
-    # (e.g. history buffer) are cleared when the input loops.
     if isinstance(input_provider, _LoopingInputProvider) and hasattr(controller, "reset"):
         input_provider._on_reset = controller.reset
     retargeter = _build_retargeter(input_cfg, input_provider, retargeter_cls)
@@ -312,6 +290,7 @@ def build_sim2real_mocap_components(
     udp_bvh_input_cls: type[Any],
     retargeter_cls: type[Any],
 ) -> MocapComponents:
+    del obs_builder_cls
     robot_cfg = require_section(cfg, "robot")
     controller_cfg = require_section(cfg, "controller")
     input_cfg = require_section(cfg, "input")
@@ -322,8 +301,6 @@ def build_sim2real_mocap_components(
         controller_cfg=controller_cfg,
         project_root=project_root,
         controller_cls=controller_cls,
-        obs_builder_cls=obs_builder_cls,
-        sim2real=True,
     )
     input_provider = _build_input_provider(
         input_cfg=input_cfg,

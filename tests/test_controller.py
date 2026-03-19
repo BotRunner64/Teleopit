@@ -41,11 +41,11 @@ class TestRLPolicyStaticHelpers:
 
     def test_extract_feature_dim_int(self):
         from teleopit.controllers.rl_policy import RLPolicyController
-        assert RLPolicyController._extract_feature_dim([1, 160]) == 160
+        assert RLPolicyController._extract_feature_dim([1, 166]) == 166
 
     def test_extract_feature_dim_string(self):
         from teleopit.controllers.rl_policy import RLPolicyController
-        assert RLPolicyController._extract_feature_dim(["batch", "160"]) == 160
+        assert RLPolicyController._extract_feature_dim(["batch", "166"]) == 166
 
     def test_extract_feature_dim_dynamic(self):
         from teleopit.controllers.rl_policy import RLPolicyController
@@ -92,7 +92,7 @@ class TestRLPolicyControllerInference:
     def test_compute_action_shape(self):
         from teleopit.controllers.rl_policy import RLPolicyController
 
-        obs_dim = 160
+        obs_dim = 166
         action_dim = 29
 
         # Build a controller with mocked internals
@@ -101,6 +101,12 @@ class TestRLPolicyControllerInference:
         ctrl.action_scale = np.ones(action_dim, dtype=np.float32)
         ctrl.default_dof_pos = np.zeros(action_dim, dtype=np.float32)
         ctrl.clip_range = (-10.0, 10.0)
+        from collections import deque
+        ctrl._history_length = 3
+        ctrl._history_obs_dim = obs_dim
+        ctrl._history_buf = deque(maxlen=3)
+        ctrl._last_obs_input = None
+        ctrl._last_obs_history_input = None
 
         # Mock session
         mock_session = MagicMock()
@@ -118,7 +124,7 @@ class TestRLPolicyControllerInference:
         from teleopit.controllers.rl_policy import RLPolicyController
 
         ctrl = RLPolicyController.__new__(RLPolicyController)
-        ctrl._expected_obs_dim = 160
+        ctrl._expected_obs_dim = 166
         ctrl.clip_range = (-10.0, 10.0)
         ctrl.action_scale = np.ones(29, dtype=np.float32)
         ctrl._session = MagicMock()
@@ -132,7 +138,14 @@ class TestRLPolicyControllerInference:
         from teleopit.controllers.rl_policy import RLPolicyController
 
         ctrl = RLPolicyController.__new__(RLPolicyController)
+        from collections import deque
+        ctrl._history_buf = deque(maxlen=3)
+        ctrl._last_obs_input = np.zeros(166, dtype=np.float32)
+        ctrl._last_obs_history_input = np.zeros((3, 166), dtype=np.float32)
         assert ctrl.reset() is None
+        assert len(ctrl._history_buf) == 0
+        assert ctrl._last_obs_input is None
+        assert ctrl._last_obs_history_input is None
 
     def test_multi_input_debug_inputs_capture_history(self):
         from teleopit.controllers.rl_policy import RLPolicyController

@@ -73,7 +73,6 @@ DEFAULT_ANGLES = np.array([
     0, -0.4, 0, 1.2, 0.0, 0.0, 0.0,
 ], dtype=np.float32)
 
-ANKLE_IDX = np.array([4, 5, 10, 11], dtype=np.int64)
 
 
 @pytest.fixture
@@ -84,21 +83,6 @@ def num_actions():
 @pytest.fixture
 def default_angles():
     return DEFAULT_ANGLES.copy()
-
-
-# ── Observation builder config ──────────────────────────────────
-
-@pytest.fixture
-def obs_builder_cfg():
-    """Config dict for the legacy TWIST2ObservationBuilder."""
-    return {
-        "num_actions": NUM_ACTIONS,
-        "ang_vel_scale": 0.25,
-        "dof_pos_scale": 1.0,
-        "dof_vel_scale": 0.05,
-        "ankle_idx": ANKLE_IDX.tolist(),
-        "default_dof_pos": DEFAULT_ANGLES.tolist(),
-    }
 
 
 # ── Fake RobotState ────────────────────────────────────────────
