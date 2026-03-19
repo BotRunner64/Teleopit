@@ -9,12 +9,14 @@ from __future__ import annotations
 import logging
 import socket
 import threading
+import time
 from typing import Dict, Tuple
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 from teleopit.inputs.bvh_provider import _parse_bvh_header, process_single_bvh_frame
+from teleopit.sim.reference_motion import interpolate_human_frames
 from teleopit.retargeting.gmr.utils.lafan_vendor.extract import read_bvh
 
 logger = logging.getLogger(__name__)
@@ -116,7 +118,11 @@ class UDPBVHInputProvider:
         # --- Thread-safe state ---
         self._lock = threading.Lock()
         self._frame_ready = threading.Event()
+        self._previous_frame: Dict[str, Tuple[np.ndarray, np.ndarray]] | None = None
         self._latest_frame: Dict[str, Tuple[np.ndarray, np.ndarray]] | None = None
+        self._previous_timestamp: float | None = None
+        self._latest_timestamp: float | None = None
+        self._frame_seq: int = 0
         self._timeout = timeout
         self._running = True
 
@@ -153,6 +159,43 @@ class UDPBVHInputProvider:
     def is_available(self) -> bool:
         """True while the receiver thread is alive."""
         return self._running and self._thread.is_alive()
+
+    def get_frame_packet(self) -> tuple[Dict[str, Tuple[np.ndarray, np.ndarray]], float, int]:
+        """Return the latest received frame together with timestamp and sequence."""
+        if not self._frame_ready.wait(timeout=self._timeout):
+            raise TimeoutError(
+                f"No UDP BVH data received within {self._timeout}s"
+            )
+        with self._lock:
+            if self._latest_frame is None or self._latest_timestamp is None:
+                raise RuntimeError("UDP frame buffer signaled ready without a latest frame")
+            return self._latest_frame, float(self._latest_timestamp), int(self._frame_seq)
+
+    def sample_frame(self, query_time_s: float, delay_s: float) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+        """Sample a delayed interpolated realtime frame from the receive buffer."""
+        if not self._frame_ready.wait(timeout=self._timeout):
+            raise TimeoutError(
+                f"No UDP BVH data received within {self._timeout}s"
+            )
+        with self._lock:
+            latest_frame = self._latest_frame
+            latest_timestamp = self._latest_timestamp
+            previous_frame = self._previous_frame
+            previous_timestamp = self._previous_timestamp
+
+        if latest_frame is None or latest_timestamp is None:
+            raise RuntimeError("UDP frame buffer signaled ready without a latest frame")
+        if (
+            previous_frame is None
+            or previous_timestamp is None
+            or latest_timestamp <= previous_timestamp + 1e-6
+        ):
+            return latest_frame
+
+        target_time = float(query_time_s - max(delay_s, 0.0))
+        alpha = (target_time - previous_timestamp) / (latest_timestamp - previous_timestamp)
+        alpha = float(np.clip(alpha, 0.0, 1.0))
+        return interpolate_human_frames(previous_frame, latest_frame, alpha)
 
     def close(self) -> None:
         """Stop the receiver thread and close the socket."""
@@ -226,7 +269,12 @@ class UDPBVHInputProvider:
                 logger.exception("Failed to process UDP BVH frame")
                 continue
 
+            timestamp = time.monotonic()
             with self._lock:
+                self._previous_frame = self._latest_frame
+                self._previous_timestamp = self._latest_timestamp
                 self._latest_frame = frame
+                self._latest_timestamp = timestamp
+                self._frame_seq += 1
             if not self._frame_ready.is_set():
                 self._frame_ready.set()

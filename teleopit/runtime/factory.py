@@ -63,6 +63,7 @@ def build_simulation_cfg(cfg: Any) -> dict[str, object]:
         "pd_hz": float(cfg_get(cfg, "pd_hz", 1000.0)),
         "transition_duration": float(cfg_get(cfg, "transition_duration", 0.0) or 0.0),
         "velcmd_fixed_ref_yaw_alignment": bool(cfg_get(cfg, "velcmd_fixed_ref_yaw_alignment", True)),
+        "realtime_input_delay_s": cfg_get(cfg, "realtime_input_delay_s", None),
         "realtime": bool(cfg_get(cfg, "realtime", False)),
         "debug_trace_path": cfg_get(cfg, "debug_trace_path", None),
     }

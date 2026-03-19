@@ -8,6 +8,7 @@ the BVH providers, so downstream retargeting is unchanged.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any, Dict, Tuple
 
@@ -16,6 +17,7 @@ from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation as R
 
 from teleopit.inputs.rot_utils import quat_mul_np
+from teleopit.sim.reference_motion import interpolate_human_frames
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +73,16 @@ class Pico4InputProvider:
         self._human_format = human_format
         self._timeout = timeout
         self._closed = False
-        self._has_received_data = False
+        self._frame_ready = threading.Event()
+        self._lock = threading.Lock()
+        self._previous_frame: HumanFrame | None = None
+        self._latest_frame: HumanFrame | None = None
+        self._previous_timestamp: float | None = None
+        self._latest_timestamp: float | None = None
+        self._frame_seq: int = 0
+        self._last_raw_body_poses: NDArray[np.float64] | None = None
+        self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True, name="pico4_input")
+        self._poll_thread.start()
         logger.info("Pico4InputProvider initialized (xrobotoolkit_sdk)")
 
     @property
@@ -92,17 +103,13 @@ class Pico4InputProvider:
         right now").  The actual blocking-until-data logic lives in
         ``get_frame()``.
         """
-        return not self._closed
+        return not self._closed and self._poll_thread.is_alive()
 
     def get_frame(self) -> HumanFrame:
         """Get the current body tracking frame.
 
-        On the first call, blocks up to ``timeout`` seconds waiting for
-        body data so the headset has time to connect.  After data has
-        been received at least once, uses a short timeout (100 ms) so
-        that a mid-session tracking drop is detected within a few
-        control cycles instead of stalling the loop for the full
-        ``timeout`` duration.
+        Blocks up to ``timeout`` seconds waiting for the first tracked
+        frame, then returns the latest cached realtime frame.
 
         Returns:
             Dict mapping joint name to (position_3d, quaternion_wxyz) tuples
@@ -111,19 +118,90 @@ class Pico4InputProvider:
         Raises:
             TimeoutError: If no body data arrives within the timeout.
         """
-        # Short timeout after first frame to avoid stalling the control loop
-        wait = self._timeout if not self._has_received_data else 0.1
-        deadline = time.monotonic() + wait
-        while not self._xrt.is_body_data_available():
-            if time.monotonic() >= deadline:
-                raise TimeoutError(
-                    f"No Pico4 body data received within {wait:.1f}s timeout"
-                )
-            time.sleep(0.05)
+        if not self._frame_ready.wait(timeout=self._timeout):
+            raise TimeoutError(
+                f"No Pico4 body data received within {self._timeout:.1f}s timeout"
+            )
+        with self._lock:
+            if self._latest_frame is None:
+                raise RuntimeError("Pico4 frame buffer signaled ready without a latest frame")
+            return self._latest_frame
 
-        self._has_received_data = True
-        body_poses = self._xrt.get_body_joints_pose()  # list of [x,y,z,qx,qy,qz,qw]
+    def get_frame_packet(self) -> tuple[HumanFrame, float, int]:
+        """Return the latest cached frame together with timestamp and sequence."""
+        if not self._frame_ready.wait(timeout=self._timeout):
+            raise TimeoutError(
+                f"No Pico4 body data received within {self._timeout:.1f}s timeout"
+            )
+        with self._lock:
+            if self._latest_frame is None or self._latest_timestamp is None:
+                raise RuntimeError("Pico4 frame buffer signaled ready without a latest frame")
+            return self._latest_frame, float(self._latest_timestamp), int(self._frame_seq)
 
+    def sample_frame(self, query_time_s: float, delay_s: float) -> HumanFrame:
+        """Sample a delayed interpolated realtime frame from the polling buffer."""
+        if not self._frame_ready.wait(timeout=self._timeout):
+            raise TimeoutError(
+                f"No Pico4 body data received within {self._timeout:.1f}s timeout"
+            )
+        with self._lock:
+            latest_frame = self._latest_frame
+            latest_timestamp = self._latest_timestamp
+            previous_frame = self._previous_frame
+            previous_timestamp = self._previous_timestamp
+
+        if latest_frame is None or latest_timestamp is None:
+            raise RuntimeError("Pico4 frame buffer signaled ready without a latest frame")
+        if (
+            previous_frame is None
+            or previous_timestamp is None
+            or latest_timestamp <= previous_timestamp + 1e-6
+        ):
+            return latest_frame
+
+        target_time = float(query_time_s - max(delay_s, 0.0))
+        alpha = (target_time - previous_timestamp) / (latest_timestamp - previous_timestamp)
+        alpha = float(np.clip(alpha, 0.0, 1.0))
+        return interpolate_human_frames(previous_frame, latest_frame, alpha)
+
+    def close(self) -> None:
+        """Mark provider as closed."""
+        self._closed = True
+        self._poll_thread.join(timeout=1.0)
+        logger.info("Pico4InputProvider closed")
+
+    def _poll_loop(self) -> None:
+        poll_sleep = 1.0 / max(float(self.fps), 1.0)
+        while not self._closed:
+            if not self._xrt.is_body_data_available():
+                time.sleep(0.01)
+                continue
+
+            try:
+                body_poses = np.asarray(self._xrt.get_body_joints_pose(), dtype=np.float64)
+            except Exception:
+                logger.exception("Failed to read Pico4 body data")
+                time.sleep(0.05)
+                continue
+
+            if self._last_raw_body_poses is not None and np.array_equal(body_poses, self._last_raw_body_poses):
+                time.sleep(0.005)
+                continue
+
+            frame = self._convert_body_poses_to_frame(body_poses)
+            timestamp = time.monotonic()
+            with self._lock:
+                self._previous_frame = self._latest_frame
+                self._previous_timestamp = self._latest_timestamp
+                self._latest_frame = frame
+                self._latest_timestamp = timestamp
+                self._frame_seq += 1
+                self._last_raw_body_poses = body_poses.copy()
+            self._frame_ready.set()
+            time.sleep(poll_sleep)
+
+    @staticmethod
+    def _convert_body_poses_to_frame(body_poses: NDArray[np.float64]) -> HumanFrame:
         body_pose_dict: dict[str, list] = {}
         for i, joint_name in enumerate(BODY_JOINT_NAMES):
             pos = [body_poses[i][0], body_poses[i][1], body_poses[i][2]]
@@ -133,14 +211,7 @@ class Pico4InputProvider:
 
         body_pose_dict = _coordinate_transform_input(body_pose_dict)
 
-        # Convert lists to numpy arrays for downstream compatibility
         result: HumanFrame = {}
         for name, (pos, quat) in body_pose_dict.items():
             result[name] = (np.asarray(pos, dtype=np.float64), np.asarray(quat, dtype=np.float64))
-
         return result
-
-    def close(self) -> None:
-        """Mark provider as closed."""
-        self._closed = True
-        logger.info("Pico4InputProvider closed")

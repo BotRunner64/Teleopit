@@ -13,7 +13,11 @@ from teleopit.controllers.observation import MjlabObservationBuilder
 from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.debug.rollout_trace import RolloutTraceWriter
 from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Recorder, Retargeter, Robot
-from teleopit.sim.reference_motion import OfflineReferenceMotion
+from teleopit.sim.reference_motion import (
+    OfflineReferenceMotion,
+    interpolate_human_frames,
+    interpolate_retarget_qpos,
+)
 from teleopit.sim.runtime_components import PolicyStepRunner, RunRecorder, RuntimePublisher, ViewerManager
 
 Float32Array = NDArray[np.float32]
@@ -270,6 +274,10 @@ class SimulationLoop:
         self._qpos_interpolator = QposInterpolator(transition_dur, self.policy_hz)
         raw_fixed_ref_yaw_alignment = self._try_get_cfg("velcmd_fixed_ref_yaw_alignment")
         fixed_ref_yaw_alignment = True if raw_fixed_ref_yaw_alignment is None else bool(raw_fixed_ref_yaw_alignment)
+        raw_realtime_input_delay_s = self._try_get_cfg("realtime_input_delay_s")
+        self._realtime_input_delay_s: float | None = (
+            None if raw_realtime_input_delay_s in (None, "", "null") else float(raw_realtime_input_delay_s)
+        )
 
         self._viewers: set[str] = set(viewers or set())
         self._step_runner = PolicyStepRunner(
@@ -323,6 +331,22 @@ class SimulationLoop:
         if hasattr(input_provider, "__len__") and hasattr(input_provider, "get_frame_by_index"):
             offline_reference = OfflineReferenceMotion(input_provider, retargeter)
             input_fps = offline_reference.fps
+        realtime_interpolated_input = (
+            offline_reference is None
+            and hasattr(input_provider, "get_frame_packet")
+        )
+        realtime_input_delay_s = (
+            1.0 / input_fps
+            if realtime_interpolated_input and self._realtime_input_delay_s is None
+            else float(self._realtime_input_delay_s or 0.0)
+        )
+        last_live_packet_seq = -1
+        previous_live_human_frame: dict | None = None
+        previous_live_retargeted: Float64Array | None = None
+        previous_live_timestamp: float | None = None
+        latest_live_human_frame: dict | None = None
+        latest_live_retargeted: Float64Array | None = None
+        latest_live_timestamp: float | None = None
 
         debug_writer: RolloutTraceWriter | None = None
         if self._debug_trace_path is not None:
@@ -351,6 +375,53 @@ class SimulationLoop:
                     cached_retargeted = sampled.qpos
                     last_bvh_idx = sampled.frame_idx0
                     new_bvh_frame = True
+                elif realtime_interpolated_input:
+                    get_packet = getattr(input_provider, "get_frame_packet", None)
+                    if not callable(get_packet):
+                        raise TypeError("Realtime interpolated input must provide get_frame_packet()")
+                    human_frame, frame_timestamp, frame_seq = cast(
+                        tuple[dict, float, int], get_packet()
+                    )
+                    new_bvh_frame = frame_seq != last_live_packet_seq
+                    if new_bvh_frame:
+                        previous_live_human_frame = latest_live_human_frame
+                        previous_live_retargeted = latest_live_retargeted
+                        previous_live_timestamp = latest_live_timestamp
+                        latest_live_human_frame = human_frame
+                        latest_live_retargeted = self._step_runner._retarget_to_qpos(
+                            retargeter.retarget(human_frame)
+                        )
+                        latest_live_timestamp = float(frame_timestamp)
+                        last_live_packet_seq = int(frame_seq)
+
+                    if latest_live_human_frame is None or latest_live_retargeted is None:
+                        raise RuntimeError("Realtime input did not provide an initial frame")
+
+                    if (
+                        previous_live_human_frame is not None
+                        and previous_live_retargeted is not None
+                        and previous_live_timestamp is not None
+                        and latest_live_timestamp is not None
+                        and latest_live_timestamp > previous_live_timestamp + 1e-6
+                    ):
+                        target_time = time.monotonic() - realtime_input_delay_s
+                        alpha = (target_time - previous_live_timestamp) / (
+                            latest_live_timestamp - previous_live_timestamp
+                        )
+                        alpha = float(np.clip(alpha, 0.0, 1.0))
+                        cached_human_frame = interpolate_human_frames(
+                            previous_live_human_frame,
+                            latest_live_human_frame,
+                            alpha,
+                        )
+                        cached_retargeted = interpolate_retarget_qpos(
+                            previous_live_retargeted,
+                            latest_live_retargeted,
+                            alpha,
+                        )
+                    else:
+                        cached_human_frame = latest_live_human_frame
+                        cached_retargeted = latest_live_retargeted
                 else:
                     bvh_idx = int(frame_f)
                     new_bvh_frame = bvh_idx != last_bvh_idx
@@ -380,7 +451,9 @@ class SimulationLoop:
                 self._record(recorder, final_state, preparation.mimic_obs, action, target_dof_pos, torque)
                 self._viewer_manager.write_sim2sim(self.robot)
                 self._viewer_manager.write_retarget(preparation.retarget_viewer_qpos)
-                if cached_human_frame is not None and (offline_reference is not None or new_bvh_frame):
+                if cached_human_frame is not None and (
+                    offline_reference is not None or new_bvh_frame or realtime_interpolated_input
+                ):
                     self._viewer_manager.write_bvh(cast(object, input_provider), cached_human_frame)
 
                 if debug_writer is not None:
