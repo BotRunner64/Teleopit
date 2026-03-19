@@ -92,7 +92,7 @@ class DummyVelCmdObservationBuilder:
     def build(
         self,
         _robot_state: object,
-        _motion_qpos: np.ndarray,
+        motion_qpos: np.ndarray,
         _motion_joint_vel: np.ndarray,
         _last_action: np.ndarray,
         motion_anchor_lin_vel_w: np.ndarray,
@@ -100,6 +100,7 @@ class DummyVelCmdObservationBuilder:
     ) -> np.ndarray:
         self.build_calls.append(
             {
+                "motion_qpos": np.asarray(motion_qpos, dtype=np.float32).copy(),
                 "motion_anchor_lin_vel_w": np.asarray(motion_anchor_lin_vel_w, dtype=np.float32).copy(),
                 "motion_anchor_ang_vel_w": np.asarray(motion_anchor_ang_vel_w, dtype=np.float32).copy(),
             }
@@ -186,4 +187,33 @@ def test_mocap_step_zeroes_velcmd_during_transition(monkeypatch) -> None:
     np.testing.assert_allclose(
         obs_builder.build_calls[0]["motion_anchor_ang_vel_w"],
         np.zeros(3, dtype=np.float32),
+    )
+
+
+def test_mocap_step_velcmd_preserves_reference_heading(monkeypatch) -> None:
+    from teleopit.sim2real.controller import Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    target_qpos = np.zeros(36, dtype=np.float64)
+    target_qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
+
+    ctrl = Sim2RealController(_make_cfg(transition_duration=0.0))
+    ctrl.robot._state.quat = np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32)
+    monkeypatch.setattr(
+        ctrl,
+        "_compute_anchor_velocities",
+        lambda _qpos: (
+            np.zeros(3, dtype=np.float32),
+            np.zeros(3, dtype=np.float32),
+        ),
+    )
+
+    ctrl._mocap_step()
+
+    np.testing.assert_allclose(
+        obs_builder.build_calls[0]["motion_qpos"][3:7],
+        np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        atol=1e-6,
     )

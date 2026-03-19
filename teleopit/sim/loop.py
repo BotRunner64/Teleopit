@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import time
+from pathlib import Path
 from typing import Protocol, cast, final
 
 import mujoco
@@ -10,7 +11,9 @@ from numpy.typing import NDArray
 
 from teleopit.controllers.observation import MjlabObservationBuilder
 from teleopit.controllers.qpos_interpolator import QposInterpolator
+from teleopit.debug.rollout_trace import RolloutTraceWriter
 from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Recorder, Retargeter, Robot
+from teleopit.sim.reference_motion import OfflineReferenceMotion
 from teleopit.sim.runtime_components import PolicyStepRunner, RunRecorder, RuntimePublisher, ViewerManager
 
 Float32Array = NDArray[np.float32]
@@ -257,6 +260,10 @@ class SimulationLoop:
         self._last_action: Float32Array = np.zeros((self._num_actions,), dtype=np.float32)
         self._last_retarget_qpos: Float64Array | None = None
         self._realtime: bool = bool(self._try_get_cfg("realtime") or False)
+        raw_debug_trace_path = self._try_get_cfg("debug_trace_path")
+        self._debug_trace_path: str | None = None
+        if raw_debug_trace_path not in (None, "", "null"):
+            self._debug_trace_path = str(raw_debug_trace_path)
 
         # Motion command transition smoothing
         transition_dur = float(self._try_get_cfg("transition_duration") or 0.0)
@@ -308,6 +315,22 @@ class SimulationLoop:
         last_bvh_idx = -1
         cached_human_frame: dict | None = None
         cached_retargeted: object = None
+        offline_reference: OfflineReferenceMotion | None = None
+        if hasattr(input_provider, "__len__") and hasattr(input_provider, "get_frame_by_index"):
+            offline_reference = OfflineReferenceMotion(input_provider, retargeter)
+            input_fps = offline_reference.fps
+
+        debug_writer: RolloutTraceWriter | None = None
+        if self._debug_trace_path is not None:
+            debug_writer = RolloutTraceWriter(
+                Path(self._debug_trace_path),
+                metadata={
+                    "source": "sim2sim",
+                    "policy_hz": self.policy_hz,
+                    "pd_hz": self.pd_hz,
+                    "input_fps": input_fps,
+                },
+            )
 
         try:
             for _ in range(max_steps):
@@ -315,15 +338,24 @@ class SimulationLoop:
                     break
 
                 policy_time = steps_done * policy_dt
-                bvh_idx = int(policy_time * input_fps)
-
-                new_bvh_frame = bvh_idx != last_bvh_idx
-                if new_bvh_frame:
-                    if not input_provider.is_available():
+                frame_f = policy_time * input_fps
+                if offline_reference is not None:
+                    sampled = offline_reference.sample(policy_time)
+                    if sampled is None:
                         break
-                    cached_human_frame = input_provider.get_frame()
-                    cached_retargeted = retargeter.retarget(cached_human_frame)
-                    last_bvh_idx = bvh_idx
+                    cached_human_frame = sampled.human_frame
+                    cached_retargeted = sampled.qpos
+                    last_bvh_idx = sampled.frame_idx0
+                    new_bvh_frame = True
+                else:
+                    bvh_idx = int(frame_f)
+                    new_bvh_frame = bvh_idx != last_bvh_idx
+                    if new_bvh_frame:
+                        if not input_provider.is_available():
+                            break
+                        cached_human_frame = input_provider.get_frame()
+                        cached_retargeted = retargeter.retarget(cached_human_frame)
+                        last_bvh_idx = bvh_idx
 
                 state = self.robot.get_state()
                 preparation = self._step_runner.prepare_motion_command(cached_retargeted, state)
@@ -344,8 +376,43 @@ class SimulationLoop:
                 self._record(recorder, final_state, preparation.mimic_obs, action, target_dof_pos, torque)
                 self._viewer_manager.write_sim2sim(self.robot)
                 self._viewer_manager.write_retarget(preparation.retarget_viewer_qpos)
-                if new_bvh_frame and cached_human_frame is not None:
+                if cached_human_frame is not None and (offline_reference is not None or new_bvh_frame):
                     self._viewer_manager.write_bvh(cast(object, input_provider), cached_human_frame)
+
+                if debug_writer is not None:
+                    controller_debug_inputs = {}
+                    get_debug_inputs = getattr(self.controller, "get_debug_inputs", None)
+                    if callable(get_debug_inputs):
+                        controller_debug_inputs = cast(dict[str, object], get_debug_inputs())
+                    final_qpos = np.asarray(getattr(final_state, "qpos"), dtype=np.float32)
+                    final_qvel = np.asarray(getattr(final_state, "qvel"), dtype=np.float32)
+                    final_quat = np.asarray(getattr(final_state, "quat"), dtype=np.float32)
+                    final_base_pos = getattr(final_state, "base_pos", None)
+                    debug_writer.add_step(
+                        step=np.int64(steps_done),
+                        policy_time=np.float64(policy_time),
+                        frame_f=np.float64(frame_f),
+                        obs=np.asarray(policy_obs, dtype=np.float32),
+                        obs_history=controller_debug_inputs.get("obs_history"),
+                        action=np.asarray(action, dtype=np.float32),
+                        target_dof_pos=np.asarray(target_dof_pos, dtype=np.float32),
+                        motion_qpos=np.asarray(preparation.qpos[: 7 + self._num_actions], dtype=np.float32),
+                        motion_joint_vel=np.asarray(
+                            self._step_runner._extract_motion_joint_data(preparation.qpos)[1],
+                            dtype=np.float32,
+                        ),
+                        motion_anchor_lin_vel_w=preparation.motion_anchor_lin_vel_w,
+                        motion_anchor_ang_vel_w=preparation.motion_anchor_ang_vel_w,
+                        robot_qpos=final_qpos,
+                        robot_qvel=final_qvel,
+                        robot_quat=final_quat,
+                        robot_base_pos=(
+                            None
+                            if final_base_pos is None
+                            else np.asarray(final_base_pos, dtype=np.float32)
+                        ),
+                        torque=np.asarray(torque, dtype=np.float32),
+                    )
 
                 # Real-time pacing
                 if needs_pacing:
@@ -361,6 +428,8 @@ class SimulationLoop:
             pass
         finally:
             self._viewer_manager.shutdown()
+            if debug_writer is not None:
+                debug_writer.save()
 
         final_state = self.robot.get_state()
         return {

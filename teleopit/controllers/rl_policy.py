@@ -92,6 +92,8 @@ class RLPolicyController:
             dtype=np.float32,
         )
         self.clip_range = self._normalize_clip_range(self._cfg_get(cfg, "clip_range", (-10.0, 10.0)))
+        self._last_obs_input: NDArray[np.float32] | None = None
+        self._last_obs_history_input: NDArray[np.float32] | None = None
 
     def compute_action(self, observation: NDArray[np.float32]) -> NDArray[np.float32]:
         obs = np.asarray(observation, dtype=np.float32)
@@ -114,6 +116,8 @@ class RLPolicyController:
         if self._multi_input:
             return self._compute_action_multi_input(obs)
 
+        self._last_obs_input = np.asarray(obs.reshape(-1), dtype=np.float32)
+        self._last_obs_history_input = None
         raw_action = np.asarray(
             self._session.run([self._output_name], {self._input_name: obs})[0],
             dtype=np.float32,
@@ -131,6 +135,8 @@ class RLPolicyController:
         else:
             self._history_buf.append(obs_flat.copy())
         obs_history = np.stack(list(self._history_buf), axis=0)[np.newaxis]  # (1, T, D)
+        self._last_obs_input = obs_flat.copy()
+        self._last_obs_history_input = np.asarray(obs_history[0], dtype=np.float32)
         # The first ONNX input may have a different dim than obs_history's D
         # if the model separates current vs history. Use obs as-is for first input.
         raw_action = np.asarray(
@@ -153,6 +159,18 @@ class RLPolicyController:
     def reset(self) -> None:
         if self._history_buf is not None:
             self._history_buf.clear()
+        self._last_obs_input = None
+        self._last_obs_history_input = None
+
+    def get_debug_inputs(self) -> dict[str, NDArray[np.float32] | None]:
+        return {
+            "obs": None if self._last_obs_input is None else self._last_obs_input.copy(),
+            "obs_history": (
+                None
+                if self._last_obs_history_input is None
+                else self._last_obs_history_input.copy()
+            ),
+        }
 
     def _clip_and_scale(self, raw_action: NDArray[np.float32]) -> NDArray[np.float32]:
         clipped = np.clip(raw_action, self.clip_range[0], self.clip_range[1])

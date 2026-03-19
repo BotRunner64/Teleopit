@@ -30,6 +30,9 @@ os.environ.setdefault("MUJOCO_GL", "egl")
 import imageio  # noqa: E402
 import mujoco  # noqa: E402
 
+from teleopit.debug.rollout_trace import RolloutTraceWriter  # noqa: E402
+from teleopit.sim.reference_motion import OfflineReferenceMotion  # noqa: E402
+
 
 def _find_project_root() -> Path:
     return Path(__file__).resolve().parent.parent
@@ -316,6 +319,7 @@ def render_sim2sim(
     max_frames: int = 0,
     bvh_format: str = "lafan1",
     policy_path: str | None = None,
+    debug_trace_path: str | None = None,
 ) -> None:
     """Render full sim2sim: BVH → GMR → obs → ONNX policy → PD control → MuJoCo."""
     project_root = _find_project_root()
@@ -329,8 +333,6 @@ def render_sim2sim(
     from omegaconf import OmegaConf
 
     from teleopit.pipeline import TeleopPipeline
-    from teleopit.controllers.observation import align_motion_qpos_yaw
-    from teleopit.retargeting.core import extract_mimic_obs
 
     cfg = OmegaConf.create(
         {
@@ -339,6 +341,7 @@ def render_sim2sim(
             "input": cfgs["input"],
             "policy_hz": POLICY_HZ,
             "pd_hz": PD_HZ,
+            "debug_trace_path": debug_trace_path,
             "recording": {"output_path": "/tmp/teleopit_render.h5"},
         }
     )
@@ -355,9 +358,11 @@ def render_sim2sim(
     retargeter = cast(Any, pipeline.retargeter)
     loop = pipeline.loop
 
-    input_fps = float(getattr(input_prov, "fps", fps))
-    n_bvh = len(input_prov)
-    bvh_duration = n_bvh / input_fps
+    offline_reference = OfflineReferenceMotion(input_prov, retargeter)
+
+    input_fps = float(offline_reference.fps)
+    n_bvh = offline_reference.num_frames
+    bvh_duration = offline_reference.duration_s
     if max_frames > 0:
         bvh_duration = min(bvh_duration, max_frames / input_fps)
     num_policy_steps = int(bvh_duration * POLICY_HZ)
@@ -366,25 +371,29 @@ def render_sim2sim(
         f"  [sim2sim] Running {num_policy_steps} policy steps @ {POLICY_HZ}Hz, PD @ {PD_HZ}Hz (decimation={loop.decimation})"
     )
 
-    bvh_frames_all = input_prov._frames
-
     frames: list[np.ndarray] = []
     t0 = time.time()
-    last_bvh_idx = -1
     torque = np.zeros((loop._num_actions,), dtype=np.float32)
+    debug_writer: RolloutTraceWriter | None = None
+    if debug_trace_path:
+        debug_writer = RolloutTraceWriter(
+            debug_trace_path,
+            metadata={
+                "source": "render_sim2sim",
+                "policy_hz": POLICY_HZ,
+                "pd_hz": PD_HZ,
+                "input_fps": input_fps,
+                "bvh_path": str(bvh_path),
+                "policy_path": str(policy_path),
+            },
+        )
 
     for step in range(num_policy_steps):
         policy_time = step / POLICY_HZ
-        bvh_idx = min(int(policy_time * input_fps), n_bvh - 1)
-
-        if bvh_idx != last_bvh_idx:
-            raw_frame = bvh_frames_all[bvh_idx]
-            human_frame = {
-                body_name: (np.array(d[0]), np.array(d[1]))
-                for body_name, d in raw_frame.items()
-            }
-            retargeted = retargeter.retarget(human_frame)
-            last_bvh_idx = bvh_idx
+        sampled = offline_reference.sample(policy_time)
+        if sampled is None:
+            break
+        retargeted = sampled.qpos
 
         state = pipeline.robot.get_state()
         preparation = loop._step_runner.prepare_motion_command(retargeted, state)
@@ -420,6 +429,35 @@ def render_sim2sim(
 
         loop._step_runner.finish_step(action, preparation.qpos)
 
+        if debug_writer is not None:
+            controller_debug_inputs = pipeline.controller.get_debug_inputs()
+            final_state = pipeline.robot.get_state()
+            debug_writer.add_step(
+                step=np.int64(step),
+                policy_time=np.float64(policy_time),
+                frame_f=np.float64(sampled.frame_f),
+                obs=np.asarray(policy_obs, dtype=np.float32),
+                obs_history=controller_debug_inputs.get("obs_history"),
+                action=np.asarray(action, dtype=np.float32),
+                target_dof_pos=np.asarray(target_dof_pos, dtype=np.float32),
+                motion_qpos=np.asarray(preparation.qpos[: 7 + loop._num_actions], dtype=np.float32),
+                motion_joint_vel=np.asarray(
+                    loop._step_runner._extract_motion_joint_data(preparation.qpos)[1],
+                    dtype=np.float32,
+                ),
+                motion_anchor_lin_vel_w=preparation.motion_anchor_lin_vel_w,
+                motion_anchor_ang_vel_w=preparation.motion_anchor_ang_vel_w,
+                robot_qpos=np.asarray(final_state.qpos, dtype=np.float32),
+                robot_qvel=np.asarray(final_state.qvel, dtype=np.float32),
+                robot_quat=np.asarray(final_state.quat, dtype=np.float32),
+                robot_base_pos=(
+                    None
+                    if getattr(final_state, "base_pos", None) is None
+                    else np.asarray(final_state.base_pos, dtype=np.float32)
+                ),
+                torque=np.asarray(torque, dtype=np.float32),
+            )
+
         cam.lookat[:] = [data.qpos[0], data.qpos[1], 0.8]
 
         renderer.update_scene(data, camera=cam)
@@ -430,6 +468,8 @@ def render_sim2sim(
             print(f"    Step {step + 1}/{num_policy_steps} ({time.time() - t0:.1f}s)")
 
     renderer.close()
+    if debug_writer is not None:
+        debug_writer.save()
 
     if not frames:
         print("  WARNING: No frames rendered!")
@@ -461,6 +501,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--format", type=str, default="lafan1", help="BVH format (lafan1 or hc_mocap)"
+    )
+    parser.add_argument(
+        "--debug-trace",
+        type=str,
+        default=None,
+        help="Optional .npz path to dump per-step sim2sim trace for debugging",
     )
     parser.add_argument(
         "--render",
@@ -538,6 +584,7 @@ def main() -> None:
             max_frames=max_frames,
             bvh_format=args.format,
             policy_path=args.policy,
+            debug_trace_path=args.debug_trace,
         )
         rendered_outputs.append(("Sim2Sim", sim2sim_out))
 

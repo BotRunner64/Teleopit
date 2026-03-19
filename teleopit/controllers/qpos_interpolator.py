@@ -52,6 +52,7 @@ class QposInterpolator:
         self._step = 0
         self._start_qpos: NDArray | None = None
         self._active = False
+        self._last_alpha = np.float64(1.0)
 
     @property
     def duration(self) -> float:
@@ -61,6 +62,10 @@ class QposInterpolator:
     def is_active(self) -> bool:
         return self._active
 
+    @property
+    def last_alpha(self) -> float:
+        return float(self._last_alpha)
+
     def start(self, start_qpos: NDArray) -> None:
         """Begin interpolation from *start_qpos* toward future targets."""
         if self._total_steps <= 0:
@@ -68,18 +73,22 @@ class QposInterpolator:
         self._start_qpos = np.array(start_qpos, dtype=np.float64).ravel()
         self._step = 0
         self._active = True
+        self._last_alpha = np.float64(0.0)
 
     def apply(self, target_qpos: NDArray) -> NDArray:
         """Return interpolated qpos.  Passthrough when inactive or finished."""
         if not self._active or self._start_qpos is None:
+            self._last_alpha = np.float64(1.0)
             return target_qpos
 
         if self._step >= self._total_steps:
             self._active = False
+            self._last_alpha = np.float64(1.0)
             return target_qpos
 
         alpha = self._step / self._total_steps
         self._step += 1
+        self._last_alpha = np.float64(alpha)
 
         result = np.empty_like(target_qpos)
         # Position: lerp

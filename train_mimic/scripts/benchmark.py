@@ -28,6 +28,7 @@ import os
 from pathlib import Path
 
 import numpy as np
+from tensordict import TensorDictBase
 
 from train_mimic.app import (
     DEFAULT_TASK,
@@ -38,6 +39,7 @@ from train_mimic.app import (
     validate_checkpoint_path,
     validate_motion_file,
 )
+from teleopit.debug.rollout_trace import RolloutTraceWriter
 
 
 def _render_frame(unwrapped: object, split: bool = False, _cmd: object = None) -> np.ndarray:
@@ -159,7 +161,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", action="store_true",
                         help="Render split-screen video with two camera angles")
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument(
+        "--debug_trace",
+        type=str,
+        default=None,
+        help="Optional .npz path to dump per-step benchmark trace for comparison",
+    )
     return parser.parse_args()
+
+
+def _tensor_to_numpy(value: object, torch_module: object) -> np.ndarray:
+    if isinstance(value, torch_module.Tensor):
+        return value.detach().cpu().numpy()
+    return np.asarray(value)
+
+
+def _first_env_numpy(value: object, torch_module: object) -> np.ndarray:
+    array = _tensor_to_numpy(value, torch_module)
+    if array.ndim == 0:
+        return array.reshape(1)
+    return array[0].copy()
+
+
+def _extract_obs_for_trace(obs: object, torch_module: object) -> tuple[np.ndarray, np.ndarray | None]:
+    if isinstance(obs, TensorDictBase):
+        actor = _first_env_numpy(obs["actor"], torch_module).astype(np.float32, copy=False)
+        actor_history = None
+        if "actor_history" in obs.keys():
+            actor_history = _first_env_numpy(obs["actor_history"], torch_module).astype(
+                np.float32, copy=False
+            )
+        return actor, actor_history
+    raise TypeError(f"Unsupported observation container for debug trace: {type(obs)}")
 
 
 def main() -> int:
@@ -171,6 +204,8 @@ def main() -> int:
         raise ValueError("--num_eval_steps must be greater than --warmup_steps")
     if args.video and args.num_envs != 1:
         raise ValueError("--video currently requires --num_envs 1")
+    if args.debug_trace is not None and args.num_envs != 1:
+        raise ValueError("--debug_trace currently requires --num_envs 1")
     validate_motion_file(args.motion_file)
 
     # Set render backend before importing modules that may initialize MuJoCo/GL.
@@ -311,6 +346,19 @@ def main() -> int:
     metric_series: dict[str, list[float]] = {k: [] for k in metric_keys}
     reward_series: list[float] = []
     reset_log_series: dict[str, list[float]] = {}
+    trace_writer: RolloutTraceWriter | None = None
+    if args.debug_trace is not None:
+        trace_writer = RolloutTraceWriter(
+            args.debug_trace,
+            metadata={
+                "source": "benchmark",
+                "task": args.task,
+                "checkpoint": args.checkpoint,
+                "motion_file": args.motion_file,
+                "num_envs": args.num_envs,
+                "step_dt": float(env.unwrapped.step_dt),
+            },
+        )
 
     done_events = 0
     timeout_events = 0
@@ -319,6 +367,7 @@ def main() -> int:
 
     try:
         for step in range(args.num_eval_steps):
+            actor_obs, actor_history = _extract_obs_for_trace(obs, torch)
             with torch.no_grad():
                 actions = policy(obs)
             obs, rewards, dones, extras = env.step(actions)
@@ -362,9 +411,32 @@ def main() -> int:
 
             if isinstance(extras, dict) and "time_outs" in extras and isinstance(extras["time_outs"], torch.Tensor):
                 timeout_events += int(extras["time_outs"].sum().item())
+
+            if trace_writer is not None:
+                trace_writer.add_step(
+                    step=np.int64(step),
+                    policy_time=np.float64(step * env.unwrapped.step_dt),
+                    obs=actor_obs,
+                    obs_history=actor_history,
+                    action=_first_env_numpy(actions, torch).astype(np.float32, copy=False),
+                    reward=np.asarray(_to_float(rewards, torch), dtype=np.float32),
+                    motion_joint_pos=_first_env_numpy(cmd.joint_pos, torch).astype(np.float32, copy=False),
+                    motion_joint_vel=_first_env_numpy(cmd.joint_vel, torch).astype(np.float32, copy=False),
+                    motion_anchor_pos_w=_first_env_numpy(cmd.anchor_pos_w, torch).astype(np.float32, copy=False),
+                    motion_anchor_quat_w=_first_env_numpy(cmd.anchor_quat_w, torch).astype(np.float32, copy=False),
+                    motion_anchor_lin_vel_w=_first_env_numpy(cmd.anchor_lin_vel_w, torch).astype(np.float32, copy=False),
+                    motion_anchor_ang_vel_w=_first_env_numpy(cmd.anchor_ang_vel_w, torch).astype(np.float32, copy=False),
+                    robot_joint_pos=_first_env_numpy(cmd.robot_joint_pos, torch).astype(np.float32, copy=False),
+                    robot_joint_vel=_first_env_numpy(cmd.robot_joint_vel, torch).astype(np.float32, copy=False),
+                    robot_anchor_pos_w=_first_env_numpy(cmd.robot_anchor_pos_w, torch).astype(np.float32, copy=False),
+                    robot_anchor_quat_w=_first_env_numpy(cmd.robot_anchor_quat_w, torch).astype(np.float32, copy=False),
+                    done=np.asarray(bool(dones[0].item()), dtype=np.bool_),
+                )
     finally:
         if video_writer is not None:
             video_writer.close()
+        if trace_writer is not None:
+            trace_writer.save()
         env.close()
 
     # --- Report ---

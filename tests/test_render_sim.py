@@ -21,6 +21,7 @@ def _install_render_sim_fakes(monkeypatch, *, builtin_pd: bool, provider_fps: in
 
     captured: dict[str, object] = {
         "aligned_root_xy": [],
+        "motion_joint_values": [],
         "set_actions": [],
         "controller_calls": 0,
         "step_count": 0,
@@ -67,9 +68,17 @@ def _install_render_sim_fakes(monkeypatch, *, builtin_pd: bool, provider_fps: in
         def __len__(self) -> int:
             return len(self._frames)
 
+        def get_frame_by_index(self, index: int) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+            frame = self._frames[index]
+            return {
+                body_name: (np.asarray(data[0], dtype=np.float64).copy(), np.asarray(data[1], dtype=np.float64).copy())
+                for body_name, data in frame.items()
+            }
+
     class FakeRetargeter:
         def retarget(self, human_frame: dict[str, tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
-            return np.array([1.0, 2.0, 0.9, 1.0, 0.0, 0.0, 0.0, 0.1], dtype=np.float64)
+            pelvis_x = float(human_frame["pelvis"][0][0])
+            return np.array([1.0, 2.0, 0.9, 1.0, 0.0, 0.0, 0.0, pelvis_x], dtype=np.float64)
 
     class FakeStepRunner:
         def __init__(self) -> None:
@@ -112,6 +121,7 @@ def _install_render_sim_fakes(monkeypatch, *, builtin_pd: bool, provider_fps: in
         ) -> np.ndarray:
             retarget_qpos = getattr(motion_prep, "qpos", np.zeros(2))
             captured["aligned_root_xy"].append(np.asarray(retarget_qpos[:2], dtype=np.float64).copy())
+            captured["motion_joint_values"].append(float(retarget_qpos[7]))
             return np.array([0.0], dtype=np.float32)
 
         def _validate_observation_for_policy(self, obs: np.ndarray) -> np.ndarray:
@@ -187,6 +197,8 @@ def test_render_sim2sim_uses_provider_fps_aligns_root_and_respects_builtin_pd(mo
     assert len(captured["set_actions"]) == 10
     assert all(np.allclose(action, [3.0]) for action in captured["set_actions"])
     assert all(np.allclose(xy, [7.0, 8.0]) for xy in captured["aligned_root_xy"])
+    assert captured["motion_joint_values"][0] == 0.0
+    assert np.isclose(captured["motion_joint_values"][1], 0.6)
     assert captured["step_count"] == 20
 
 

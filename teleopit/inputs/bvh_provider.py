@@ -210,14 +210,15 @@ class BVHInputProvider:
     def get_frame(self) -> Dict[str, Tuple[Any, Any]]:
         if self._current_frame >= len(self._frames):
             raise StopIteration("No more frames available")
-        
+
         frame_data = self._frames[self._current_frame]
         self._current_frame += 1
-        
-        return {
-            body_name: (np.array(data[0]), np.array(data[1]))
-            for body_name, data in frame_data.items()
-        }
+        return self._copy_frame(frame_data)
+
+    def get_frame_by_index(self, index: int) -> Dict[str, Tuple[Any, Any]]:
+        if index < 0 or index >= len(self._frames):
+            raise IndexError(f"Frame index out of range: {index}")
+        return self._copy_frame(self._frames[index])
     
     def reset(self) -> None:
         self._current_frame = 0
@@ -243,3 +244,10 @@ class BVHInputProvider:
     @property
     def bone_parents(self) -> np.ndarray:
         return self._bone_parents
+
+    @staticmethod
+    def _copy_frame(frame_data: Dict[str, Tuple[Any, Any]]) -> Dict[str, Tuple[Any, Any]]:
+        return {
+            body_name: (np.array(data[0]), np.array(data[1]))
+            for body_name, data in frame_data.items()
+        }

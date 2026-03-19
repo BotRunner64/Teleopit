@@ -132,9 +132,12 @@ class PolicyStepRunner:
         self.qpos_interpolator = qpos_interpolator
         self.last_action: Float32Array = np.zeros((self.num_actions,), dtype=np.float32)
         self.last_retarget_qpos: Float64Array | None = None
+        self.last_reference_qpos: Float64Array | None = None
+        self._pending_reference_qpos: Float64Array | None = None
 
     def prepare_motion_command(self, retargeted: object, state: object) -> MotionPreparation:
-        qpos = self._retarget_to_qpos(retargeted)
+        reference_qpos = self._retarget_to_qpos(retargeted)
+        self._pending_reference_qpos = reference_qpos.copy()
 
         if self.last_retarget_qpos is None and self.qpos_interpolator.duration > 0:
             start_qpos = np.zeros(36, dtype=np.float64)
@@ -142,28 +145,36 @@ class PolicyStepRunner:
             start_qpos[3:7] = np.asarray(state.quat[:4], dtype=np.float64)
             start_qpos[7:36] = np.asarray(state.qpos[:29], dtype=np.float64)
             self.qpos_interpolator.start(start_qpos)
-        qpos = self.qpos_interpolator.apply(qpos)
+        qpos = self.qpos_interpolator.apply(reference_qpos)
 
         mimic_obs = extract_mimic_obs(qpos=qpos, last_qpos=self.last_retarget_qpos, dt=1.0 / self.policy_hz)
         retarget_viewer_qpos = qpos.copy()
+        if not isinstance(self.obs_builder, VelCmdObservationBuilder):
+            robot_xy = np.asarray(state.base_pos[:2], dtype=np.float64)
+            qpos[0:2] = robot_xy
+            align_motion_qpos_yaw(np.asarray(state.quat, dtype=np.float32), qpos)
 
-        robot_xy = np.asarray(state.base_pos[:2], dtype=np.float64)
-        qpos[0:2] = robot_xy
-        align_motion_qpos_yaw(np.asarray(state.quat, dtype=np.float32), qpos)
-
-        # Compute motion anchor velocities AFTER yaw alignment so both current
-        # and previous (last_retarget_qpos) qpos are in the same world frame.
+        # Compute motion anchor velocities from the same reference frame that
+        # will be fed to the observation builder.
+        #
+        # VelCmd policies are different: training consumes the reference motion's
+        # original world-frame translation / heading and then projects the
+        # resulting anchor velocities into the robot frame. If we overwrite root
+        # XY or yaw here, the command collapses toward reference-frame velocity
+        # and loses the walk/turn signal.
         motion_anchor_lin_vel_w: Float32Array | None = None
         motion_anchor_ang_vel_w: Float32Array | None = None
         if isinstance(self.obs_builder, VelCmdObservationBuilder):
             if self.qpos_interpolator.is_active:
-                # Keep VelCmd observations aligned with the true reference
-                # motion instead of the temporary transition interpolation.
-                motion_anchor_lin_vel_w = np.zeros(3, dtype=np.float32)
-                motion_anchor_ang_vel_w = np.zeros(3, dtype=np.float32)
+                # Warm-start the command smoothly instead of snapping from all
+                # zeros to full reference velocity on the final interpolation step.
+                true_lin_vel_w, true_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
+                blend = np.float32(self.qpos_interpolator.last_alpha)
+                motion_anchor_lin_vel_w = np.asarray(true_lin_vel_w * blend, dtype=np.float32)
+                motion_anchor_ang_vel_w = np.asarray(true_ang_vel_w * blend, dtype=np.float32)
             else:
                 motion_anchor_lin_vel_w, motion_anchor_ang_vel_w = (
-                    self._compute_anchor_velocities(qpos)
+                    self._compute_anchor_velocities(reference_qpos)
                 )
 
         return MotionPreparation(
@@ -188,14 +199,14 @@ class PolicyStepRunner:
         builder._run_fk(motion_pos, motion_quat, motion_joints)
         cur_anchor_pos = builder._get_body_pos(builder._anchor_body_id).copy()
 
-        if self.last_retarget_qpos is None:
+        if self.last_reference_qpos is None:
             return (
                 np.zeros(3, dtype=np.float32),
                 np.zeros(3, dtype=np.float32),
             )
 
         # Previous anchor state via FK.
-        prev = self.last_retarget_qpos
+        prev = self.last_reference_qpos
         prev_pos = np.asarray(prev[0:3], dtype=np.float32)
         prev_quat = np.asarray(prev[3:7], dtype=np.float32)
         prev_joints = np.asarray(prev[7:7 + self.num_actions], dtype=np.float32)
@@ -350,6 +361,9 @@ class PolicyStepRunner:
     def finish_step(self, action: Float32Array, qpos: Float64Array) -> None:
         self.last_action = np.asarray(action, dtype=np.float32).reshape(-1)
         self.last_retarget_qpos = qpos.copy()
+        if self._pending_reference_qpos is not None:
+            self.last_reference_qpos = self._pending_reference_qpos.copy()
+            self._pending_reference_qpos = None
 
     @staticmethod
     def _retarget_to_qpos(retargeted: object) -> Float64Array:

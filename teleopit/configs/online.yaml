@@ -9,6 +9,7 @@ pd_hz: 200.0
 viewers: "sim2sim"
 realtime: true
 num_steps: 0          # 0 = infinite loop until Ctrl+C or UDP disconnect
+debug_trace_path: null
 
 hydra:
   run:

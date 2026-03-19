@@ -133,3 +133,31 @@ class TestRLPolicyControllerInference:
 
         ctrl = RLPolicyController.__new__(RLPolicyController)
         assert ctrl.reset() is None
+
+    def test_multi_input_debug_inputs_capture_history(self):
+        from teleopit.controllers.rl_policy import RLPolicyController
+
+        ctrl = RLPolicyController.__new__(RLPolicyController)
+        ctrl._expected_obs_dim = 166
+        ctrl.clip_range = (-10.0, 10.0)
+        ctrl.action_scale = np.ones(2, dtype=np.float32)
+        ctrl.default_dof_pos = np.zeros(2, dtype=np.float32)
+        ctrl._input_name = "obs"
+        ctrl._output_name = "action"
+        ctrl._multi_input = True
+        ctrl._history_length = 3
+        ctrl._history_obs_dim = 166
+        from collections import deque
+        ctrl._history_buf = deque(maxlen=3)
+        ctrl._last_obs_input = None
+        ctrl._last_obs_history_input = None
+        mock_session = MagicMock()
+        mock_session.run.return_value = [np.zeros((1, 2), dtype=np.float32)]
+        ctrl._session = mock_session
+
+        obs = np.zeros(166, dtype=np.float32)
+        ctrl.compute_action(obs)
+        debug = ctrl.get_debug_inputs()
+        assert debug["obs"] is not None
+        assert debug["obs_history"] is not None
+        assert debug["obs_history"].shape == (3, 166)

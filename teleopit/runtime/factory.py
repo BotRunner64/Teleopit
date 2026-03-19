@@ -15,7 +15,7 @@ class InferenceComponents:
     obs_builder: Any
     input_provider: Any
     retargeter: Any
-    sim_cfg: dict[str, float | bool]
+    sim_cfg: dict[str, object]
     viewers: set[str]
 
 
@@ -57,12 +57,13 @@ class _LoopingInputProvider:
         return self._provider.bone_parents
 
 
-def build_simulation_cfg(cfg: Any) -> dict[str, float | bool]:
+def build_simulation_cfg(cfg: Any) -> dict[str, object]:
     return {
         "policy_hz": float(cfg_get(cfg, "policy_hz", 50.0)),
         "pd_hz": float(cfg_get(cfg, "pd_hz", 1000.0)),
         "transition_duration": float(cfg_get(cfg, "transition_duration", 0.0) or 0.0),
         "realtime": bool(cfg_get(cfg, "realtime", False)),
+        "debug_trace_path": cfg_get(cfg, "debug_trace_path", None),
     }
 
 

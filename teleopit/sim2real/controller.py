@@ -218,11 +218,15 @@ class Sim2RealController:
         # Robot state from SDK
         robot_state = self.robot.get_state()
 
-        # Align motion root yaw to robot's current yaw heading.
-        align_motion_qpos_yaw(np.asarray(robot_state.quat, dtype=np.float32), qpos)
+        if not isinstance(self.obs_builder, VelCmdObservationBuilder):
+            # Non-VelCmd policies keep the legacy yaw alignment path.
+            align_motion_qpos_yaw(np.asarray(robot_state.quat, dtype=np.float32), qpos)
 
-        # Compute anchor velocities AFTER yaw alignment so both current
-        # and previous (_last_retarget_qpos) qpos are in the same world frame.
+        # Compute anchor velocities from the same reference frame that will be
+        # fed to the observation builder. VelCmd policies must preserve the
+        # original reference world-frame heading/translation; otherwise the
+        # commanded velocity degenerates toward the reference frame and loses
+        # the walk/turn signal.
         anchor_lin_vel_w: Float32Array | None = None
         anchor_ang_vel_w: Float32Array | None = None
         if isinstance(self.obs_builder, VelCmdObservationBuilder):
