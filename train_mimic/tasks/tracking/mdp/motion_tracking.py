@@ -43,7 +43,10 @@ def _exp_reward(error: FloatTensor, sigma: float | list[float] | tuple[float, ..
     if not sigma_values:
         raise ValueError("sigma must be non-empty")
     rewards = [torch.exp(-error / max(value * value, 1.0e-6)) for value in sigma_values]
-    return sum(rewards) / float(len(rewards))
+    reward = sum(rewards) / float(len(rewards))
+    if reward.ndim > 1 and reward.shape[-1] == 1:
+        return reward.squeeze(-1)
+    return reward
 
 
 
@@ -668,7 +671,7 @@ def _keypoint_tracking_reward(
 ) -> FloatTensor:
     command = _get_tracking_command(env, command_name)
     if not indexes:
-        return torch.ones((env.num_envs, 1), device=command.device)
+        return torch.ones((env.num_envs,), device=command.device)
     error = torch.norm(
         command.target_body_pos_w_window[:, 0, indexes] - command.robot_body_pos_w[:, indexes],
         dim=-1,
@@ -694,7 +697,7 @@ def motion_tracking_upper_keypoint_tracking(env: "ManagerBasedRlEnv", command_na
 def motion_tracking_keypoint_vel_tracking(env: "ManagerBasedRlEnv", command_name: str, sigma: float | list[float] | tuple[float, ...]) -> FloatTensor:
     command = _get_tracking_command(env, command_name)
     if not command.keypoint_body_indexes:
-        return torch.ones((env.num_envs, 1), device=command.device)
+        return torch.ones((env.num_envs,), device=command.device)
     error = torch.norm(
         command.target_body_lin_vel_w_window[:, 0, command.keypoint_body_indexes]
         - command.robot_body_lin_vel_w[:, command.keypoint_body_indexes],
@@ -706,7 +709,7 @@ def motion_tracking_keypoint_vel_tracking(env: "ManagerBasedRlEnv", command_name
 def motion_tracking_keypoint_rot_tracking(env: "ManagerBasedRlEnv", command_name: str, sigma: float | list[float] | tuple[float, ...]) -> FloatTensor:
     command = _get_tracking_command(env, command_name)
     if not command.keypoint_body_indexes:
-        return torch.ones((env.num_envs, 1), device=command.device)
+        return torch.ones((env.num_envs,), device=command.device)
     error = quat_error_magnitude(
         command.target_body_quat_w_window[:, 0, command.keypoint_body_indexes],
         command.robot_body_quat_w[:, command.keypoint_body_indexes],
@@ -717,7 +720,7 @@ def motion_tracking_keypoint_rot_tracking(env: "ManagerBasedRlEnv", command_name
 def motion_tracking_keypoint_angvel_tracking(env: "ManagerBasedRlEnv", command_name: str, sigma: float | list[float] | tuple[float, ...]) -> FloatTensor:
     command = _get_tracking_command(env, command_name)
     if not command.keypoint_body_indexes:
-        return torch.ones((env.num_envs, 1), device=command.device)
+        return torch.ones((env.num_envs,), device=command.device)
     error = torch.norm(
         command.target_body_ang_vel_w_window[:, 0, command.keypoint_body_indexes]
         - command.robot_body_ang_vel_w[:, command.keypoint_body_indexes],
@@ -729,7 +732,7 @@ def motion_tracking_keypoint_angvel_tracking(env: "ManagerBasedRlEnv", command_n
 def motion_tracking_joint_pos_tracking(env: "ManagerBasedRlEnv", command_name: str, sigma: float | list[float] | tuple[float, ...]) -> FloatTensor:
     command = _get_tracking_command(env, command_name)
     if not command.tracking_joint_indexes:
-        return torch.ones((env.num_envs, 1), device=command.device)
+        return torch.ones((env.num_envs,), device=command.device)
     error = torch.abs(
         command.target_joint_pos_window[:, 0] - command.robot_joint_pos[:, command.tracking_joint_indexes]
     ).mean(dim=-1, keepdim=True)
@@ -739,7 +742,7 @@ def motion_tracking_joint_pos_tracking(env: "ManagerBasedRlEnv", command_name: s
 def motion_tracking_joint_vel_tracking(env: "ManagerBasedRlEnv", command_name: str, sigma: float | list[float] | tuple[float, ...]) -> FloatTensor:
     command = _get_tracking_command(env, command_name)
     if not command.tracking_joint_indexes:
-        return torch.ones((env.num_envs, 1), device=command.device)
+        return torch.ones((env.num_envs,), device=command.device)
     error = torch.abs(
         command.target_joint_vel_window[:, 0] - command.robot_joint_vel[:, command.tracking_joint_indexes]
     ).mean(dim=-1, keepdim=True)

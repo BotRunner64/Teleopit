@@ -105,10 +105,16 @@ _MOTION_TRACKING_DEPLOY_JOINT_NAMES = (
     "right_wrist_yaw_joint",
 )
 
-_MOTION_TRACKING_DEPLOY_ACTION_SCALE = (
-    0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
-    1.0, 1.0, 0.5, 0.5, 1.0, 1.0, 0.5, 0.5, 1.0, 1.0, 1.0,
-    1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+_MOTION_TRACKING_DEPLOY_ACTION_SCALE = dict(
+    zip(
+        _MOTION_TRACKING_DEPLOY_JOINT_NAMES,
+        (
+            0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
+            1.0, 1.0, 0.5, 0.5, 1.0, 1.0, 0.5, 0.5, 1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        ),
+        strict=True,
+    )
 )
 _MOTION_TRACKING_DEPLOY_REFERENCE_STEPS = (0, 1, 2, 3, 4, -1, -2, -4, -8, -12, -16)
 _MOTION_TRACKING_DEPLOY_HISTORY_STEPS = (0, 1, 2, 3, 4, 8, 12, 16, 20)
