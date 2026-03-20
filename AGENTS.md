@@ -141,7 +141,9 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - `num_steps=0` means infinite loop (`max_steps = 2**63`)
 - `KeyboardInterrupt` is handled for clean shutdown
 - BVH frame alignment is time-based: `bvh_idx = int(policy_time × input_fps)`
-- Realtime reference buffering is controlled by `retarget_buffer_enabled`, `retarget_buffer_window_s`, `retarget_buffer_delay_s`, and `reference_steps`
+- Realtime reference buffering is controlled by `retarget_buffer_enabled`, `retarget_buffer_window_s`, `retarget_buffer_delay_s`, `reference_steps`, `realtime_buffer_warmup_steps`, and the low/high watermark knobs
+- When the future horizon briefly runs dry, runtime only repeat-pads positive future steps in the sampled `ReferenceWindow`; it does not append synthetic frames into the timeline
+- Realtime inferred `motion_joint_vel`, anchor linear velocity, and anchor angular velocity can be EMA-smoothed via `reference_velocity_smoothing_alpha` and `reference_anchor_velocity_smoothing_alpha`
 
 ### Inference Observation
 Two inference observation families are supported:

@@ -75,6 +75,13 @@ def build_simulation_cfg(cfg: Any) -> dict[str, object]:
         "reference_steps": cfg_get(cfg, "reference_steps", [0]),
         "reference_debug_log": bool(cfg_get(cfg, "reference_debug_log", False)),
         "realtime_input_delay_s": cfg_get(cfg, "realtime_input_delay_s", None),
+        "realtime_buffer_low_watermark_steps": cfg_get(cfg, "realtime_buffer_low_watermark_steps", None),
+        "realtime_buffer_high_watermark_steps": cfg_get(cfg, "realtime_buffer_high_watermark_steps", None),
+        "realtime_buffer_warmup_steps": cfg_get(cfg, "realtime_buffer_warmup_steps", None),
+        "reference_velocity_smoothing_alpha": float(cfg_get(cfg, "reference_velocity_smoothing_alpha", 1.0)),
+        "reference_anchor_velocity_smoothing_alpha": float(
+            cfg_get(cfg, "reference_anchor_velocity_smoothing_alpha", 1.0)
+        ),
         "realtime": bool(cfg_get(cfg, "realtime", False)),
         "debug_trace_path": cfg_get(cfg, "debug_trace_path", None),
     }

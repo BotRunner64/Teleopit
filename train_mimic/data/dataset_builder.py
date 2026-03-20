@@ -909,6 +909,8 @@ def _batch_convert_chunk(
     clip_weights: list[float] = []
     body_names: np.ndarray | None = None
     total = len(file_paths)
+    filtered = 0
+    kept_file_paths: list[str] = []
 
     for i, (file_path, weight) in enumerate(zip(file_paths, weights)):
         try:
@@ -938,24 +940,46 @@ def _batch_convert_chunk(
         clip_dict = {"fps": fps, **arrays, "body_names": cur_body_names}
         if fps != target_fps:
             clip_dict["fps"] = target_fps
-        clip_dict = _maybe_preprocess_clip_dict(
-            clip_dict,
-            preprocess=preprocess,
-            clip_label=f"{label}:{Path(file_path).name}",
-        )
+        clip_label = f"{label}:{Path(file_path).name}"
+        try:
+            clip_dict = _maybe_preprocess_clip_dict(
+                clip_dict,
+                preprocess=preprocess,
+                clip_label=clip_label,
+            )
+        except ValueError as exc:
+            if str(exc).startswith(f"{clip_label}:"):
+                filtered += 1
+                print(f"[FILTER] {exc}", flush=True)
+                continue
+            raise
 
         for key in _ARRAY_KEYS:
             acc[key].append(np.asarray(clip_dict[key]))
         clip_lengths.append(int(np.asarray(clip_dict["joint_pos"]).shape[0]))
         clip_weights.append(weight)
+        kept_file_paths.append(file_path)
 
         if (i + 1) % 500 == 0 or (i + 1) == total:
             print(f"[BATCH] {label}: {i + 1}/{total}", flush=True)
 
+    kept = len(clip_lengths)
+    if kept == 0:
+        print(f"[BATCH] {label}: all {total} clips filtered out", flush=True)
+        return {
+            "output": output_path,
+            "clips": 0,
+            "num_clips": 0,
+            "frames": 0,
+            "fps": target_fps,
+            "duration_s": 0.0,
+            "kept_file_paths": [],
+        }
+
     # Build merged chunk
     clip_lengths_arr = np.array(clip_lengths, dtype=np.int64)
-    clip_starts = np.zeros(len(clip_lengths), dtype=np.int64)
-    if len(clip_lengths) > 1:
+    clip_starts = np.zeros(kept, dtype=np.int64)
+    if kept > 1:
         clip_starts[1:] = np.cumsum(clip_lengths_arr[:-1])
 
     merged = {k: np.concatenate(v, axis=0) for k, v in acc.items()}
@@ -963,7 +987,7 @@ def _batch_convert_chunk(
     merged["body_names"] = body_names
     merged["clip_starts"] = clip_starts
     merged["clip_lengths"] = clip_lengths_arr
-    merged["clip_fps"] = np.full(len(clip_lengths), target_fps, dtype=np.int64)
+    merged["clip_fps"] = np.full(kept, target_fps, dtype=np.int64)
     merged["clip_weights"] = np.array(clip_weights, dtype=np.float64)
     sample_starts, sample_ends = compute_clip_sample_ranges(
         clip_lengths_arr,
@@ -978,17 +1002,18 @@ def _batch_convert_chunk(
 
     total_frames = int(merged["joint_pos"].shape[0])
     print(
-        f"[BATCH] {label}: done, {total} clips, {total_frames} frames -> "
-        f"{Path(output_path).name}",
+        f"[BATCH] {label}: done, {kept} kept / {total} total clips, "
+        f"{filtered} filtered, {total_frames} frames -> {Path(output_path).name}",
         flush=True,
     )
     return {
         "output": output_path,
-        "clips": total,
-        "num_clips": total,
+        "clips": kept,
+        "num_clips": kept,
         "frames": total_frames,
         "fps": target_fps,
         "duration_s": total_frames / max(target_fps, 1),
+        "kept_file_paths": kept_file_paths,
     }
 
 
@@ -1070,9 +1095,12 @@ def _batch_convert_split(
     num_workers = min(jobs, len(clips))
 
     if num_workers <= 1:
-        return _batch_convert_chunk(
+        stats = _batch_convert_chunk(
             file_paths, weights, target_fps, str(output_path), split_name, preprocess, window_steps,
         )
+        if int(stats["clips"]) <= 0:
+            raise ValueError(f"no valid clips remain for split {split_name} after preprocessing")
+        return stats
 
     # Split into chunks, one per worker
     chunk_size = (len(clips) + num_workers - 1) // num_workers
@@ -1093,6 +1121,7 @@ def _batch_convert_split(
             window_steps,
         ))
 
+    chunk_results: dict[str, dict[str, Any]] = {}
     ctx = multiprocessing.get_context("spawn")
     try:
         with ProcessPoolExecutor(max_workers=len(chunk_args), mp_context=ctx) as executor:
@@ -1102,7 +1131,8 @@ def _batch_convert_split(
             }
             try:
                 for future in as_completed(futures):
-                    future.result()
+                    result = future.result()
+                    chunk_results[str(result["output"])] = result
             except Exception:
                 for future in futures:
                     future.cancel()
@@ -1120,10 +1150,22 @@ def _batch_convert_split(
         )
 
     # Merge chunk files into final output
-    chunk_paths = [Path(args[3]) for args in chunk_args]
+    chunk_paths = [
+        Path(args[3])
+        for args in chunk_args
+        if int(chunk_results.get(args[3], {}).get("clips", 0)) > 0
+    ]
+    if not chunk_paths:
+        raise ValueError(f"no valid clips remain for split {split_name} after preprocessing")
+    kept_file_paths: list[str] = []
+    for args in chunk_args:
+        chunk_stat = chunk_results.get(args[3], {})
+        if int(chunk_stat.get("clips", 0)) > 0:
+            kept_file_paths.extend(list(chunk_stat.get("kept_file_paths", [])))
     print(f"[MERGE] {split_name}: merging {len(chunk_paths)} chunks ...", flush=True)
     stats = _merge_chunk_files(chunk_paths, output_path, window_steps=window_steps)
-    for p in chunk_paths:
+    stats["kept_file_paths"] = kept_file_paths
+    for p in [Path(args[3]) for args in chunk_args]:
         p.unlink(missing_ok=True)
     print(
         f"[MERGE] {split_name}: {stats['clips']} clips, "
@@ -1207,49 +1249,91 @@ def _build_dataset_batch(
         spec.window_steps,
     )
 
+    train_kept_paths = list(train_stats.pop("kept_file_paths", []))
+    val_kept_paths = list(val_stats.pop("kept_file_paths", []))
+
     # 3. Read back per-clip frame counts from merged NPZ files
     train_clip_lengths = np.load(train_out, allow_pickle=True)["clip_lengths"]
     val_clip_lengths = np.load(val_out, allow_pickle=True)["clip_lengths"]
-
-    # 4. Write manifest with correct num_frames and clip_index
-    # Clip order within each split matches the order of train_entries / val_entries
     train_sample_starts = np.load(train_out, allow_pickle=True)["clip_sample_starts"]
     train_sample_ends = np.load(train_out, allow_pickle=True)["clip_sample_ends"]
     val_sample_starts = np.load(val_out, allow_pickle=True)["clip_sample_starts"]
     val_sample_ends = np.load(val_out, allow_pickle=True)["clip_sample_ends"]
-    train_idx = 0
-    val_idx = 0
+
+    if len(train_kept_paths) != len(train_clip_lengths):
+        raise ValueError(
+            f"train kept path count mismatch: {len(train_kept_paths)} vs {len(train_clip_lengths)}"
+        )
+    if len(val_kept_paths) != len(val_clip_lengths):
+        raise ValueError(
+            f"val kept path count mismatch: {len(val_kept_paths)} vs {len(val_clip_lengths)}"
+        )
+
+    def _consume_entries_by_path(
+        entries: list[tuple[str, str, str, float, str]],
+        kept_paths: list[str],
+    ) -> list[tuple[str, str, str, float, str]]:
+        buckets: dict[str, list[tuple[str, str, str, float, str]]] = {}
+        for entry in entries:
+            buckets.setdefault(entry[0], []).append(entry)
+        kept_entries: list[tuple[str, str, str, float, str]] = []
+        for kept_path in kept_paths:
+            candidates = buckets.get(kept_path)
+            if not candidates:
+                raise ValueError(f"kept path not found in split entries: {kept_path}")
+            kept_entries.append(candidates.pop(0))
+        return kept_entries
+
+    train_kept_entries = _consume_entries_by_path(train_entries, train_kept_paths)
+    val_kept_entries = _consume_entries_by_path(val_entries, val_kept_paths)
+
+    # 4. Write manifest with correct num_frames and clip_index for kept clips only
     rows: list[DatasetClipRow] = []
-    for path, clip_id, source, weight, split in clip_entries:
-        if split == "train":
-            num_frames = int(train_clip_lengths[train_idx])
-            clip_index = train_idx
-            sample_start = int(train_sample_starts[train_idx])
-            sample_end = int(train_sample_ends[train_idx])
-            train_idx += 1
-        else:
-            num_frames = int(val_clip_lengths[val_idx])
-            clip_index = val_idx
-            sample_start = int(val_sample_starts[val_idx])
-            sample_end = int(val_sample_ends[val_idx])
-            val_idx += 1
+    for clip_index, (entry, num_frames, sample_start, sample_end) in enumerate(zip(
+        train_kept_entries,
+        train_clip_lengths,
+        train_sample_starts,
+        train_sample_ends,
+    )):
+        path, clip_id, source, weight, split = entry
         rows.append(DatasetClipRow(
             clip_id=clip_id,
             source=source,
             file_rel=_display_path(Path(path)),
-            num_frames=num_frames,
+            num_frames=int(num_frames),
             fps=spec.target_fps,
             resolved_split=split,
-            resolved_npz_path=str(train_out if split == "train" else val_out),
+            resolved_npz_path=str(train_out),
             weight=weight,
             clip_index=clip_index,
-            sample_start=sample_start,
-            sample_end=sample_end,
+            sample_start=int(sample_start),
+            sample_end=int(sample_end),
+            window_steps=spec.window_steps,
+        ))
+    for clip_index, (entry, num_frames, sample_start, sample_end) in enumerate(zip(
+        val_kept_entries,
+        val_clip_lengths,
+        val_sample_starts,
+        val_sample_ends,
+    )):
+        path, clip_id, source, weight, split = entry
+        rows.append(DatasetClipRow(
+            clip_id=clip_id,
+            source=source,
+            file_rel=_display_path(Path(path)),
+            num_frames=int(num_frames),
+            fps=spec.target_fps,
+            resolved_split=split,
+            resolved_npz_path=str(val_out),
+            weight=weight,
+            clip_index=clip_index,
+            sample_start=int(sample_start),
+            sample_end=int(sample_end),
             window_steps=spec.window_steps,
         ))
     manifest_path = write_manifest_resolved(rows, paths.dataset_dir)
 
-    # 4. Build report
+    # 5. Build report
     report: dict[str, Any] = {
         "dataset": spec.name,
         "built_at_utc": utc_now_iso(),
@@ -1271,6 +1355,11 @@ def _build_dataset_batch(
             "val": val_stats,
         },
         "clip_counts": {
+            "total": len(rows),
+            "train": len(train_kept_entries),
+            "val": len(val_kept_entries),
+        },
+        "input_clip_counts": {
             "total": len(clip_entries),
             "train": len(train_entries),
             "val": len(val_entries),

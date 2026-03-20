@@ -10,6 +10,11 @@ velcmd_fixed_ref_yaw_alignment: true  # apply one fixed startup yaw offset to Ve
 retarget_buffer_enabled: true
 retarget_buffer_window_s: 0.5
 retarget_buffer_delay_s: null  # null = auto use one input-frame delay for timeline sampling
+realtime_buffer_low_watermark_steps: 2
+realtime_buffer_high_watermark_steps: 4
+realtime_buffer_warmup_steps: 2
+reference_velocity_smoothing_alpha: 0.35
+reference_anchor_velocity_smoothing_alpha: 0.25
 reference_steps: [0]
 reference_debug_log: false
 

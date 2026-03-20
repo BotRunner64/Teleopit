@@ -248,3 +248,115 @@ def test_simulation_loop_rejects_nonzero_reference_steps_without_realtime_timeli
             retargeter=_DummyRetargeter(),
             num_steps=1,
         )
+
+
+@requires_mujoco
+def test_simulation_loop_waits_for_realtime_warmup_before_first_policy_step(monkeypatch) -> None:
+    import teleopit.sim.runtime_components as runtime_components
+    from teleopit.sim.loop import SimulationLoop
+
+    class _RealtimeInputProvider:
+        fps = 10
+
+        def __init__(self) -> None:
+            self._packets = [
+                (
+                    {'Pelvis': (np.array([0.0, 0.0, 0.0], dtype=np.float32), np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))},
+                    0.0,
+                    0,
+                ),
+                (
+                    {'Pelvis': (np.array([1.0, 0.0, 0.0], dtype=np.float32), np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))},
+                    0.1,
+                    1,
+                ),
+            ]
+            self._idx = 0
+
+        def get_frame_packet(self):
+            packet = self._packets[min(self._idx, len(self._packets) - 1)]
+            self._idx += 1
+            return packet
+
+    monkeypatch.setattr(
+        runtime_components,
+        'extract_mimic_obs',
+        lambda qpos, last_qpos, dt: np.array([qpos[0]], dtype=np.float32),
+    )
+    monkeypatch.setattr('teleopit.sim.loop.time.monotonic', lambda: 0.1)
+    monkeypatch.setattr('teleopit.sim.loop.time.sleep', lambda _seconds: None)
+
+    bus = InProcessBus()
+    robot = _DummyRobot()
+    obs_builder = _DummyObsBuilder()
+    provider = _RealtimeInputProvider()
+    loop = SimulationLoop(
+        robot=robot,
+        controller=_DummyController(),
+        obs_builder=obs_builder,
+        bus=bus,
+        cfg={
+            'policy_hz': 50.0,
+            'pd_hz': 50.0,
+            'realtime': False,
+            'transition_duration': 0.0,
+            'realtime_buffer_warmup_steps': 2,
+        },
+        viewers=set(),
+    )
+
+    result = loop.run(
+        input_provider=provider,
+        retargeter=_DummyRetargeter(),
+        num_steps=1,
+    )
+
+    assert result['steps'] == 1
+    assert provider._idx >= 2
+    assert len(obs_builder.mimic_obs_calls) == 1
+    np.testing.assert_allclose(obs_builder.mimic_obs_calls[0], np.array([0.0], dtype=np.float32), atol=1e-6)
+
+
+@requires_mujoco
+def test_simulation_loop_allows_future_reference_steps_without_explicit_high_watermark() -> None:
+    from teleopit.sim.loop import SimulationLoop
+
+    bus = InProcessBus()
+    robot = _DummyRobot()
+    loop = SimulationLoop(
+        robot=robot,
+        controller=_DummyController(),
+        obs_builder=_DummyObsBuilder(),
+        bus=bus,
+        cfg={
+            "policy_hz": 50.0,
+            "pd_hz": 50.0,
+            "realtime": False,
+            "transition_duration": 0.0,
+            "reference_steps": [0, 1, 2, 3, 4],
+            "retarget_buffer_delay_s": 0.08,
+            "retarget_buffer_window_s": 0.5,
+            "realtime_buffer_low_watermark_steps": 0,
+        },
+        viewers=set(),
+    )
+
+    assert loop._realtime_buffer_low_watermark_steps == 0
+    assert loop._realtime_buffer_high_watermark_steps is None
+
+    class _RealtimeInputProvider:
+        fps = 50
+
+        def __init__(self) -> None:
+            self._frame = {"Pelvis": (np.zeros(3, dtype=np.float32), np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32))}
+
+        def get_frame_packet(self):
+            return self._frame, 0.0, 0
+
+    result = loop.run(
+        input_provider=_RealtimeInputProvider(),
+        retargeter=_DummyRetargeter(),
+        num_steps=1,
+    )
+
+    assert result["steps"] == 1

@@ -23,6 +23,7 @@ from teleopit.sim.reference_timeline import (
     ReferenceWindow,
     ReferenceWindowBuilder,
 )
+from teleopit.sim.realtime_utils import RealtimeReferenceDiagnostics, RealtimeReferenceManager
 from teleopit.sim.runtime_components import PolicyStepRunner, RunRecorder, RuntimePublisher, ViewerManager
 
 Float32Array = NDArray[np.float32]
@@ -309,6 +310,37 @@ class SimulationLoop:
         self._reference_delay_s: float | None = (
             None if selected_delay in (None, "", "null") else float(selected_delay)
         )
+        self._realtime_buffer_low_watermark_steps = self._parse_nonnegative_int(
+            self._try_get_cfg("realtime_buffer_low_watermark_steps"),
+            default=0,
+            field_name="realtime_buffer_low_watermark_steps",
+        )
+        self._realtime_buffer_high_watermark_steps = self._parse_optional_nonnegative_int(
+            self._try_get_cfg("realtime_buffer_high_watermark_steps"),
+            field_name="realtime_buffer_high_watermark_steps",
+        )
+        if (
+            self._realtime_buffer_high_watermark_steps is not None
+            and self._realtime_buffer_high_watermark_steps < self._realtime_buffer_low_watermark_steps
+        ):
+            raise ValueError(
+                "realtime_buffer_high_watermark_steps must be >= realtime_buffer_low_watermark_steps"
+            )
+        self._realtime_buffer_warmup_steps = self._parse_nonnegative_int(
+            self._try_get_cfg("realtime_buffer_warmup_steps"),
+            default=0,
+            field_name="realtime_buffer_warmup_steps",
+        )
+        self._reference_velocity_smoothing_alpha = self._parse_alpha(
+            self._try_get_cfg("reference_velocity_smoothing_alpha"),
+            default=1.0,
+            field_name="reference_velocity_smoothing_alpha",
+        )
+        self._reference_anchor_velocity_smoothing_alpha = self._parse_alpha(
+            self._try_get_cfg("reference_anchor_velocity_smoothing_alpha"),
+            default=1.0,
+            field_name="reference_anchor_velocity_smoothing_alpha",
+        )
 
         self._viewers: set[str] = set(viewers or set())
         self._step_runner = PolicyStepRunner(
@@ -324,6 +356,8 @@ class SimulationLoop:
             default_dof_pos=self._default_dof_pos,
             qpos_interpolator=self._qpos_interpolator,
             fixed_ref_yaw_alignment=fixed_ref_yaw_alignment,
+            reference_velocity_smoothing_alpha=self._reference_velocity_smoothing_alpha,
+            reference_anchor_velocity_smoothing_alpha=self._reference_anchor_velocity_smoothing_alpha,
         )
         self._publisher = RuntimePublisher(self.bus)
         self._recorder_helper = RunRecorder()
@@ -389,6 +423,14 @@ class SimulationLoop:
                 config_label="SimulationLoop reference timeline",
             )
             reference_timeline = ReferenceTimeline(window_s=self._retarget_buffer_window_s)
+        realtime_reference_manager: RealtimeReferenceManager | None = None
+        if reference_timeline is not None:
+            realtime_reference_manager = RealtimeReferenceManager(
+                reference_window_builder=self._reference_window_builder,
+                low_watermark_steps=self._realtime_buffer_low_watermark_steps,
+                high_watermark_steps=self._realtime_buffer_high_watermark_steps,
+                warmup_steps=self._realtime_buffer_warmup_steps,
+            )
         last_live_packet_seq = -1
         previous_live_human_frame: dict | None = None
         previous_live_retargeted: Float64Array | None = None
@@ -411,13 +453,14 @@ class SimulationLoop:
             )
 
         try:
-            for _ in range(max_steps):
+            while steps_done < max_steps:
                 if has_viewers and not self._viewer_manager.any_active():
                     break
 
                 policy_time = steps_done * policy_dt
                 frame_f = policy_time * input_fps
                 reference_window: ReferenceWindow | None = None
+                realtime_reference_diag: RealtimeReferenceDiagnostics | None = None
                 if offline_reference is not None:
                     sampled = offline_reference.sample(policy_time)
                     if sampled is None:
@@ -443,6 +486,8 @@ class SimulationLoop:
                         retargeted_qpos = self._step_runner._retarget_to_qpos(retargeter.retarget(human_frame))
                         if reference_timeline is not None:
                             reference_timeline.append(retargeted_qpos, float(frame_timestamp))
+                            if realtime_reference_manager is not None:
+                                realtime_reference_manager.note_realtime_frame()
                         else:
                             previous_live_retargeted = latest_live_retargeted
                             latest_live_retargeted = retargeted_qpos
@@ -472,9 +517,20 @@ class SimulationLoop:
                         cached_human_frame = latest_live_human_frame
 
                     if reference_timeline is not None:
-                        reference_window = self._reference_window_builder.sample(reference_timeline, target_base_time)
-                        if self._reference_debug_log and any(reference_window.fallback_mask()):
-                            self._log_reference_window(reference_window, len(reference_timeline))
+                        if realtime_reference_manager is None:
+                            raise RuntimeError("Realtime reference manager must be initialized when using reference_timeline")
+                        if not realtime_reference_manager.warmup_done:
+                            time.sleep(min(policy_dt, 1.0 / max(input_fps, 1.0)))
+                            continue
+                        reference_window, realtime_reference_diag = realtime_reference_manager.sample(
+                            reference_timeline,
+                            target_base_time,
+                        )
+                        if self._reference_debug_log:
+                            if any(reference_window.fallback_mask()):
+                                self._log_reference_window(reference_window, len(reference_timeline))
+                            if realtime_reference_diag.used_repeat_padding:
+                                self._log_repeat_padding(reference_window, realtime_reference_diag, len(reference_timeline))
                         cached_retargeted = reference_window.current_sample().qpos
                     else:
                         if latest_live_retargeted is None:
@@ -549,12 +605,12 @@ class SimulationLoop:
                         action=np.asarray(action, dtype=np.float32),
                         target_dof_pos=np.asarray(target_dof_pos, dtype=np.float32),
                         motion_qpos=np.asarray(preparation.qpos[: 7 + self._num_actions], dtype=np.float32),
-                        motion_joint_vel=np.asarray(
-                            self._step_runner._extract_motion_joint_data(preparation.qpos)[1],
-                            dtype=np.float32,
-                        ),
-                        motion_anchor_lin_vel_w=preparation.motion_anchor_lin_vel_w,
-                        motion_anchor_ang_vel_w=preparation.motion_anchor_ang_vel_w,
+                        motion_joint_vel=np.asarray(preparation.raw_motion_joint_vel, dtype=np.float32),
+                        smoothed_motion_joint_vel=np.asarray(preparation.motion_joint_vel, dtype=np.float32),
+                        motion_anchor_lin_vel_w=preparation.raw_motion_anchor_lin_vel_w,
+                        motion_anchor_ang_vel_w=preparation.raw_motion_anchor_ang_vel_w,
+                        smoothed_motion_anchor_lin_vel_w=preparation.motion_anchor_lin_vel_w,
+                        smoothed_motion_anchor_ang_vel_w=preparation.motion_anchor_ang_vel_w,
                         robot_qpos=final_qpos,
                         robot_qvel=final_qvel,
                         robot_quat=final_quat,
@@ -598,6 +654,31 @@ class SimulationLoop:
                             None
                             if reference_timeline is None
                             else np.asarray(len(reference_timeline), dtype=np.int64)
+                        ),
+                        reference_future_horizon_steps=(
+                            None
+                            if realtime_reference_diag is None
+                            else np.asarray(realtime_reference_diag.future_horizon_steps, dtype=np.int64)
+                        ),
+                        reference_real_frame_count=(
+                            None
+                            if realtime_reference_diag is None
+                            else np.asarray(realtime_reference_diag.real_frame_count, dtype=np.int64)
+                        ),
+                        reference_warmup_done=(
+                            None
+                            if realtime_reference_diag is None
+                            else np.asarray(realtime_reference_diag.warmup_done, dtype=np.bool_)
+                        ),
+                        reference_used_repeat_padding=(
+                            None
+                            if realtime_reference_diag is None
+                            else np.asarray(realtime_reference_diag.used_repeat_padding, dtype=np.bool_)
+                        ),
+                        reference_padding_active=(
+                            None
+                            if realtime_reference_diag is None
+                            else np.asarray(realtime_reference_diag.padding_active, dtype=np.bool_)
                         ),
                     )
 
@@ -779,6 +860,37 @@ class SimulationLoop:
             raise ValueError(f"Expected numeric config value, got {value}")
         return float(value)
 
+    @staticmethod
+    def _parse_nonnegative_int(value: object | None, *, default: int, field_name: str) -> int:
+        if value in (None, "", "null"):
+            return int(default)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{field_name} must be a non-negative integer, got {value}")
+        parsed = int(value)
+        if parsed < 0:
+            raise ValueError(f"{field_name} must be >= 0, got {value}")
+        return parsed
+
+    @staticmethod
+    def _parse_alpha(value: object | None, *, default: float, field_name: str) -> float:
+        if value in (None, "", "null"):
+            return float(default)
+        parsed = SimulationLoop._to_float(value)
+        if parsed <= 0.0 or parsed > 1.0:
+            raise ValueError(f"{field_name} must be in (0, 1], got {value}")
+        return parsed
+
+    @staticmethod
+    def _parse_optional_nonnegative_int(value: object | None, *, field_name: str) -> int | None:
+        if value in (None, "", "null"):
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{field_name} must be a non-negative integer, got {value}")
+        parsed = int(value)
+        if parsed < 0:
+            raise ValueError(f"{field_name} must be >= 0, got {value}")
+        return parsed
+
     def _validate_observation_for_policy(self, obs: Float32Array) -> Float32Array:
         return self._step_runner.validate_observation_for_policy(obs)
 
@@ -802,4 +914,19 @@ class SimulationLoop:
             reference_window.base_time_s,
             list(reference_window.reference_steps),
             list(reference_window.modes()),
+        )
+
+    def _log_repeat_padding(
+        self,
+        reference_window: ReferenceWindow,
+        diagnostics: RealtimeReferenceDiagnostics,
+        buffer_len: int,
+    ) -> None:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Reference timeline repeat padding | buffer_len=%d | future_horizon_steps=%d | steps=%s",
+            buffer_len,
+            diagnostics.future_horizon_steps,
+            list(reference_window.reference_steps),
         )

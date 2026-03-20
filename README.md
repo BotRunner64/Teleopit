@@ -23,6 +23,8 @@ InputProvider (BVH file / UDP realtime / Pico4)
 
 在线 realtime 路径会先把 retarget 后的 `qpos` 写入短时 reference timeline，再按控制时刻从 timeline 采样 reference window。默认配置仍使用 `reference_steps=[0]`；deploy-aligned motion tracking 配置则显式使用 `[0, 1, 2, 3, 4, -1, -2, -4, -8, -12, -16]`。非零 `reference_steps` 需要同时满足 `retarget_buffer_delay_s >= max_future_step / policy_hz`，以及 `retarget_buffer_window_s >= retarget_buffer_delay_s + abs(min_history_step) / policy_hz`，否则运行时会直接报错，不会静默 fallback。
 
+新的 realtime 默认配置还会先做短暂 warmup，再按 low/high watermark 维持 reference buffer 水位；当正向 future horizon 短暂缺口时，运行时会只对未来步做 `repeat_latest` 轻量补齐，而不是改写 timeline。推理侧的 `motion_joint_vel`、anchor 线速度和角速度也支持 EMA 平滑，入口配置为 `realtime_buffer_warmup_steps`、`realtime_buffer_low_watermark_steps`、`realtime_buffer_high_watermark_steps`、`reference_velocity_smoothing_alpha`、`reference_anchor_velocity_smoothing_alpha`。
+
 ## Install
 
 项目要求 Python `3.10+`。

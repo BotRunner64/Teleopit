@@ -18,6 +18,7 @@ from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.interfaces import MessageBus, ObservationBuilder, Recorder, Robot
 from teleopit.retargeting.core import extract_mimic_obs
 from teleopit.sim.reference_timeline import ReferenceSample, ReferenceWindow
+from teleopit.sim.realtime_utils import ExponentialVecSmoother
 
 Float32Array = NDArray[np.float32]
 Float64Array = NDArray[np.float64]
@@ -40,8 +41,12 @@ class MotionPreparation:
     qpos: Float64Array
     retarget_viewer_qpos: Float64Array
     mimic_obs: Float32Array
+    motion_joint_vel: Float32Array
+    raw_motion_joint_vel: Float32Array
     motion_anchor_lin_vel_w: Float32Array | None = None
     motion_anchor_ang_vel_w: Float32Array | None = None
+    raw_motion_anchor_lin_vel_w: Float32Array | None = None
+    raw_motion_anchor_ang_vel_w: Float32Array | None = None
 
 
 class RuntimePublisher:
@@ -107,6 +112,8 @@ class PolicyStepRunner:
         default_dof_pos: Float32Array,
         qpos_interpolator: QposInterpolator,
         fixed_ref_yaw_alignment: bool = True,
+        reference_velocity_smoothing_alpha: float = 1.0,
+        reference_anchor_velocity_smoothing_alpha: float = 1.0,
     ) -> None:
         self.robot = robot
         self.controller = controller
@@ -120,6 +127,9 @@ class PolicyStepRunner:
         self.default_dof_pos = default_dof_pos
         self.qpos_interpolator = qpos_interpolator
         self.fixed_ref_yaw_alignment = bool(fixed_ref_yaw_alignment)
+        self._motion_joint_vel_smoother = ExponentialVecSmoother(reference_velocity_smoothing_alpha)
+        self._motion_anchor_lin_vel_smoother = ExponentialVecSmoother(reference_anchor_velocity_smoothing_alpha)
+        self._motion_anchor_ang_vel_smoother = ExponentialVecSmoother(reference_anchor_velocity_smoothing_alpha)
         self.last_action: Float32Array = np.zeros((self.num_actions,), dtype=np.float32)
         self.last_retarget_qpos: Float64Array | None = None
         self.last_reference_qpos: Float64Array | None = None
@@ -134,6 +144,9 @@ class PolicyStepRunner:
         self._pending_reference_qpos = None
         self._fixed_reference_yaw_quat = None
         self._fixed_reference_pivot_pos_w = None
+        self._motion_joint_vel_smoother.reset()
+        self._motion_anchor_lin_vel_smoother.reset()
+        self._motion_anchor_ang_vel_smoother.reset()
         self.qpos_interpolator.reset()
 
     def prepare_motion_command(self, retargeted: object, state: object) -> MotionPreparation:
@@ -152,7 +165,11 @@ class PolicyStepRunner:
 
         mimic_obs = extract_mimic_obs(qpos=qpos, last_qpos=self.last_retarget_qpos, dt=1.0 / self.policy_hz)
         retarget_viewer_qpos = qpos.copy()
+        raw_motion_joint_vel = self._compute_motion_joint_vel(qpos)
+        motion_joint_vel = self._motion_joint_vel_smoother.apply(raw_motion_joint_vel)
 
+        raw_motion_anchor_lin_vel_w: Float32Array | None = None
+        raw_motion_anchor_ang_vel_w: Float32Array | None = None
         motion_anchor_lin_vel_w: Float32Array | None
         motion_anchor_ang_vel_w: Float32Array | None
         if self._obs_builder_requires_reference_window():
@@ -161,17 +178,25 @@ class PolicyStepRunner:
         elif self.qpos_interpolator.is_active:
             true_lin_vel_w, true_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
             blend = np.float32(self.qpos_interpolator.last_alpha)
-            motion_anchor_lin_vel_w = np.asarray(true_lin_vel_w * blend, dtype=np.float32)
-            motion_anchor_ang_vel_w = np.asarray(true_ang_vel_w * blend, dtype=np.float32)
+            raw_motion_anchor_lin_vel_w = np.asarray(true_lin_vel_w * blend, dtype=np.float32)
+            raw_motion_anchor_ang_vel_w = np.asarray(true_ang_vel_w * blend, dtype=np.float32)
+            motion_anchor_lin_vel_w = self._motion_anchor_lin_vel_smoother.apply(raw_motion_anchor_lin_vel_w)
+            motion_anchor_ang_vel_w = self._motion_anchor_ang_vel_smoother.apply(raw_motion_anchor_ang_vel_w)
         else:
-            motion_anchor_lin_vel_w, motion_anchor_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
+            raw_motion_anchor_lin_vel_w, raw_motion_anchor_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
+            motion_anchor_lin_vel_w = self._motion_anchor_lin_vel_smoother.apply(raw_motion_anchor_lin_vel_w)
+            motion_anchor_ang_vel_w = self._motion_anchor_ang_vel_smoother.apply(raw_motion_anchor_ang_vel_w)
 
         return MotionPreparation(
             qpos=qpos,
             retarget_viewer_qpos=retarget_viewer_qpos,
             mimic_obs=np.asarray(mimic_obs, dtype=np.float32),
+            motion_joint_vel=motion_joint_vel,
+            raw_motion_joint_vel=raw_motion_joint_vel,
             motion_anchor_lin_vel_w=motion_anchor_lin_vel_w,
             motion_anchor_ang_vel_w=motion_anchor_ang_vel_w,
+            raw_motion_anchor_lin_vel_w=raw_motion_anchor_lin_vel_w,
+            raw_motion_anchor_ang_vel_w=raw_motion_anchor_ang_vel_w,
         )
 
     def _align_velcmd_reference_yaw(self, reference_qpos: Float64Array, state: object) -> Float64Array:
@@ -319,7 +344,8 @@ class PolicyStepRunner:
         last_action: Float32Array,
         reference_window: ReferenceWindow | None = None,
     ) -> Float32Array:
-        motion_qpos, motion_joint_vel = self._extract_motion_joint_data(motion_prep.qpos)
+        motion_qpos = np.asarray(motion_prep.qpos[:7 + self.num_actions], dtype=np.float32)
+        motion_joint_vel = np.asarray(motion_prep.motion_joint_vel, dtype=np.float32)
         build_with_reference_window = getattr(self.obs_builder, "build_with_reference_window", None)
         if callable(build_with_reference_window):
             aligned_reference_window = self._align_reference_window(reference_window, state)
@@ -343,31 +369,24 @@ class PolicyStepRunner:
         )
         return np.asarray(obs, dtype=np.float32)
 
-    def _extract_motion_joint_data(
-        self, retarget_qpos: Float64Array
-    ) -> tuple[Float32Array, Float32Array]:
-        """Extract motion qpos and joint velocities from retarget qpos."""
+    def _compute_motion_joint_vel(self, retarget_qpos: Float64Array) -> Float32Array:
         if retarget_qpos.shape[0] < 7 + self.num_actions:
             raise ValueError(
                 f"Retargeted qpos too short: {retarget_qpos.shape[0]} "
                 f"(need >= {7 + self.num_actions})"
             )
-        motion_joint_pos = np.asarray(
-            retarget_qpos[7:7 + self.num_actions], dtype=np.float32
-        )
+        motion_joint_pos = np.asarray(retarget_qpos[7:7 + self.num_actions], dtype=np.float32)
         if self.last_retarget_qpos is None:
-            motion_joint_vel = np.zeros((self.num_actions,), dtype=np.float32)
-        else:
-            prev_joint_pos = np.asarray(
-                self.last_retarget_qpos[7:7 + self.num_actions], dtype=np.float32
-            )
-            motion_joint_vel = (motion_joint_pos - prev_joint_pos) * np.float32(
-                self.policy_hz
-            )
-        motion_qpos = np.asarray(
-            retarget_qpos[:7 + self.num_actions], dtype=np.float32
-        )
-        return motion_qpos, motion_joint_vel
+            return np.zeros((self.num_actions,), dtype=np.float32)
+        prev_joint_pos = np.asarray(self.last_retarget_qpos[7:7 + self.num_actions], dtype=np.float32)
+        return np.asarray((motion_joint_pos - prev_joint_pos) * np.float32(self.policy_hz), dtype=np.float32)
+
+    def _extract_motion_joint_data(
+        self, retarget_qpos: Float64Array
+    ) -> tuple[Float32Array, Float32Array]:
+        """Extract motion qpos and joint velocities from retarget qpos."""
+        motion_qpos = np.asarray(retarget_qpos[:7 + self.num_actions], dtype=np.float32)
+        return motion_qpos, self._compute_motion_joint_vel(retarget_qpos)
 
     def validate_observation_for_policy(self, obs: Float32Array) -> Float32Array:
         expected_raw = getattr(self.controller, "_expected_obs_dim", None)

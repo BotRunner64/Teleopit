@@ -9,6 +9,7 @@ import pytest
 from train_mimic.data import dataset_builder
 from train_mimic.data.dataset_builder import (
     DatasetClipRow,
+    SourceInputFile,
     DatasetSourceSpec,
     DatasetSpec,
     assign_splits,
@@ -424,3 +425,175 @@ def test_batch_convert_chunk_preprocess_sees_resampled_target_fps(
     )
 
     assert observed_fps == [30]
+
+
+def test_batch_convert_chunk_skips_filtered_short_clips(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    short_path = tmp_path / "short.pkl"
+    valid_path = tmp_path / "valid.pkl"
+    short_path.write_bytes(b"placeholder")
+    valid_path.write_bytes(b"placeholder")
+
+    num_bodies = len(_MJLAB_G1_BODY_NAMES)
+
+    def _arrays(num_frames: int) -> dict[str, object]:
+        body_quat_w = np.zeros((num_frames, num_bodies, 4), dtype=np.float32)
+        body_quat_w[..., 0] = 1.0
+        return {
+            "fps": 30,
+            "joint_pos": np.zeros((num_frames, 29), dtype=np.float32),
+            "joint_vel": np.zeros((num_frames, 29), dtype=np.float32),
+            "body_pos_w": np.zeros((num_frames, num_bodies, 3), dtype=np.float32),
+            "body_quat_w": body_quat_w,
+            "body_lin_vel_w": np.zeros((num_frames, num_bodies, 3), dtype=np.float32),
+            "body_ang_vel_w": np.zeros((num_frames, num_bodies, 3), dtype=np.float32),
+            "body_names": np.asarray(_MJLAB_G1_BODY_NAMES, dtype=str),
+        }
+
+    def _convert(path: str, **_kwargs):
+        if path.endswith("short.pkl"):
+            return _arrays(18)
+        if path.endswith("valid.pkl"):
+            return _arrays(22)
+        raise AssertionError(path)
+
+    monkeypatch.setattr(
+        "train_mimic.scripts.convert_pkl_to_npz.convert_pkl_to_arrays",
+        _convert,
+    )
+
+    stats = dataset_builder._batch_convert_chunk(
+        [str(short_path), str(valid_path)],
+        [1.0, 1.0],
+        30,
+        str(tmp_path / "merged.npz"),
+        "train",
+        preprocess=dataset_builder.DatasetPreprocessSpec(
+            normalize_root_xy=True,
+            ground_align="clip_min_foot",
+            min_frames=22,
+        ),
+        window_steps=(0, 1, 2, 3, 4, -1, -2, -4, -8, -12, -16),
+    )
+
+    merged = np.load(tmp_path / "merged.npz", allow_pickle=True)
+    assert stats["clips"] == 1
+    assert stats["kept_file_paths"] == [str(valid_path)]
+    assert merged["clip_lengths"].tolist() == [22]
+
+
+
+def test_build_dataset_batch_manifest_skips_filtered_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_dir = tmp_path / "seed_source"
+    keep_train = source_dir / "keep_train.csv"
+    drop_train = source_dir / "drop_train.csv"
+    keep_val = source_dir / "keep_val.csv"
+    for path in (keep_train, drop_train, keep_val):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("placeholder", encoding="utf-8")
+
+    spec = DatasetSpec(
+        name="seed_demo",
+        target_fps=30,
+        val_percent=5,
+        hash_salt="",
+        sources=[DatasetSourceSpec(name="seed", type="seed_csv", input=str(source_dir))],
+    )
+    dataset_dir = tmp_path / "datasets" / spec.name
+
+    def _collect(_source):
+        return ([
+            SourceInputFile(path=keep_train, rel_no_suffix=Path("keep_train")),
+            SourceInputFile(path=drop_train, rel_no_suffix=Path("drop_train")),
+            SourceInputFile(path=keep_val, rel_no_suffix=Path("keep_val")),
+        ], source_dir)
+
+    def _hash_split(clip_id: str, _val_percent: int, _salt: str = "") -> str:
+        return "val" if clip_id.endswith("keep_val") else "train"
+
+    num_bodies = len(_MJLAB_G1_BODY_NAMES)
+
+    def _write_merged(path: Path, lengths: list[int]) -> None:
+        total = sum(lengths)
+        joint_pos = np.zeros((total, 29), dtype=np.float32)
+        joint_vel = np.zeros_like(joint_pos)
+        body_pos_w = np.zeros((total, num_bodies, 3), dtype=np.float32)
+        body_quat_w = np.zeros((total, num_bodies, 4), dtype=np.float32)
+        body_quat_w[..., 0] = 1.0
+        body_lin_vel_w = np.zeros((total, num_bodies, 3), dtype=np.float32)
+        body_ang_vel_w = np.zeros((total, num_bodies, 3), dtype=np.float32)
+        clip_lengths = np.asarray(lengths, dtype=np.int64)
+        clip_starts = np.zeros(len(lengths), dtype=np.int64)
+        if len(lengths) > 1:
+            clip_starts[1:] = np.cumsum(clip_lengths[:-1])
+        sample_starts = np.zeros(len(lengths), dtype=np.int64)
+        sample_ends = clip_lengths - 1
+        np.savez(
+            path,
+            fps=30,
+            joint_pos=joint_pos,
+            joint_vel=joint_vel,
+            body_pos_w=body_pos_w,
+            body_quat_w=body_quat_w,
+            body_lin_vel_w=body_lin_vel_w,
+            body_ang_vel_w=body_ang_vel_w,
+            body_names=np.asarray(_MJLAB_G1_BODY_NAMES, dtype=str),
+            clip_starts=clip_starts,
+            clip_lengths=clip_lengths,
+            clip_fps=np.full(len(lengths), 30, dtype=np.int64),
+            clip_weights=np.ones(len(lengths), dtype=np.float64),
+            window_steps=np.asarray([0], dtype=np.int64),
+            clip_sample_starts=sample_starts,
+            clip_sample_ends=sample_ends,
+        )
+
+    def _batch_convert_split(clips, target_fps, output_path, jobs, split_name, preprocess, window_steps):
+        _ = clips, target_fps, jobs, preprocess, window_steps
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if split_name == "train":
+            _write_merged(output_path, [22])
+            return {
+                "output": str(output_path),
+                "clips": 1,
+                "num_clips": 1,
+                "frames": 22,
+                "fps": 30,
+                "duration_s": 22.0 / 30.0,
+                "kept_file_paths": [str(keep_train)],
+            }
+        _write_merged(output_path, [24])
+        return {
+            "output": str(output_path),
+            "clips": 1,
+            "num_clips": 1,
+            "frames": 24,
+            "fps": 30,
+            "duration_s": 24.0 / 30.0,
+            "kept_file_paths": [str(keep_val)],
+        }
+
+    monkeypatch.setattr(dataset_builder, "_collect_source_files", _collect)
+    monkeypatch.setattr(dataset_builder, "hash_split", _hash_split)
+    monkeypatch.setattr(dataset_builder, "_batch_convert_split", _batch_convert_split)
+
+    report = dataset_builder._build_dataset_batch(
+        spec,
+        paths=dataset_builder.resolve_dataset_paths(spec, output_root=tmp_path / "datasets"),
+        force=False,
+        skip_fk_check=True,
+        skip_validate=False,
+        jobs=2,
+    )
+
+    manifest = (dataset_dir / "manifest_resolved.csv").read_text(encoding="utf-8")
+    assert "seed:keep_train" in manifest
+    assert "seed:keep_val" in manifest
+    assert "seed:drop_train" not in manifest
+    assert report["clip_counts"] == {"total": 2, "train": 1, "val": 1}
+    assert report["input_clip_counts"] == {"total": 3, "train": 2, "val": 1}

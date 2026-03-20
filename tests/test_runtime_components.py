@@ -9,7 +9,12 @@ from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.sim.runtime_components import PolicyStepRunner
 
 
-def _make_runner(obs_builder: object, *, fixed_ref_yaw_alignment: bool = True) -> PolicyStepRunner:
+def _make_runner(
+    obs_builder: object,
+    *,
+    fixed_ref_yaw_alignment: bool = True,
+    reference_velocity_smoothing_alpha: float = 1.0,
+) -> PolicyStepRunner:
     return PolicyStepRunner(
         robot=SimpleNamespace(),
         controller=SimpleNamespace(),
@@ -23,6 +28,7 @@ def _make_runner(obs_builder: object, *, fixed_ref_yaw_alignment: bool = True) -
         default_dof_pos=np.zeros(29, dtype=np.float32),
         qpos_interpolator=QposInterpolator(0.0, 50.0),
         fixed_ref_yaw_alignment=fixed_ref_yaw_alignment,
+        reference_velocity_smoothing_alpha=reference_velocity_smoothing_alpha,
     )
 
 
@@ -31,7 +37,7 @@ def test_prepare_motion_command_velcmd_applies_fixed_initial_yaw_alignment(monke
     runner = _make_runner(velcmd_builder)
     monkeypatch.setattr(
         runner,
-        "_compute_anchor_velocities",
+        '_compute_anchor_velocities',
         lambda qpos: (np.zeros(3, dtype=np.float32), np.zeros(3, dtype=np.float32)),
     )
 
@@ -54,7 +60,7 @@ def test_prepare_motion_command_velcmd_keeps_fixed_yaw_after_start(monkeypatch) 
     runner = _make_runner(velcmd_builder)
     monkeypatch.setattr(
         runner,
-        "_compute_anchor_velocities",
+        '_compute_anchor_velocities',
         lambda qpos: (np.zeros(3, dtype=np.float32), np.zeros(3, dtype=np.float32)),
     )
 
@@ -79,3 +85,39 @@ def test_prepare_motion_command_velcmd_keeps_fixed_yaw_after_start(monkeypatch) 
 
     np.testing.assert_allclose(second.qpos[:2], np.array([1.5, 4.5]), atol=1e-6)
     np.testing.assert_allclose(second.qpos[3:7], first_state.quat, atol=1e-6)
+
+
+def test_prepare_motion_command_smooths_joint_velocity_spikes(monkeypatch) -> None:
+    velcmd_builder = VelCmdObservationBuilder.__new__(VelCmdObservationBuilder)
+    runner = _make_runner(
+        velcmd_builder,
+        reference_velocity_smoothing_alpha=0.5,
+    )
+    monkeypatch.setattr(
+        runner,
+        '_compute_anchor_velocities',
+        lambda qpos: (np.zeros(3, dtype=np.float32), np.zeros(3, dtype=np.float32)),
+    )
+
+    state = SimpleNamespace(
+        base_pos=np.array([0.0, 0.0, 0.8], dtype=np.float32),
+        quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        qpos=np.zeros(29, dtype=np.float32),
+    )
+    qpos0 = np.zeros(36, dtype=np.float64)
+    qpos0[3] = 1.0
+    qpos1 = qpos0.copy()
+    qpos1[7] = 1.0
+
+    first = runner.prepare_motion_command(qpos0, state)
+    runner.finish_step(np.zeros(29, dtype=np.float32), first.qpos)
+
+    second = runner.prepare_motion_command(qpos1, state)
+    runner.finish_step(np.zeros(29, dtype=np.float32), second.qpos)
+
+    third = runner.prepare_motion_command(qpos1, state)
+
+    np.testing.assert_allclose(second.raw_motion_joint_vel[0], 50.0, atol=1e-6)
+    np.testing.assert_allclose(second.motion_joint_vel[0], 25.0, atol=1e-6)
+    np.testing.assert_allclose(third.raw_motion_joint_vel[0], 0.0, atol=1e-6)
+    np.testing.assert_allclose(third.motion_joint_vel[0], 12.5, atol=1e-6)

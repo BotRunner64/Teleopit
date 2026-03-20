@@ -382,3 +382,57 @@ def test_mocap_step_velcmd_can_disable_fixed_yaw_alignment(monkeypatch) -> None:
         np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         atol=1e-6,
     )
+
+
+def test_mocap_step_waits_for_realtime_warmup_before_running_policy(monkeypatch) -> None:
+    from teleopit.sim2real.controller import Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    target_qpos = np.zeros(36, dtype=np.float64)
+    target_qpos[3] = 1.0
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
+
+    cfg = _make_cfg(transition_duration=0.0)
+    cfg['realtime_buffer_warmup_steps'] = 2
+    ctrl = Sim2RealController(cfg)
+    monkeypatch.setattr(
+        ctrl,
+        '_compute_anchor_velocities',
+        lambda _qpos: (
+            np.zeros(3, dtype=np.float32),
+            np.zeros(3, dtype=np.float32),
+        ),
+    )
+    monkeypatch.setattr('teleopit.sim2real.controller.time.monotonic', lambda: 1.1)
+
+    ctrl._mocap_step()
+
+    assert len(obs_builder.build_calls) == 0
+    assert ctrl.robot.sent_positions == []
+
+    ctrl.input_provider._frame_seq = 1
+    ctrl.input_provider._frame_timestamp = 1.03
+    ctrl._mocap_step()
+
+    assert len(obs_builder.build_calls) == 1
+    assert len(ctrl.robot.sent_positions) == 1
+
+
+def test_sim2real_allows_future_reference_steps_without_explicit_high_watermark(monkeypatch) -> None:
+    from teleopit.sim2real.controller import Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=np.zeros(36, dtype=np.float64))
+
+    cfg = _make_cfg()
+    cfg["reference_steps"] = [0, 1, 2, 3, 4]
+    cfg["retarget_buffer_delay_s"] = 0.08
+    cfg["retarget_buffer_window_s"] = 0.5
+    cfg["realtime_buffer_low_watermark_steps"] = 0
+
+    ctrl = Sim2RealController(cfg)
+
+    assert ctrl._realtime_buffer_low_watermark_steps == 0
+    assert ctrl._realtime_buffer_high_watermark_steps is None

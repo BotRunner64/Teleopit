@@ -36,6 +36,7 @@ from teleopit.retargeting.core import RetargetingModule
 from teleopit.runtime.common import cfg_get
 from teleopit.runtime.factory import build_sim2real_mocap_components
 from teleopit.sim.reference_timeline import ReferenceSample, ReferenceTimeline, ReferenceWindow, ReferenceWindowBuilder
+from teleopit.sim.realtime_utils import ExponentialVecSmoother, RealtimeReferenceManager
 from teleopit.sim2real.remote import UnitreeRemote
 from teleopit.sim2real.unitree_g1 import UnitreeG1Robot
 
@@ -114,6 +115,33 @@ class Sim2RealController:
             if raw_reference_delay_s in (None, "", "null")
             else float(raw_reference_delay_s)
         )
+        self._realtime_buffer_low_watermark_steps = self._parse_nonnegative_int(
+            cfg_get(cfg, "realtime_buffer_low_watermark_steps", 0),
+            field_name="realtime_buffer_low_watermark_steps",
+        )
+        self._realtime_buffer_high_watermark_steps = self._parse_optional_nonnegative_int(
+            cfg_get(cfg, "realtime_buffer_high_watermark_steps", None),
+            field_name="realtime_buffer_high_watermark_steps",
+        )
+        if (
+            self._realtime_buffer_high_watermark_steps is not None
+            and self._realtime_buffer_high_watermark_steps < self._realtime_buffer_low_watermark_steps
+        ):
+            raise ValueError(
+                "realtime_buffer_high_watermark_steps must be >= realtime_buffer_low_watermark_steps"
+            )
+        self._realtime_buffer_warmup_steps = self._parse_nonnegative_int(
+            cfg_get(cfg, "realtime_buffer_warmup_steps", 0),
+            field_name="realtime_buffer_warmup_steps",
+        )
+        self._reference_velocity_smoothing_alpha = self._parse_alpha(
+            cfg_get(cfg, "reference_velocity_smoothing_alpha", 1.0),
+            field_name="reference_velocity_smoothing_alpha",
+        )
+        self._reference_anchor_velocity_smoothing_alpha = self._parse_alpha(
+            cfg_get(cfg, "reference_anchor_velocity_smoothing_alpha", 1.0),
+            field_name="reference_anchor_velocity_smoothing_alpha",
+        )
         if self._retarget_buffer_enabled:
             self._reference_window_builder.validate_runtime_support(
                 delay_s=self._reference_delay_s,
@@ -125,6 +153,19 @@ class Sim2RealController:
             if self._retarget_buffer_enabled
             else None
         )
+        self._reference_manager: RealtimeReferenceManager | None = (
+            RealtimeReferenceManager(
+                reference_window_builder=self._reference_window_builder,
+                low_watermark_steps=self._realtime_buffer_low_watermark_steps,
+                high_watermark_steps=self._realtime_buffer_high_watermark_steps,
+                warmup_steps=self._realtime_buffer_warmup_steps,
+            )
+            if self._reference_timeline is not None
+            else None
+        )
+        self._motion_joint_vel_smoother = ExponentialVecSmoother(self._reference_velocity_smoothing_alpha)
+        self._motion_anchor_lin_vel_smoother = ExponentialVecSmoother(self._reference_anchor_velocity_smoothing_alpha)
+        self._motion_anchor_ang_vel_smoother = ExponentialVecSmoother(self._reference_anchor_velocity_smoothing_alpha)
         self._last_live_packet_seq = -1
 
         # Default standing pose (29-DOF)
@@ -268,8 +309,14 @@ class Sim2RealController:
                     self._retarget_to_qpos(retargeted),
                     float(frame_timestamp),
                 )
+                if self._reference_manager is not None:
+                    self._reference_manager.note_realtime_frame()
                 self._last_live_packet_seq = int(frame_seq)
-            reference_window = self._reference_window_builder.sample(
+            if self._reference_manager is None:
+                raise RuntimeError("Realtime reference manager must be initialized when using reference_timeline")
+            if not self._reference_manager.warmup_done:
+                return
+            reference_window, reference_diag = self._reference_manager.sample(
                 self._reference_timeline,
                 time.monotonic() - self._reference_delay_s,
             )
@@ -279,6 +326,13 @@ class Sim2RealController:
                     len(self._reference_timeline),
                     list(reference_window.reference_steps),
                     list(reference_window.modes()),
+                )
+            if self._reference_debug_log and reference_diag.used_repeat_padding:
+                logger.warning(
+                    "Reference timeline repeat padding | buffer_len=%d | future_horizon_steps=%d | steps=%s",
+                    len(self._reference_timeline),
+                    reference_diag.future_horizon_steps,
+                    list(reference_window.reference_steps),
                 )
             reference_qpos = reference_window.current_sample().qpos
         else:
@@ -297,10 +351,12 @@ class Sim2RealController:
             if self._qpos_interpolator.is_active:
                 true_lin_vel_w, true_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
                 blend = np.float32(self._qpos_interpolator.last_alpha)
-                anchor_lin_vel_w = np.asarray(true_lin_vel_w * blend, dtype=np.float32)
-                anchor_ang_vel_w = np.asarray(true_ang_vel_w * blend, dtype=np.float32)
+                raw_anchor_lin_vel_w = np.asarray(true_lin_vel_w * blend, dtype=np.float32)
+                raw_anchor_ang_vel_w = np.asarray(true_ang_vel_w * blend, dtype=np.float32)
             else:
-                anchor_lin_vel_w, anchor_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
+                raw_anchor_lin_vel_w, raw_anchor_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
+            anchor_lin_vel_w = self._motion_anchor_lin_vel_smoother.apply(raw_anchor_lin_vel_w)
+            anchor_ang_vel_w = self._motion_anchor_ang_vel_smoother.apply(raw_anchor_ang_vel_w)
 
         if qpos.shape[0] < 7 + self.num_actions:
             raise ValueError(
@@ -308,10 +364,11 @@ class Sim2RealController:
             )
         motion_joint_pos = np.asarray(qpos[7:7 + self.num_actions], dtype=np.float32)
         if self._last_retarget_qpos is None:
-            motion_joint_vel = np.zeros((self.num_actions,), dtype=np.float32)
+            raw_motion_joint_vel = np.zeros((self.num_actions,), dtype=np.float32)
         else:
             prev_joint_pos = np.asarray(self._last_retarget_qpos[7:7 + self.num_actions], dtype=np.float32)
-            motion_joint_vel = (motion_joint_pos - prev_joint_pos) * np.float32(self.policy_hz)
+            raw_motion_joint_vel = (motion_joint_pos - prev_joint_pos) * np.float32(self.policy_hz)
+        motion_joint_vel = self._motion_joint_vel_smoother.apply(raw_motion_joint_vel)
 
         motion_qpos = np.asarray(qpos[:7 + self.num_actions], dtype=np.float32)
         obs = self._build_policy_observation(
@@ -719,11 +776,45 @@ class Sim2RealController:
         self._last_action = np.zeros(self.num_actions, dtype=np.float32)
         if self._reference_timeline is not None:
             self._reference_timeline.clear()
+        if self._reference_manager is not None:
+            self._reference_manager.reset()
+        self._motion_joint_vel_smoother.reset()
+        self._motion_anchor_lin_vel_smoother.reset()
+        self._motion_anchor_ang_vel_smoother.reset()
         self._last_live_packet_seq = -1
         reset_policy = getattr(self.policy, "reset", None)
         if callable(reset_policy):
             reset_policy()
         self.obs_builder.reset()
+
+    @staticmethod
+    def _parse_nonnegative_int(value: object, *, field_name: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{field_name} must be a non-negative integer, got {value}")
+        parsed = int(value)
+        if parsed < 0:
+            raise ValueError(f"{field_name} must be >= 0, got {value}")
+        return parsed
+
+    @staticmethod
+    def _parse_alpha(value: object, *, field_name: str) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{field_name} must be in (0, 1], got {value}")
+        parsed = float(value)
+        if parsed <= 0.0 or parsed > 1.0:
+            raise ValueError(f"{field_name} must be in (0, 1], got {value}")
+        return parsed
+
+    @staticmethod
+    def _parse_optional_nonnegative_int(value: object | None, *, field_name: str) -> int | None:
+        if value in (None, "", "null"):
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{field_name} must be a non-negative integer, got {value}")
+        parsed = int(value)
+        if parsed < 0:
+            raise ValueError(f"{field_name} must be >= 0, got {value}")
+        return parsed
 
     @staticmethod
     def _sleep_until(t0: float, dt: float) -> None:
