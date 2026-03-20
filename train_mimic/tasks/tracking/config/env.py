@@ -65,6 +65,18 @@ _MOTION_UPPER_KEYPOINT_BODY_NAMES = (
     "right_wrist_yaw_link",
 )
 
+_MOTION_FEET_BODY_NAMES = (
+    "left_ankle_roll_link",
+    "right_ankle_roll_link",
+)
+
+_MOTION_FEET_SITE_NAMES = (
+    "left_foot",
+    "right_foot",
+)
+
+_MOTION_FEET_GROUND_SENSOR = "feet_ground_contact"
+
 _MOTION_BODY_Z_TERMINATE_NAMES = (
     "pelvis",
     "left_ankle_roll_link",
@@ -378,6 +390,19 @@ def make_motion_tracking_deploy_env_cfg(
     cfg.scene.entities = {"robot": get_g1_robot_cfg()}
     cfg.scene.sensors = (
         ContactSensorCfg(
+            name=_MOTION_FEET_GROUND_SENSOR,
+            primary=ContactMatch(
+                mode="subtree",
+                pattern=r"^(left_ankle_roll_link|right_ankle_roll_link)$",
+                entity="robot",
+            ),
+            secondary=ContactMatch(mode="body", pattern="terrain"),
+            fields=("found", "force"),
+            reduce="netforce",
+            num_slots=1,
+            track_air_time=True,
+        ),
+        ContactSensorCfg(
             name="self_collision",
             primary=ContactMatch(mode="subtree", pattern="pelvis", entity="robot"),
             secondary=ContactMatch(mode="subtree", pattern="pelvis", entity="robot"),
@@ -403,7 +428,7 @@ def make_motion_tracking_deploy_env_cfg(
         keypoint_body_names=_MOTION_KEYPOINT_BODY_NAMES,
         lower_keypoint_body_names=_MOTION_LOWER_KEYPOINT_BODY_NAMES,
         upper_keypoint_body_names=_MOTION_UPPER_KEYPOINT_BODY_NAMES,
-        feet_body_names=("left_ankle_roll_link", "right_ankle_roll_link"),
+        feet_body_names=_MOTION_FEET_BODY_NAMES,
         body_z_terminate_body_names=_MOTION_BODY_Z_TERMINATE_NAMES,
         tracking_joint_names=_MOTION_TRACKING_DEPLOY_JOINT_NAMES,
         pose_range={
@@ -517,11 +542,49 @@ def make_motion_tracking_deploy_env_cfg(
             weight=0.5,
             params={"command_name": "motion", "sigma": [3.0]},
         ),
-        "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-1.0e-1),
-        "joint_limit": RewardTermCfg(
-            func=mdp.joint_pos_limits,
-            weight=-10.0,
+        "survival": RewardTermCfg(func=mdp.survival, weight=3.0),
+        "joint_vel_l2": RewardTermCfg(
+            func=mdp.joint_vel_l2,
+            weight=-5.0e-4,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))},
+        ),
+        "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-1.0e-2),
+        "feet_air_time_ref": RewardTermCfg(
+            func=mdp.feet_air_time_ref,
+            weight=5.0,
+            params={
+                "sensor_name": _MOTION_FEET_GROUND_SENSOR,
+                "command_name": "motion",
+                "thres": 0.5,
+            },
+        ),
+        "feet_air_time_ref_dense": RewardTermCfg(
+            func=mdp.feet_air_time_ref_dense,
+            weight=1.0,
+            params={
+                "sensor_name": _MOTION_FEET_GROUND_SENSOR,
+                "command_name": "motion",
+                "body_names": _MOTION_FEET_BODY_NAMES,
+                "site_names": _MOTION_FEET_SITE_NAMES,
+                "air_h_low": 0.035,
+                "air_h_high": 0.155,
+                "contact_h_low": 0.035,
+                "contact_h_high": 0.125,
+                "asset_cfg": SceneEntityCfg("robot"),
+            },
+        ),
+        "joint_pos_limits": RewardTermCfg(
+            func=mdp.joint_pos_limits,
+            weight=-1.0,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))},
+        ),
+        "joint_torque_limits": RewardTermCfg(
+            func=mdp.joint_torque_limits,
+            weight=1.0e-2,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
+                "soft_factor": 0.75,
+            },
         ),
         "self_collisions": RewardTermCfg(
             func=mdp.self_collision_cost,

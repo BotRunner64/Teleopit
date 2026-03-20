@@ -201,6 +201,7 @@ Supported training tasks are `Tracking-Flat-G1-VelCmdHistory` and `Tracking-Flat
 - Playback/benchmark use `play=True`, which switches motion sampling to `start`
 - VelCmdHistory defaults to `window_steps=[0]`
 - MotionTrackingDeploy uses the deployed future/history reference window and MLP actor/critic
+- MotionTrackingDeploy also enables the sibling `motion_tracking` locomotion regularization set: `survival`, `joint_vel_l2`, `action_rate_l2`, `feet_air_time_ref`, `feet_air_time_ref_dense`, `joint_pos_limits`, and `joint_torque_limits`
 - `save_onnx.py` exports either dual-input TemporalCNN ONNX or single-input deploy MLP ONNX based on checkpoint contents
 
 ### Dataset Pipeline

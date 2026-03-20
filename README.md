@@ -129,6 +129,7 @@ python train_mimic/scripts/save_onnx.py   --checkpoint logs/rsl_rl/g1_tracking_m
 - playback / benchmark 采样模式：`start`
 - VelCmdHistory 默认训练 `window_steps=[0]`
 - MotionTrackingDeploy 使用部署版 future/history window、单阶段 PPO 和 MLP actor/critic
+- MotionTrackingDeploy 额外启用了对齐兄弟仓库 `motion_tracking` 的 locomotion regularization：`survival`、`joint_vel_l2`、`action_rate_l2`、`feet_air_time_ref`、`feet_air_time_ref_dense`、`joint_pos_limits`、`joint_torque_limits`
 - realtime / offline reference window 配置入口：`retarget_buffer_enabled`、`retarget_buffer_window_s`、`retarget_buffer_delay_s`、`reference_steps`
 
 ## Deploy-Aligned Motion Tracking Semantics
