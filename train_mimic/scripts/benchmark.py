@@ -160,6 +160,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", action="store_true",
                         help="Render split-screen video with two camera angles")
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--task", type=str, default=DEFAULT_TASK,
+                        help="Task id to benchmark (default: %(default)s)")
     parser.add_argument(
         "--debug_trace",
         type=str,
@@ -236,7 +238,7 @@ def main() -> int:
 
     # Load configs (play=True disables corruption, push_robot, etc.)
     task_name, env_cfg, agent_cfg, runner_cls = load_task_components(
-        DEFAULT_TASK,
+        args.task,
         play=True,
         load_env_cfg=_load_env_cfg,
         load_rl_cfg=_load_rl_cfg,
@@ -263,6 +265,8 @@ def main() -> int:
         env_cfg.terminations.pop("anchor_pos", None)
         env_cfg.terminations.pop("anchor_ori", None)
         env_cfg.terminations.pop("ee_body_pos", None)
+        env_cfg.terminations.pop("body_z_tracking_failure", None)
+        env_cfg.terminations.pop("gravity_tracking_failure", None)
 
     device = resolve_device(args.device, torch)
 

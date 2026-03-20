@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export a VelCmdHistory policy checkpoint to ONNX."""
+"""Export a tracking policy checkpoint to ONNX."""
 
 from __future__ import annotations
 
@@ -41,19 +41,35 @@ def _resolve_normalizer_stats(state_dict: dict[str, torch.Tensor]) -> tuple[torc
     var = next((state_dict[key] for key in var_keys if key in state_dict), None)
     if mean is None or var is None:
         raise KeyError(
-            "TemporalCNN checkpoint missing obs normalizer stats. "
+            "Checkpoint missing obs normalizer stats. "
             f"Tried mean keys {mean_keys} and var keys {var_keys}."
         )
     return mean, var
 
 
-def _canonicalize_temporal_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+def _canonicalize_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     normalized = dict(state_dict)
     if "obs_normalizer.mean" in normalized and "obs_normalizer._mean" not in normalized:
         normalized["obs_normalizer._mean"] = normalized.pop("obs_normalizer.mean")
     if "obs_normalizer.var" in normalized and "obs_normalizer._var" not in normalized:
         normalized["obs_normalizer._var"] = normalized.pop("obs_normalizer.var")
     return normalized
+
+
+def _extract_mlp_dims(state_dict: dict[str, torch.Tensor]) -> tuple[int, tuple[int, ...], int]:
+    obs_mean, _obs_var = _resolve_normalizer_stats(state_dict)
+    obs_dim = int(obs_mean.shape[-1])
+    mlp_weights: list[tuple[int, torch.Tensor]] = []
+    for key, val in state_dict.items():
+        if key.startswith("mlp.") and key.endswith(".weight"):
+            idx = int(key.split(".")[1])
+            mlp_weights.append((idx, val))
+    mlp_weights.sort()
+    if not mlp_weights:
+        raise RuntimeError("Checkpoint does not contain any mlp.*.weight tensors.")
+    hidden_dims = tuple(int(w.shape[0]) for _, w in mlp_weights[:-1])
+    output_dim = int(mlp_weights[-1][1].shape[0])
+    return obs_dim, hidden_dims, output_dim
 
 
 def _export_temporal_cnn_policy(
@@ -67,18 +83,8 @@ def _export_temporal_cnn_policy(
 
     from train_mimic.tasks.tracking.rl.temporal_cnn_model import TemporalCNNModel
 
-    sd = _canonicalize_temporal_state_dict(actor_state_dict)
-    obs_mean, _obs_var = _resolve_normalizer_stats(sd)
-    obs_dim = int(obs_mean.shape[-1])
-
-    mlp_weights: list[tuple[int, torch.Tensor]] = []
-    for key, val in sd.items():
-        if key.startswith("mlp.") and key.endswith(".weight"):
-            idx = int(key.split(".")[1])
-            mlp_weights.append((idx, val))
-    mlp_weights.sort()
-    hidden_dims = tuple(int(w.shape[0]) for _, w in mlp_weights[:-1])
-    output_dim = int(mlp_weights[-1][1].shape[0])
+    sd = _canonicalize_state_dict(actor_state_dict)
+    obs_dim, hidden_dims, output_dim = _extract_mlp_dims(sd)
 
     cnn_conv_weights: list[tuple[int, torch.Tensor]] = []
     for key, val in sd.items():
@@ -135,7 +141,7 @@ def _export_temporal_cnn_policy(
     model.eval()
     print(f"Loaded TemporalCNNModel weights: {len(sd)} tensors")
 
-    onnx_model = model.as_onnx()
+    onnx_model = model.as_onnx(verbose=False)
     onnx_model.eval()
     dummy_inputs = onnx_model.get_dummy_inputs()
     input_names = onnx_model.input_names
@@ -160,6 +166,69 @@ def _export_temporal_cnn_policy(
     print(f"  Outputs: {output_names}")
 
 
+def _export_mlp_policy(
+    actor_state_dict: dict[str, torch.Tensor],
+    output_path: str,
+    activation: str,
+    opset_version: int,
+) -> None:
+    from tensordict import TensorDict
+    from rsl_rl.models.mlp_model import MLPModel
+
+    sd = _canonicalize_state_dict(actor_state_dict)
+    obs_dim, hidden_dims, output_dim = _extract_mlp_dims(sd)
+    dist_cfg = None
+    if any("distribution." in k for k in sd):
+        dist_cfg = {
+            "class_name": "GaussianDistribution",
+            "init_std": 1.0,
+            "std_type": "scalar",
+        }
+
+    print(
+        f"  Architecture: obs_dim={obs_dim}, hidden_dims={hidden_dims}, output_dim={output_dim}"
+    )
+
+    dummy_obs = TensorDict({"actor": torch.zeros(1, obs_dim)}, batch_size=[1])
+    model = MLPModel(
+        obs=dummy_obs,
+        obs_groups={"actor": ("actor",)},
+        obs_set="actor",
+        output_dim=output_dim,
+        hidden_dims=hidden_dims,
+        activation=activation,
+        obs_normalization=True,
+        distribution_cfg=dist_cfg,
+    )
+    model.load_state_dict(sd)
+    model.eval()
+    print(f"Loaded MLPModel weights: {len(sd)} tensors")
+
+    onnx_model = model.as_onnx(verbose=False)
+    onnx_model.eval()
+    dummy_inputs = onnx_model.get_dummy_inputs()
+    input_names = onnx_model.input_names
+    output_names = onnx_model.output_names
+
+    torch.onnx.export(
+        onnx_model,
+        dummy_inputs,
+        output_path,
+        export_params=True,
+        opset_version=opset_version,
+        do_constant_folding=True,
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_axes={},
+        dynamo=False,
+    )
+
+    shapes = [tuple(d.shape) for d in dummy_inputs]
+    print(f"Exported MLP ONNX model to: {output_path}")
+    print(f"  Inputs:  {list(zip(input_names, shapes))}")
+    print(f"  Outputs: {output_names}")
+
+
 def export_policy_as_onnx(
     checkpoint_path: str,
     output_path: str,
@@ -176,28 +245,32 @@ def export_policy_as_onnx(
             raise RuntimeError(
                 f"Cannot load checkpoint — missing module '{e.name}'.\n"
                 "This is likely an old Isaac Lab checkpoint (train_mimic.rsl_rl). "
-                "Only mjlab rsl_rl 5.x checkpoints from logs/rsl_rl/g1_tracking_velcmd_history/ are supported."
+                "Only mjlab rsl_rl 5.x tracking checkpoints are supported."
             ) from e
 
     full_actor_sd = _extract_full_actor_state_dict(checkpoint)
-    if not _has_temporal_cnn_keys(full_actor_sd):
-        raise RuntimeError(
-            "Only VelCmdHistory TemporalCNN checkpoints are supported. "
-            "Expected dual-input actor weights with cnn_encoders.* keys."
+    if _has_temporal_cnn_keys(full_actor_sd):
+        print("Detected TemporalCNN tracking checkpoint.")
+        _export_temporal_cnn_policy(
+            actor_state_dict=full_actor_sd,
+            output_path=output_path,
+            history_length=history_length,
+            activation=activation,
+            opset_version=opset_version,
         )
+        return
 
-    print("Detected VelCmdHistory TemporalCNN checkpoint.")
-    _export_temporal_cnn_policy(
+    print("Detected single-input MLP tracking checkpoint.")
+    _export_mlp_policy(
         actor_state_dict=full_actor_sd,
         output_path=output_path,
-        history_length=history_length,
         activation=activation,
         opset_version=opset_version,
     )
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Export VelCmdHistory policy to ONNX.")
+    parser = argparse.ArgumentParser(description="Export tracking policy to ONNX.")
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--output", type=str, default="policy.onnx")
     parser.add_argument("--activation", type=str, default="elu")
@@ -206,7 +279,7 @@ def main() -> int:
         "--history_length",
         type=int,
         default=10,
-        help="History length for VelCmdHistory checkpoints (default: 10)",
+        help="History length for TemporalCNN checkpoints (default: 10)",
     )
     args = parser.parse_args()
 

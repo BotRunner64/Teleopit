@@ -17,7 +17,12 @@ from teleopit.sim.reference_motion import (
     interpolate_human_frames,
     interpolate_retarget_qpos,
 )
-from teleopit.sim.reference_timeline import ReferenceTimeline, ReferenceWindow, ReferenceWindowBuilder
+from teleopit.sim.reference_timeline import (
+    ReferenceSample,
+    ReferenceTimeline,
+    ReferenceWindow,
+    ReferenceWindowBuilder,
+)
 from teleopit.sim.runtime_components import PolicyStepRunner, RunRecorder, RuntimePublisher, ViewerManager
 
 Float32Array = NDArray[np.float32]
@@ -366,11 +371,15 @@ class SimulationLoop:
             if realtime_interpolated_input and self._reference_delay_s is None
             else float(self._reference_delay_s or 0.0)
         )
-        if self._reference_window_builder.requires_timeline and not realtime_interpolated_input:
+        if (
+            self._reference_window_builder.requires_timeline
+            and not realtime_interpolated_input
+            and offline_reference is None
+        ):
             raise ValueError(
-                "Non-zero reference_steps are only supported for realtime input providers exposing "
-                "get_frame_packet(); offline/current-only input paths do not provide a future/history "
-                "reference timeline."
+                "Non-zero reference_steps require either a realtime input provider exposing "
+                "get_frame_packet() or an offline input provider with indexed frame access. "
+                "Current-only input paths cannot provide future/history windows."
             )
         reference_timeline: ReferenceTimeline | None = None
         if realtime_interpolated_input and self._retarget_buffer_enabled:
@@ -413,6 +422,8 @@ class SimulationLoop:
                     sampled = offline_reference.sample(policy_time)
                     if sampled is None:
                         break
+                    if self._observation_uses_reference_window():
+                        reference_window = self._build_offline_reference_window(offline_reference, policy_time)
                     cached_human_frame = sampled.human_frame
                     cached_retargeted = sampled.qpos
                     last_bvh_idx = sampled.frame_idx0
@@ -502,6 +513,7 @@ class SimulationLoop:
                     state=state,
                     motion_prep=preparation,
                     last_action=self._step_runner.last_action,
+                    reference_window=reference_window,
                 )
                 policy_obs = self._validate_observation_for_policy(obs)
                 action: Float32Array = np.asarray(self.controller.compute_action(policy_obs), dtype=np.float32).reshape(-1)
@@ -627,13 +639,90 @@ class SimulationLoop:
     def _compute_target_dof_pos(self, action: Float32Array) -> Float32Array:
         return self._step_runner.compute_target_dof_pos(action)
 
+    def _observation_uses_reference_window(self) -> bool:
+        return bool(getattr(self.obs_builder, "requires_reference_window", False)) or callable(
+            getattr(self.obs_builder, "build_with_reference_window", None)
+        )
+
+    def _sample_offline_reference_at(
+        self,
+        offline_reference: OfflineReferenceMotion,
+        target_time_s: float,
+    ) -> ReferenceSample:
+        fallback_mode: str | None = None
+        sample_time_s = float(target_time_s)
+        if sample_time_s < 0.0:
+            sample_time_s = 0.0
+            fallback_mode = "fallback_oldest"
+        elif sample_time_s >= offline_reference.duration_s:
+            sample_time_s = float(np.nextafter(offline_reference.duration_s, 0.0))
+            fallback_mode = "fallback_latest"
+
+        sampled = offline_reference.sample(sample_time_s)
+        if sampled is None:
+            sample_time_s = float(np.nextafter(offline_reference.duration_s, 0.0))
+            sampled = offline_reference.sample(sample_time_s)
+            fallback_mode = "fallback_latest"
+        if sampled is None:
+            raise RuntimeError("OfflineReferenceMotion could not sample a valid reference window frame")
+
+        if fallback_mode is not None:
+            return ReferenceSample(
+                qpos=np.asarray(sampled.qpos, dtype=np.float64).copy(),
+                timestamp_s=sample_time_s,
+                mode=fallback_mode,
+                used_fallback=True,
+                older_timestamp_s=sample_time_s,
+                newer_timestamp_s=sample_time_s,
+                alpha=None,
+            )
+
+        older_timestamp_s = float(sampled.frame_idx0) / float(offline_reference.fps)
+        newer_timestamp_s = float(sampled.frame_idx1) / float(offline_reference.fps)
+        mode = "single_frame" if sampled.frame_idx0 == sampled.frame_idx1 else "interpolate"
+        return ReferenceSample(
+            qpos=np.asarray(sampled.qpos, dtype=np.float64).copy(),
+            timestamp_s=float(sample_time_s),
+            mode=mode,
+            used_fallback=False,
+            older_timestamp_s=older_timestamp_s,
+            newer_timestamp_s=newer_timestamp_s,
+            alpha=float(sampled.alpha),
+        )
+
+    def _build_offline_reference_window(
+        self,
+        offline_reference: OfflineReferenceMotion,
+        base_time_s: float,
+    ) -> ReferenceWindow:
+        reference_steps = tuple(self._reference_window_builder.reference_steps)
+        samples = tuple(
+            self._sample_offline_reference_at(
+                offline_reference,
+                float(base_time_s) + float(step) * (1.0 / self.policy_hz),
+            )
+            for step in reference_steps
+        )
+        return ReferenceWindow(
+            base_time_s=float(base_time_s),
+            policy_dt_s=1.0 / self.policy_hz,
+            reference_steps=reference_steps,
+            samples=samples,
+        )
+
     def _build_observation(
         self,
         state: object,
         motion_prep: object,
         last_action: Float32Array,
+        reference_window: ReferenceWindow | None = None,
     ) -> Float32Array:
-        return self._step_runner.build_observation(state, motion_prep, last_action)
+        return self._step_runner.build_observation(
+            state,
+            motion_prep,
+            last_action,
+            reference_window=reference_window,
+        )
 
     def _publish(self, mimic_obs: Float32Array, action: Float32Array, robot_state: object) -> None:
         self._publisher.publish(mimic_obs, action, robot_state)

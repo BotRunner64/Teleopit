@@ -1,0 +1,19 @@
+policy_path: ""  # must be provided: ONNX exported from the MotionTrackingDeploy task
+device: "cpu"
+observation_type: "motion_tracking_deploy"
+
+action_scale: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 0.5, 0.5, 1.0, 1.0, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+clip_range: [-10.0, 10.0]
+default_dof_pos: null
+
+future_steps: [0, 1, 2, 3, 4, -1, -2, -4, -8, -12, -16]
+prev_action_steps: 8
+root_angvel_history_steps: [0, 1, 2, 3, 4, 8, 12, 16, 20]
+projected_gravity_history_steps: [0, 1, 2, 3, 4, 8, 12, 16, 20]
+joint_pos_history_steps: [0, 1, 2, 3, 4, 8, 12, 16, 20]
+joint_vel_history_steps: [0, 1, 2, 3, 4, 8, 12, 16, 20]
+compliance_flag_value: 1.0
+compliance_flag_threshold: 10.0
+
+robot_joint_names: [left_hip_pitch_joint, left_hip_roll_joint, left_hip_yaw_joint, left_knee_joint, left_ankle_pitch_joint, left_ankle_roll_joint, right_hip_pitch_joint, right_hip_roll_joint, right_hip_yaw_joint, right_knee_joint, right_ankle_pitch_joint, right_ankle_roll_joint, waist_yaw_joint, waist_roll_joint, waist_pitch_joint, left_shoulder_pitch_joint, left_shoulder_roll_joint, left_shoulder_yaw_joint, left_elbow_joint, left_wrist_roll_joint, left_wrist_pitch_joint, left_wrist_yaw_joint, right_shoulder_pitch_joint, right_shoulder_roll_joint, right_shoulder_yaw_joint, right_elbow_joint, right_wrist_roll_joint, right_wrist_pitch_joint, right_wrist_yaw_joint]
+target_joint_names: [left_hip_pitch_joint, right_hip_pitch_joint, waist_yaw_joint, left_hip_roll_joint, right_hip_roll_joint, waist_roll_joint, left_hip_yaw_joint, right_hip_yaw_joint, waist_pitch_joint, left_knee_joint, right_knee_joint, left_shoulder_pitch_joint, right_shoulder_pitch_joint, left_ankle_pitch_joint, right_ankle_pitch_joint, left_shoulder_roll_joint, right_shoulder_roll_joint, left_ankle_roll_joint, right_ankle_roll_joint, left_shoulder_yaw_joint, right_shoulder_yaw_joint, left_elbow_joint, right_elbow_joint, left_wrist_roll_joint, right_wrist_roll_joint, left_wrist_pitch_joint, right_wrist_pitch_joint, left_wrist_yaw_joint, right_wrist_yaw_joint]

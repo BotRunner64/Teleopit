@@ -1,0 +1,18 @@
+defaults:
+  - robot: g1
+  - controller: motion_tracking_policy
+  - input: bvh
+  - _self_
+
+policy_hz: 50.0
+pd_hz: 200.0
+reference_steps: [0, 1, 2, 3, 4, -1, -2, -4, -8, -12, -16]
+transition_duration: 2.0
+velcmd_fixed_ref_yaw_alignment: true
+viewers: "sim2sim"
+realtime: false
+debug_trace_path: null
+
+hydra:
+  run:
+    dir: .

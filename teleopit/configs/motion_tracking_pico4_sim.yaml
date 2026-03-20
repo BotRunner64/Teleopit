@@ -1,0 +1,20 @@
+defaults:
+  - robot: g1
+  - controller: motion_tracking_policy
+  - input: pico4
+  - _self_
+
+policy_hz: 50.0
+pd_hz: 200.0
+retarget_buffer_enabled: true
+retarget_buffer_window_s: 0.5
+retarget_buffer_delay_s: 0.1
+reference_steps: [0, 1, 2, 3, 4, -1, -2, -4, -8, -12, -16]
+reference_debug_log: false
+viewers: "sim2sim"
+realtime: true
+num_steps: 0
+
+hydra:
+  run:
+    dir: .

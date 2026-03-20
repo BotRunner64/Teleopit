@@ -35,7 +35,7 @@ from teleopit.inputs.udp_bvh_provider import UDPBVHInputProvider
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.runtime.common import cfg_get
 from teleopit.runtime.factory import build_sim2real_mocap_components
-from teleopit.sim.reference_timeline import ReferenceTimeline, ReferenceWindowBuilder
+from teleopit.sim.reference_timeline import ReferenceSample, ReferenceTimeline, ReferenceWindow, ReferenceWindowBuilder
 from teleopit.sim2real.remote import UnitreeRemote
 from teleopit.sim2real.unitree_g1 import UnitreeG1Robot
 
@@ -218,10 +218,18 @@ class Sim2RealController:
         motion_joint_vel = np.zeros(self.num_actions, dtype=np.float32)
         motion_qpos = np.asarray(qpos[:7 + self.num_actions], dtype=np.float32)
 
-        obs = self.obs_builder.build(
-            robot_state, motion_qpos, motion_joint_vel, self._last_action,
-            np.zeros(3, dtype=np.float32),
-            np.zeros(3, dtype=np.float32),
+        reference_window = None
+        if self._obs_builder_requires_reference_window():
+            reference_window = self._build_static_reference_window(qpos)
+
+        obs = self._build_policy_observation(
+            robot_state=robot_state,
+            motion_qpos=motion_qpos,
+            motion_joint_vel=motion_joint_vel,
+            last_action=self._last_action,
+            anchor_lin_vel_w=np.zeros(3, dtype=np.float32),
+            anchor_ang_vel_w=np.zeros(3, dtype=np.float32),
+            reference_window=reference_window,
         )
         obs = self._validate_observation_for_policy(obs)
 
@@ -252,6 +260,7 @@ class Sim2RealController:
             self._enter_damping()
             return
 
+        reference_window: ReferenceWindow | None = None
         if self._reference_timeline is not None:
             if int(frame_seq) != self._last_live_packet_seq:
                 retargeted = self.retargeter.retarget(human_frame)
@@ -282,13 +291,16 @@ class Sim2RealController:
             reference_qpos = self._align_velcmd_reference_yaw(reference_qpos, robot_state=robot_state)
         qpos = self._qpos_interpolator.apply(reference_qpos)
 
-        if self._qpos_interpolator.is_active:
-            true_lin_vel_w, true_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
-            blend = np.float32(self._qpos_interpolator.last_alpha)
-            anchor_lin_vel_w = np.asarray(true_lin_vel_w * blend, dtype=np.float32)
-            anchor_ang_vel_w = np.asarray(true_ang_vel_w * blend, dtype=np.float32)
-        else:
-            anchor_lin_vel_w, anchor_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
+        anchor_lin_vel_w = np.zeros(3, dtype=np.float32)
+        anchor_ang_vel_w = np.zeros(3, dtype=np.float32)
+        if not self._obs_builder_requires_reference_window():
+            if self._qpos_interpolator.is_active:
+                true_lin_vel_w, true_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
+                blend = np.float32(self._qpos_interpolator.last_alpha)
+                anchor_lin_vel_w = np.asarray(true_lin_vel_w * blend, dtype=np.float32)
+                anchor_ang_vel_w = np.asarray(true_ang_vel_w * blend, dtype=np.float32)
+            else:
+                anchor_lin_vel_w, anchor_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
 
         if qpos.shape[0] < 7 + self.num_actions:
             raise ValueError(
@@ -302,9 +314,14 @@ class Sim2RealController:
             motion_joint_vel = (motion_joint_pos - prev_joint_pos) * np.float32(self.policy_hz)
 
         motion_qpos = np.asarray(qpos[:7 + self.num_actions], dtype=np.float32)
-        obs = self.obs_builder.build(
-            robot_state, motion_qpos, motion_joint_vel, self._last_action,
-            anchor_lin_vel_w, anchor_ang_vel_w,
+        obs = self._build_policy_observation(
+            robot_state=robot_state,
+            motion_qpos=motion_qpos,
+            motion_joint_vel=motion_joint_vel,
+            last_action=self._last_action,
+            anchor_lin_vel_w=anchor_lin_vel_w,
+            anchor_ang_vel_w=anchor_ang_vel_w,
+            reference_window=reference_window,
         )
         obs = self._validate_observation_for_policy(obs)
 
@@ -581,6 +598,109 @@ class Sim2RealController:
             self._fixed_reference_pivot_pos_w,
         )
         return aligned_qpos
+
+    def _build_static_reference_window(self, qpos: Float64Array) -> ReferenceWindow:
+        base_time_s = time.monotonic()
+        reference_steps = tuple(self._reference_window_builder.reference_steps)
+        qpos_copy = np.asarray(qpos, dtype=np.float64).reshape(-1).copy()
+        samples = tuple(
+            ReferenceSample(
+                qpos=qpos_copy.copy(),
+                timestamp_s=base_time_s + float(step) / self.policy_hz,
+                mode="static_reference",
+                used_fallback=False,
+                older_timestamp_s=base_time_s + float(step) / self.policy_hz,
+                newer_timestamp_s=base_time_s + float(step) / self.policy_hz,
+                alpha=None,
+            )
+            for step in reference_steps
+        )
+        return ReferenceWindow(
+            base_time_s=base_time_s,
+            policy_dt_s=1.0 / self.policy_hz,
+            reference_steps=reference_steps,
+            samples=samples,
+        )
+
+    def _obs_builder_requires_reference_window(self) -> bool:
+        return bool(getattr(self.obs_builder, "requires_reference_window", False)) or callable(
+            getattr(self.obs_builder, "build_with_reference_window", None)
+        )
+
+    def _align_reference_window(
+        self,
+        reference_window: ReferenceWindow | None,
+        robot_state: object,
+    ) -> ReferenceWindow | None:
+        if reference_window is None or not self._fixed_ref_yaw_alignment:
+            return reference_window
+
+        current_qpos = np.asarray(reference_window.current_sample().qpos, dtype=np.float64).reshape(-1)
+        if self._fixed_reference_yaw_quat is None:
+            robot_quat = np.asarray(getattr(robot_state, "quat"), dtype=np.float32)
+            self._fixed_reference_yaw_quat = compute_fixed_yaw_alignment_quat(
+                robot_quat,
+                np.asarray(current_qpos[3:7], dtype=np.float32),
+            )
+            self._fixed_reference_pivot_pos_w = np.asarray(current_qpos[0:3], dtype=np.float32).copy()
+
+        aligned_samples: list[ReferenceSample] = []
+        for sample in reference_window.samples:
+            aligned_qpos = np.asarray(sample.qpos, dtype=np.float64).reshape(-1).copy()
+            rotate_motion_qpos_by_yaw(
+                aligned_qpos,
+                self._fixed_reference_yaw_quat,
+                self._fixed_reference_pivot_pos_w,
+            )
+            aligned_samples.append(
+                ReferenceSample(
+                    qpos=aligned_qpos,
+                    timestamp_s=float(sample.timestamp_s),
+                    mode=str(sample.mode),
+                    used_fallback=bool(sample.used_fallback),
+                    older_timestamp_s=sample.older_timestamp_s,
+                    newer_timestamp_s=sample.newer_timestamp_s,
+                    alpha=sample.alpha,
+                )
+            )
+
+        return ReferenceWindow(
+            base_time_s=float(reference_window.base_time_s),
+            policy_dt_s=float(reference_window.policy_dt_s),
+            reference_steps=tuple(reference_window.reference_steps),
+            samples=tuple(aligned_samples),
+        )
+
+    def _build_policy_observation(
+        self,
+        *,
+        robot_state: object,
+        motion_qpos: Float32Array,
+        motion_joint_vel: Float32Array,
+        last_action: Float32Array,
+        anchor_lin_vel_w: Float32Array,
+        anchor_ang_vel_w: Float32Array,
+        reference_window: ReferenceWindow | None,
+    ) -> Float32Array:
+        build_with_reference_window = getattr(self.obs_builder, "build_with_reference_window", None)
+        if callable(build_with_reference_window):
+            aligned_reference_window = self._align_reference_window(reference_window, robot_state)
+            obs = build_with_reference_window(
+                robot_state,
+                aligned_reference_window,
+                motion_qpos,
+                last_action,
+            )
+        else:
+            obs = self.obs_builder.build(
+                robot_state,
+                motion_qpos,
+                motion_joint_vel,
+                last_action,
+                anchor_lin_vel_w,
+                anchor_ang_vel_w,
+            )
+        return np.asarray(obs, dtype=np.float32)
 
     def _validate_observation_for_policy(self, obs: Float32Array) -> Float32Array:
         """Fail-fast validation for policy input observation dimension."""

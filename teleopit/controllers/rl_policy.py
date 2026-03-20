@@ -24,7 +24,7 @@ class _OrtSession(Protocol):
 
 
 class RLPolicyController:
-    _multi_input: bool = True
+    _multi_input: bool
 
     def __init__(self, cfg: object) -> None:
         self._session: _OrtSession
@@ -57,22 +57,26 @@ class RLPolicyController:
         )
         self._session = cast(_OrtSession, session_ctor(str(policy_path), providers=providers))
         onnx_inputs = self._session.get_inputs()
-        if len(onnx_inputs) != 2 or onnx_inputs[1].name != "obs_history":
-            raise ValueError(
-                "Unsupported ONNX policy input signature. "
-                "Expected VelCmdHistory dual inputs: current obs and obs_history."
-            )
-
         self._input_name = onnx_inputs[0].name
         self._output_name = self._session.get_outputs()[0].name
         self._expected_obs_dim = self._extract_feature_dim(onnx_inputs[0].shape)
-        self._history_length = int(onnx_inputs[1].shape[1])
-        self._history_obs_dim = int(onnx_inputs[1].shape[2])
-        self._history_buf = deque(maxlen=self._history_length)
+        self._history_length = 0
+        self._history_obs_dim = 0
+        self._history_buf = deque()
 
-        if self._expected_obs_dim != 166 or self._history_obs_dim != 166:
+        if len(onnx_inputs) == 1:
+            self._multi_input = False
+        elif len(onnx_inputs) == 2 and onnx_inputs[1].name == "obs_history":
+            self._multi_input = True
+            self._history_length = int(onnx_inputs[1].shape[1])
+            self._history_obs_dim = int(onnx_inputs[1].shape[2])
+            self._history_buf = deque(maxlen=self._history_length)
+        else:
+            names = [inp.name for inp in onnx_inputs]
             raise ValueError(
-                "Unsupported policy input dimension. Only 166D VelCmdHistory ONNX policies are supported."
+                "Unsupported ONNX policy input signature. Expected either a single observation input "
+                "or dual inputs ('obs' and 'obs_history'). "
+                f"Got inputs: {names}."
             )
 
         raw_scale = self._cfg_get(cfg, "action_scale", None)
@@ -105,20 +109,31 @@ class RLPolicyController:
             raise ValueError(f"Observation must be shape (obs_dim,) or (1, obs_dim), got {obs.shape}")
 
         obs_flat = obs.reshape(-1)
-        if len(self._history_buf) == 0:
-            for _ in range(self._history_length):
-                self._history_buf.append(obs_flat.copy())
-        else:
-            self._history_buf.append(obs_flat.copy())
-        obs_history = np.stack(list(self._history_buf), axis=0)[np.newaxis]
-
         self._last_obs_input = obs_flat.copy()
-        self._last_obs_history_input = np.asarray(obs_history[0], dtype=np.float32)
+
+        if self._multi_input:
+            if len(self._history_buf) == 0:
+                for _ in range(self._history_length):
+                    self._history_buf.append(obs_flat.copy())
+            else:
+                self._history_buf.append(obs_flat.copy())
+            obs_history = np.stack(list(self._history_buf), axis=0)[np.newaxis]
+            if obs_history.shape[2] != self._history_obs_dim:
+                raise ValueError(
+                    f"History observation dimension mismatch: policy expects {self._history_obs_dim}, "
+                    f"builder produced {obs_history.shape[2]}"
+                )
+            self._last_obs_history_input = np.asarray(obs_history[0], dtype=np.float32)
+            feed = {
+                self._input_name: obs,
+                "obs_history": obs_history.astype(np.float32),
+            }
+        else:
+            self._last_obs_history_input = None
+            feed = {self._input_name: obs}
+
         raw_action = np.asarray(
-            self._session.run(
-                [self._output_name],
-                {self._input_name: obs, "obs_history": obs_history.astype(np.float32)},
-            )[0],
+            self._session.run([self._output_name], feed)[0],
             dtype=np.float32,
         ).reshape(-1)
         return raw_action
@@ -128,7 +143,9 @@ class RLPolicyController:
         if self.default_dof_pos.size == 0:
             return scaled_action
         if scaled_action.shape[0] != self.default_dof_pos.shape[0]:
-            raise ValueError(f"Action/default_dof_pos size mismatch: {scaled_action.shape[0]} vs {self.default_dof_pos.shape[0]}")
+            raise ValueError(
+                f"Action/default_dof_pos size mismatch: {scaled_action.shape[0]} vs {self.default_dof_pos.shape[0]}"
+            )
         return scaled_action + self.default_dof_pos
 
     def reset(self) -> None:

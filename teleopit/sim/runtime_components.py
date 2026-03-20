@@ -17,6 +17,7 @@ from teleopit.controllers.observation import (
 from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.interfaces import MessageBus, ObservationBuilder, Recorder, Robot
 from teleopit.retargeting.core import extract_mimic_obs
+from teleopit.sim.reference_timeline import ReferenceSample, ReferenceWindow
 
 Float32Array = NDArray[np.float32]
 Float64Array = NDArray[np.float64]
@@ -152,7 +153,12 @@ class PolicyStepRunner:
         mimic_obs = extract_mimic_obs(qpos=qpos, last_qpos=self.last_retarget_qpos, dt=1.0 / self.policy_hz)
         retarget_viewer_qpos = qpos.copy()
 
-        if self.qpos_interpolator.is_active:
+        motion_anchor_lin_vel_w: Float32Array | None
+        motion_anchor_ang_vel_w: Float32Array | None
+        if self._obs_builder_requires_reference_window():
+            motion_anchor_lin_vel_w = None
+            motion_anchor_ang_vel_w = None
+        elif self.qpos_interpolator.is_active:
             true_lin_vel_w, true_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
             blend = np.float32(self.qpos_interpolator.last_alpha)
             motion_anchor_lin_vel_w = np.asarray(true_lin_vel_w * blend, dtype=np.float32)
@@ -257,13 +263,74 @@ class PolicyStepRunner:
             raise ValueError(f"Target dof pos has {target.shape[0]} entries, expected {self.num_actions}")
         return target
 
+    def _obs_builder_requires_reference_window(self) -> bool:
+        return bool(getattr(self.obs_builder, "requires_reference_window", False)) or callable(
+            getattr(self.obs_builder, "build_with_reference_window", None)
+        )
+
+    def _align_reference_window(
+        self,
+        reference_window: ReferenceWindow | None,
+        state: object,
+    ) -> ReferenceWindow | None:
+        if reference_window is None or not self.fixed_ref_yaw_alignment:
+            return reference_window
+
+        current_qpos = np.asarray(reference_window.current_sample().qpos, dtype=np.float64).reshape(-1)
+        if self._fixed_reference_yaw_quat is None:
+            robot_quat = np.asarray(getattr(state, "quat"), dtype=np.float32)
+            self._fixed_reference_yaw_quat = compute_fixed_yaw_alignment_quat(
+                robot_quat,
+                np.asarray(current_qpos[3:7], dtype=np.float32),
+            )
+            self._fixed_reference_pivot_pos_w = np.asarray(current_qpos[0:3], dtype=np.float32).copy()
+
+        aligned_samples: list[ReferenceSample] = []
+        for sample in reference_window.samples:
+            aligned_qpos = np.asarray(sample.qpos, dtype=np.float64).reshape(-1).copy()
+            rotate_motion_qpos_by_yaw(
+                aligned_qpos,
+                cast(Float32Array, self._fixed_reference_yaw_quat),
+                cast(Float32Array, self._fixed_reference_pivot_pos_w),
+            )
+            aligned_samples.append(
+                ReferenceSample(
+                    qpos=aligned_qpos,
+                    timestamp_s=float(sample.timestamp_s),
+                    mode=str(sample.mode),
+                    used_fallback=bool(sample.used_fallback),
+                    older_timestamp_s=sample.older_timestamp_s,
+                    newer_timestamp_s=sample.newer_timestamp_s,
+                    alpha=sample.alpha,
+                )
+            )
+
+        return ReferenceWindow(
+            base_time_s=float(reference_window.base_time_s),
+            policy_dt_s=float(reference_window.policy_dt_s),
+            reference_steps=tuple(reference_window.reference_steps),
+            samples=tuple(aligned_samples),
+        )
+
     def build_observation(
         self,
         state: object,
         motion_prep: MotionPreparation,
         last_action: Float32Array,
+        reference_window: ReferenceWindow | None = None,
     ) -> Float32Array:
         motion_qpos, motion_joint_vel = self._extract_motion_joint_data(motion_prep.qpos)
+        build_with_reference_window = getattr(self.obs_builder, "build_with_reference_window", None)
+        if callable(build_with_reference_window):
+            aligned_reference_window = self._align_reference_window(reference_window, state)
+            obs = build_with_reference_window(
+                cast(object, state),
+                aligned_reference_window,
+                motion_qpos,
+                last_action,
+            )
+            return np.asarray(obs, dtype=np.float32)
+
         assert motion_prep.motion_anchor_lin_vel_w is not None
         assert motion_prep.motion_anchor_ang_vel_w is not None
         obs = self.obs_builder.build(

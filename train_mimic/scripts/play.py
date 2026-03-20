@@ -52,6 +52,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--video", action="store_true", help="Record video instead of interactive viewer")
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--task", type=str, default=DEFAULT_TASK,
+                        help="Task id to play (default: %(default)s)")
     return parser.parse_args()
 
 
@@ -80,7 +82,7 @@ def main() -> None:
 
     # Load configs (play=True disables corruption, push_robot, etc.)
     task_name, env_cfg, agent_cfg, runner_cls = load_task_components(
-        DEFAULT_TASK,
+        args.task,
         play=True,
         load_env_cfg=_load_env_cfg,
         load_rl_cfg=_load_rl_cfg,

@@ -11,18 +11,20 @@ Config: Hydra/OmegaConf YAML files in `teleopit/configs/`
 ## Architecture
 
 ```
-InputProvider (BVH file / UDP realtime / Pico4 VR) → Retargeter (GMR) → ObservationBuilder (166D VelCmdHistory) → Controller (dual-input ONNX RL) → Robot (MuJoCo + PD / Unitree SDK)
+InputProvider (BVH file / UDP realtime / Pico4 VR) → Retargeter (GMR) → ObservationBuilder (166D VelCmdHistory or 1590D MotionTrackingDeploy) → Controller (dual-input TemporalCNN ONNX or single-input MLP ONNX) → Robot (MuJoCo + PD / Unitree SDK)
 ```
 
 Module-internal isolation: all modules run in-process and communicate via `InProcessBus` (zero-copy). Core interfaces are defined as `typing.Protocol` in `teleopit/interfaces.py`.
 
 ## Supported Surface
 
-- Only supported training task: `Tracking-Flat-G1-VelCmdHistory`
-- Only supported inference observation: 166D VelCmdHistory
-- Only supported ONNX signature: dual inputs `obs` and `obs_history`
-- Realtime inference uses a short retargeted-reference timeline before observation build; `reference_steps` defaults to `[0]` and future/history horizons are a runtime concern, not a second observation builder
-- Adaptive sampling, old no-state-estimation MLP tasks, and other legacy task variants are removed
+- Default training task: `Tracking-Flat-G1-VelCmdHistory`
+- Optional deploy-aligned training task: `Tracking-Flat-G1-MotionTrackingDeploy`
+- Default inference observation: `velcmd_history` (166D, dual-input ONNX with `obs` + `obs_history`)
+- Optional deploy-aligned inference observation: `motion_tracking_deploy` (1590D, single-input ONNX with `obs`)
+- Safe runtime defaults stay on VelCmdHistory; deploy-aligned motion tracking is opt-in via dedicated Hydra configs
+- Realtime inference uses a retargeted-reference timeline before observation build; `reference_steps=[0]` remains the default production path, while motion-tracking deploy configs opt into the deployed future/history window
+- Adaptive sampling, teacher-student training, and old legacy task variants are removed
 
 ## Directory Structure
 
@@ -33,15 +35,18 @@ teleopit/                 # Core inference package
 ├── runtime/              # Shared runtime assembly: config/path resolution, factories, CLI helpers
 ├── bus/                  # InProcessBus message pub/sub
 ├── configs/              # Hydra YAML configs
-│   ├── default.yaml      # Offline sim top-level config: viewers, policy_hz, pd_hz
-│   ├── online.yaml       # Online sim2sim top-level config: realtime=true, num_steps=0
+│   ├── default.yaml      # Offline VelCmdHistory sim2sim (safe default)
+│   ├── online.yaml       # Online VelCmdHistory sim2sim (safe default)
+│   ├── sim2real.yaml     # VelCmdHistory sim2real (safe default)
+│   ├── motion_tracking*.yaml # Deploy-aligned motion-tracking entrypoints
 │   ├── robot/g1.yaml     # G1 robot: XML path, PD gains, default angles, action dims
 │   ├── controller/rl_policy.yaml
+│   ├── controller/motion_tracking_policy.yaml
 │   ├── input/bvh.yaml    # Offline BVH file input
 │   └── input/udp_bvh.yaml # UDP realtime BVH input (reference_bvh, port, timeout)
 ├── controllers/
-│   ├── rl_policy.py      # RLPolicyController — 166D dual-input ONNX inference only
-│   └── observation.py    # VelCmdObservationBuilder — only supported 166D observation path
+│   ├── rl_policy.py      # RLPolicyController — single-input or dual-input ONNX inference with fail-fast dim checks
+│   └── observation.py    # VelCmdObservationBuilder + MotionTrackingObservationBuilder
 ├── inputs/
 │   ├── bvh_provider.py       # BVHInputProvider — offline BVH file
 │   ├── pico4_provider.py     # Pico4InputProvider — xrobotoolkit_sdk realtime body tracking input
@@ -57,7 +62,7 @@ teleopit/                 # Core inference package
 └── recording/            # HDF5Recorder
 scripts/
 ├── run_sim.py            # Offline / online sim2sim pipeline
-├── run_sim2real.py       # G1 sim2real control; supports Pico4 via --config-name pico4_sim2real
+├── run_sim2real.py       # G1 sim2real control; supports Pico4 via dedicated config names
 ├── send_bvh_udp.py       # UDP BVH test sender
 ├── render_sim.py         # Render single BVH → 3 videos (bvh skeleton, retarget, sim2sim)
 ├── compute_ik_offsets.py # Compute IK quaternion offsets for new BVH formats
@@ -65,10 +70,10 @@ scripts/
 train_mimic/              # Training package
 ├── app.py                # Shared app helpers for train/play/benchmark
 ├── tasks/tracking/config/
-│   ├── constants.py      # Single-task public constants
-│   ├── registry.py       # Registers only Tracking-Flat-G1-VelCmdHistory
-│   ├── env.py            # VelCmdHistory env builder
-│   └── rl.py             # VelCmdHistory TemporalCNN PPO runner cfg
+│   ├── constants.py      # Public task constants
+│   ├── registry.py       # Registers VelCmdHistory and MotionTrackingDeploy tasks
+│   ├── env.py            # VelCmdHistory / MotionTrackingDeploy env builders
+│   └── rl.py             # TemporalCNN PPO cfg + deploy MLP PPO cfg
 ├── tasks/tracking/rl/
 │   ├── runner.py         # ONNX export wrapper for policy + motion labels
 │   ├── conv1d_encoder.py # 1-D CNN encoder for temporal history groups
@@ -77,14 +82,14 @@ train_mimic/              # Training package
     ├── train.py          # Training entry point
     ├── play.py           # Checkpoint playback
     ├── benchmark.py      # Policy evaluation with tracking errors
-    └── save_onnx.py      # Export VelCmdHistory TemporalCNN ONNX
+    └── save_onnx.py      # Export TemporalCNN or deploy MLP ONNX
 ```
 
 ## Key Technical Details
 
 ### Sim2Sim Pipeline
 - Policy runs at 50Hz, PD control at 1000Hz (`decimation=20`, `sim_dt=0.001`)
-- Action flow: `compute_action()` returns raw action → `get_target_dof_pos()` applies clip `[-10, 10]`, scale `0.5`, and `default_dof_pos`
+- Action flow: `compute_action()` returns raw action → `get_target_dof_pos()` applies clip `[-10, 10]`, scale, and `default_dof_pos`
 - Must use `g1_mjlab.xml` for sim2sim; `g1_mocap_29dof.xml` clamps torques to `±1 Nm` and is only for kinematic retarget visualization
 
 ### Multi-Viewer Support
@@ -121,8 +126,8 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - `get_frame()` always returns the newest frame; `is_available()` stays `True`
 - `fps=30` is fixed for the UDP provider
 - Realtime control writes retargeted `qpos` into a short reference timeline and samples from that timeline at `time.monotonic() - retarget_buffer_delay_s`
-- `reference_steps=[0]` is the current production path; non-zero future/history steps are supported by the runtime timeline for future policy upgrades
-- Non-zero `reference_steps` must satisfy `retarget_buffer_delay_s >= max_future_step / policy_hz` and `retarget_buffer_window_s >= retarget_buffer_delay_s + abs(min_history_step) / policy_hz`; runtime now fails fast on static misconfiguration instead of silently living on fallback samples
+- `reference_steps=[0]` is the safe default path; deploy-aligned motion tracking uses `[0, 1, 2, 3, 4, -1, -2, -4, -8, -12, -16]`
+- Non-zero `reference_steps` must satisfy `retarget_buffer_delay_s >= max_future_step / policy_hz` and `retarget_buffer_window_s >= retarget_buffer_delay_s + abs(min_history_step) / policy_hz`; runtime fails fast on misconfiguration instead of silently living on fallback samples
 
 ### Pico4 Realtime Input
 - `Pico4InputProvider` reads realtime body tracking from `xrobotoolkit_sdk`
@@ -139,7 +144,9 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - Realtime reference buffering is controlled by `retarget_buffer_enabled`, `retarget_buffer_window_s`, `retarget_buffer_delay_s`, and `reference_steps`
 
 ### Inference Observation
-The only supported observation is **166D VelCmdHistory**:
+Two inference observation families are supported:
+
+1. `velcmd_history` (166D, dual-input ONNX)
 
 ```
 command(58)
@@ -154,22 +161,46 @@ command(58)
 + ref_projected_gravity_b(3)
 ```
 
+2. `motion_tracking_deploy` (1590D, single-input ONNX)
+
+```
+boot_indicator(1)
++ tracking_command(96)
++ compliance_flag(3)
++ target_joint_pos(638)
++ target_root_z(11)
++ target_projected_gravity_b(33)
++ root_ang_vel_history(27)
++ projected_gravity_history(27)
++ joint_pos_history(261)
++ joint_vel_history(261)
++ prev_actions(232)
+```
+
+Deploy-aligned motion tracking follows the sibling `motion_tracking/sim2real` deployed policy semantics:
+- `future_steps=[0, 1, 2, 3, 4, -1, -2, -4, -8, -12, -16]`
+- `prev_action_steps=8`
+- `root_angvel_history_steps = projected_gravity_history_steps = joint_pos_history_steps = joint_vel_history_steps = [0, 1, 2, 3, 4, 8, 12, 16, 20]`
+- `compliance_flag_value=1.0`, `compliance_flag_threshold=10.0`
+- The runtime builder requires a real `reference_window` and raises on missing/mismatched windows instead of silently fabricating one
+- The deploy builder intentionally does not depend on `base_pos` / `base_lin_vel`, so real-robot inference does not degenerate when those fields are unavailable
+
 Runtime constraints:
-- `VelCmdObservationBuilder` is the only public observation builder
-- `RLPolicyController` only accepts dual-input ONNX with `obs_history`
-- Both current observation and history observation dimensions must be exactly `166`
+- Public builders are `VelCmdObservationBuilder` and `MotionTrackingObservationBuilder`
+- `RLPolicyController` accepts either single-input `obs` ONNX or dual-input `obs` + `obs_history` ONNX
 - Startup validates the observation definition against the ONNX signature and raises immediately on mismatch
-- Legacy TWIST2, non-VelCmdHistory, and single-input policy paths are removed
+- Legacy TWIST2 and removed policy/task variants remain unsupported
 
 ### Training Task
-The only supported training task is `Tracking-Flat-G1-VelCmdHistory`.
+Supported training tasks are `Tracking-Flat-G1-VelCmdHistory` and `Tracking-Flat-G1-MotionTrackingDeploy`.
 
+- VelCmdHistory keeps the current production TemporalCNN path
+- MotionTrackingDeploy is a single-stage PPO task aligned to the deployed sim2real policy semantics; no teacher-student or multi-stage pipeline
 - Training env uses `sampling_mode="uniform"`
 - Playback/benchmark use `play=True`, which switches motion sampling to `start`
-- Training env defaults to `window_steps=[0]`; future/history windows are now carried by the dataset format and runtime sampler
-- Actor/critic both use `TemporalCNNModel`
-- Exported ONNX always has dual inputs: `obs` and `obs_history`
-- Adaptive sampling is removed; command sampling now supports only `uniform` and `start`
+- VelCmdHistory defaults to `window_steps=[0]`
+- MotionTrackingDeploy uses the deployed future/history reference window and MLP actor/critic
+- `save_onnx.py` exports either dual-input TemporalCNN ONNX or single-input deploy MLP ONNX based on checkpoint contents
 
 ### Dataset Pipeline
 - Dataset build spec supports a `preprocess` section for root-xy normalization, ground alignment, and basic clip filtering
@@ -181,8 +212,11 @@ Quick reference:
 ```bash
 python train_mimic/scripts/data/build_dataset.py --spec train_mimic/configs/datasets/twist2_full.yaml
 python train_mimic/scripts/train.py --motion_file data/datasets/twist2_full/train.npz
+python train_mimic/scripts/train.py --task Tracking-Flat-G1-MotionTrackingDeploy --motion_file data/datasets/twist2_full/train.npz
 python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_tracking_velcmd_history/<run>/model_30000.pt --output policy.onnx --history_length 10
-python train_mimic/scripts/benchmark.py --checkpoint <path> --motion_file data/datasets/twist2_full/val.npz --num_envs 1
+python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_tracking_motion_tracking_deploy/<run>/model_30000.pt --output policy.onnx
+python scripts/run_sim.py --config-name motion_tracking controller.policy_path=policy.onnx input.bvh_file=data/lafan1/dance1_subject2.bvh
+python scripts/run_sim2real.py --config-name motion_tracking_sim2real controller.policy_path=policy.onnx
 ```
 
 ### GMR Retargeting

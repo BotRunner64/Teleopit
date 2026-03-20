@@ -71,6 +71,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--video", action="store_true",
                         help="Record periodic videos during training")
+    parser.add_argument("--task", type=str, default=DEFAULT_TASK,
+                        help="Task id to train (default: %(default)s)")
     parser.add_argument("--video_interval", type=int, default=2000,
                         help="Record a video every N iterations (default: 2000)")
     parser.add_argument("--video_length", type=int, default=200,
@@ -254,7 +256,7 @@ def _run_worker(args: argparse.Namespace) -> None:
 
     # Load configs from registry
     _task_name, env_cfg, agent_cfg, runner_cls = load_task_components(
-        DEFAULT_TASK,
+        args.task,
         load_env_cfg=load_env_cfg,
         load_rl_cfg=load_rl_cfg,
         load_runner_cls=load_runner_cls,

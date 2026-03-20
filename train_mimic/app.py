@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from train_mimic.tasks.tracking.config.constants import (
     DEFAULT_TRAIN_MOTION_FILE,
+    SUPPORTED_TASKS,
     VELCMD_HISTORY_TASK,
 )
 
@@ -71,9 +71,9 @@ def load_task_components(
             load_runner_cls,
             _configure_torch_backends,
         ) = import_training_stack()
-    if task_name != DEFAULT_TASK:
+    if task_name not in SUPPORTED_TASKS:
         raise ValueError(
-            f"Unsupported task '{task_name}'. The only supported task is '{DEFAULT_TASK}'."
+            f"Unsupported task '{task_name}'. Supported tasks: {', '.join(SUPPORTED_TASKS)}."
         )
     env_cfg = load_env_cfg(task_name, play=play)
     agent_cfg = load_rl_cfg(task_name)
