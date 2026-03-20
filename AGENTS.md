@@ -11,7 +11,7 @@ Config: Hydra/OmegaConf YAML files in `teleopit/configs/`
 ## Architecture
 
 ```
-InputProvider (BVH file / UDP realtime / Pico4 VR) → Retargeter (GMR) → ObservationBuilder (166D VelCmdHistory or 1590D MotionTrackingDeploy) → Controller (dual-input TemporalCNN ONNX or single-input MLP ONNX) → Robot (MuJoCo + PD / Unitree SDK)
+InputProvider (BVH file / UDP realtime / Pico4 VR) → Retargeter (GMR) → ObservationBuilder (166D VelCmdHistory or 1587D MotionTrackingDeploy) → Controller (dual-input TemporalCNN ONNX or single-input MLP ONNX) → Robot (MuJoCo + PD / Unitree SDK)
 ```
 
 Module-internal isolation: all modules run in-process and communicate via `InProcessBus` (zero-copy). Core interfaces are defined as `typing.Protocol` in `teleopit/interfaces.py`.
@@ -21,7 +21,7 @@ Module-internal isolation: all modules run in-process and communicate via `InPro
 - Default training task: `Tracking-Flat-G1-VelCmdHistory`
 - Optional deploy-aligned training task: `Tracking-Flat-G1-MotionTrackingDeploy`
 - Default inference observation: `velcmd_history` (166D, dual-input ONNX with `obs` + `obs_history`)
-- Optional deploy-aligned inference observation: `motion_tracking_deploy` (1590D, single-input ONNX with `obs`)
+- Optional deploy-aligned inference observation: `motion_tracking_deploy` (1587D, single-input ONNX with `obs`)
 - Safe runtime defaults stay on VelCmdHistory; deploy-aligned motion tracking is opt-in via dedicated Hydra configs
 - Realtime inference uses a retargeted-reference timeline before observation build; `reference_steps=[0]` remains the default production path, while motion-tracking deploy configs opt into the deployed future/history window
 - Adaptive sampling, teacher-student training, and old legacy task variants are removed
@@ -163,12 +163,11 @@ command(58)
 + ref_projected_gravity_b(3)
 ```
 
-2. `motion_tracking_deploy` (1590D, single-input ONNX)
+2. `motion_tracking_deploy` (1587D, single-input ONNX)
 
 ```
 boot_indicator(1)
 + tracking_command(96)
-+ compliance_flag(3)
 + target_joint_pos(638)
 + target_root_z(11)
 + target_projected_gravity_b(33)
@@ -183,7 +182,7 @@ Deploy-aligned motion tracking follows the sibling `motion_tracking/sim2real` de
 - `future_steps=[0, 1, 2, 3, 4, -1, -2, -4, -8, -12, -16]`
 - `prev_action_steps=8`
 - `root_angvel_history_steps = projected_gravity_history_steps = joint_pos_history_steps = joint_vel_history_steps = [0, 1, 2, 3, 4, 8, 12, 16, 20]`
-- `compliance_flag_value=1.0`, `compliance_flag_threshold=10.0`
+- Teleopit intentionally removes `compliance_flag`; deploy observations no longer reserve that 3D constant term
 - The runtime builder requires a real `reference_window` and raises on missing/mismatched windows instead of silently fabricating one
 - The deploy builder intentionally does not depend on `base_pos` / `base_lin_vel`, so real-robot inference does not degenerate when those fields are unavailable
 

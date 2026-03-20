@@ -145,8 +145,6 @@ def _build_obs_builder(robot_cfg: Any, controller_cfg: Any, sim_cfg: dict[str, o
         "projected_gravity_history_steps": list(cfg_get(controller_cfg, "projected_gravity_history_steps", [0, 1, 2, 3, 4, 8, 12, 16, 20])),
         "joint_pos_history_steps": list(cfg_get(controller_cfg, "joint_pos_history_steps", [0, 1, 2, 3, 4, 8, 12, 16, 20])),
         "joint_vel_history_steps": list(cfg_get(controller_cfg, "joint_vel_history_steps", [0, 1, 2, 3, 4, 8, 12, 16, 20])),
-        "compliance_flag_value": float(cfg_get(controller_cfg, "compliance_flag_value", 1.0)),
-        "compliance_flag_threshold": float(cfg_get(controller_cfg, "compliance_flag_threshold", 10.0)),
         "robot_joint_names": list(cfg_get(controller_cfg, "robot_joint_names", cfg_get(controller_cfg, "joint_names", []))),
         "target_joint_names": cfg_get(controller_cfg, "target_joint_names", None),
     }

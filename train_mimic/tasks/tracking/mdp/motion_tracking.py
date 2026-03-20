@@ -59,20 +59,6 @@ def motion_tracking_boot_indicator(env: "ManagerBasedRlEnv") -> FloatTensor:
     return torch.zeros((env.num_envs, 1), dtype=torch.float32, device=env.device)
 
 
-def motion_tracking_compliance_flag(
-    env: "ManagerBasedRlEnv",
-    value: float,
-    threshold: float,
-) -> FloatTensor:
-    kp = float(threshold) / 0.05
-    vec = torch.tensor(
-        [float(value), float(value) * float(threshold), float(value) * kp],
-        dtype=torch.float32,
-        device=env.device,
-    )
-    return vec.unsqueeze(0).repeat(env.num_envs, 1)
-
-
 def motion_tracking_projected_gravity(
     env: "ManagerBasedRlEnv",
     entity_name: str = "robot",

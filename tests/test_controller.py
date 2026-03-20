@@ -51,6 +51,19 @@ class TestRLPolicyStaticHelpers:
         from teleopit.controllers.rl_policy import RLPolicyController
         assert RLPolicyController._extract_feature_dim(["N"]) is None
 
+    def test_normalize_action_scale_mapping_robot_order(self):
+        from teleopit.controllers.rl_policy import RLPolicyController
+        scale = RLPolicyController._normalize_action_scale(
+            {"joint_b": 2.0, "joint_a": 1.0},
+            ["joint_a", "joint_b"],
+        )
+        assert np.array_equal(scale, np.asarray([1.0, 2.0], dtype=np.float32))
+
+    def test_normalize_action_scale_mapping_missing_joint_raises(self):
+        from teleopit.controllers.rl_policy import RLPolicyController
+        with pytest.raises(ValueError, match="missing robot joints"):
+            RLPolicyController._normalize_action_scale({"joint_a": 1.0}, ["joint_a", "joint_b"])
+
     def test_select_providers_cpu_only(self):
         from teleopit.controllers.rl_policy import RLPolicyController
         providers = RLPolicyController._select_providers(
@@ -102,6 +115,7 @@ class TestRLPolicyControllerInference:
         ctrl.default_dof_pos = np.zeros(action_dim, dtype=np.float32)
         ctrl.clip_range = (-10.0, 10.0)
         from collections import deque
+        ctrl._multi_input = False
         ctrl._history_length = 3
         ctrl._history_obs_dim = obs_dim
         ctrl._history_buf = deque(maxlen=3)

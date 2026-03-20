@@ -317,7 +317,7 @@ class VelCmdObservationBuilder:
 
 @final
 class MotionTrackingObservationBuilder:
-    """Deploy-aligned 1590D motion-tracking observation builder."""
+    """Deploy-aligned 1587D motion-tracking observation builder."""
 
     def __init__(self, cfg: ConfigType) -> None:
         self.num_actions = _as_int_scalar(_cfg_get(cfg, "num_actions"), "num_actions")
@@ -342,8 +342,6 @@ class MotionTrackingObservationBuilder:
         if self.prev_action_steps <= 0:
             raise ValueError(f"prev_action_steps must be > 0, got {self.prev_action_steps}")
 
-        self.compliance_flag_value = float(_cfg_get(cfg, "compliance_flag_value", 1.0))
-        self.compliance_flag_threshold = float(_cfg_get(cfg, "compliance_flag_threshold", 10.0))
         self._target_joint_indices = self._parse_target_joint_indices(cfg)
         self.requires_reference_window = True
 
@@ -351,7 +349,6 @@ class MotionTrackingObservationBuilder:
         self.total_obs_size = (
             1
             + ((num_steps - 1) * 3 + num_steps * 6)
-            + 3
             + (num_steps * self.num_actions * 2)
             + num_steps
             + (num_steps * 3)
@@ -525,15 +522,6 @@ class MotionTrackingObservationBuilder:
         ).reshape(-1)
         tracking_command = np.concatenate([pos_diff_b, rel_rot6d], dtype=np.float32)
 
-        compliance_kp = self.compliance_flag_threshold / 0.05
-        compliance_flag = np.array(
-            [
-                self.compliance_flag_value,
-                self.compliance_flag_value * self.compliance_flag_threshold,
-                self.compliance_flag_value * compliance_kp,
-            ],
-            dtype=np.float32,
-        )
         target_joint_obs = np.concatenate(
             [
                 target_joint_pos.reshape(-1),
@@ -560,7 +548,6 @@ class MotionTrackingObservationBuilder:
             [
                 np.array([0.0], dtype=np.float32),
                 tracking_command,
-                compliance_flag,
                 target_joint_obs,
                 target_root_z,
                 target_projected_gravity,

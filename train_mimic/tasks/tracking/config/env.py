@@ -119,8 +119,6 @@ _MOTION_TRACKING_DEPLOY_ACTION_SCALE = dict(
 _MOTION_TRACKING_DEPLOY_REFERENCE_STEPS = (0, 1, 2, 3, 4, -1, -2, -4, -8, -12, -16)
 _MOTION_TRACKING_DEPLOY_HISTORY_STEPS = (0, 1, 2, 3, 4, 8, 12, 16, 20)
 _MOTION_TRACKING_DEPLOY_PREV_ACTION_STEPS = 8
-_MOTION_TRACKING_DEPLOY_COMPLIANCE_VALUE = 1.0
-_MOTION_TRACKING_DEPLOY_COMPLIANCE_THRESHOLD = 10.0
 
 
 def _apply_play_mode_overrides(cfg: ManagerBasedRlEnvCfg) -> None:
@@ -195,13 +193,6 @@ _MOTION_DEPLOY_ACTOR_TERMS: dict[str, ObservationTermCfg] = {
         func=mdp.motion_tracking_deploy_command_obs,
         params={"command_name": "motion"},
     ),
-    "compliance_flag": ObservationTermCfg(
-        func=mdp.motion_tracking_compliance_flag,
-        params={
-            "value": _MOTION_TRACKING_DEPLOY_COMPLIANCE_VALUE,
-            "threshold": _MOTION_TRACKING_DEPLOY_COMPLIANCE_THRESHOLD,
-        },
-    ),
     "target_joint_pos": ObservationTermCfg(
         func=mdp.motion_tracking_deploy_target_joint_pos,
         params={"command_name": "motion"},
@@ -241,13 +232,6 @@ _MOTION_DEPLOY_CRITIC_TERMS: dict[str, ObservationTermCfg] = {
     "tracking_command": ObservationTermCfg(
         func=mdp.motion_tracking_deploy_command_obs,
         params={"command_name": "motion"},
-    ),
-    "compliance_flag": ObservationTermCfg(
-        func=mdp.motion_tracking_compliance_flag,
-        params={
-            "value": _MOTION_TRACKING_DEPLOY_COMPLIANCE_VALUE,
-            "threshold": _MOTION_TRACKING_DEPLOY_COMPLIANCE_THRESHOLD,
-        },
     ),
     "target_joint_pos": ObservationTermCfg(
         func=mdp.motion_tracking_deploy_target_joint_pos,

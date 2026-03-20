@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -80,9 +80,9 @@ class RLPolicyController:
             )
 
         raw_scale = self._cfg_get(cfg, "action_scale", None)
-        self.action_scale = np.asarray(
+        self.action_scale = self._normalize_action_scale(
             raw_scale if raw_scale is not None else 1.0,
-            dtype=np.float32,
+            self._cfg_get(cfg, "robot_joint_names", self._cfg_get(cfg, "joint_names", None)),
         )
         self.default_dof_pos = np.asarray(
             self._cfg_get(cfg, "default_dof_pos", self._cfg_get(cfg, "default_angles", [])),
@@ -192,6 +192,33 @@ class RLPolicyController:
         if low > high:
             raise ValueError(f"clip_range lower bound must be <= upper bound, got ({low}, {high})")
         return low, high
+
+    @staticmethod
+    def _normalize_action_scale(
+        raw: object,
+        robot_joint_names_raw: object | None = None,
+    ) -> NDArray[np.float32]:
+        if isinstance(raw, Mapping):
+            if robot_joint_names_raw is None:
+                raise ValueError(
+                    "robot_joint_names is required when controller.action_scale is provided as a joint-name mapping"
+                )
+            if not isinstance(robot_joint_names_raw, Sequence) or isinstance(robot_joint_names_raw, (str, bytes)):
+                raise ValueError("robot_joint_names must be a sequence of joint names")
+            robot_joint_names = [str(name) for name in robot_joint_names_raw]
+            scale_by_name = {str(name): float(value) for name, value in raw.items()}
+            missing = [name for name in robot_joint_names if name not in scale_by_name]
+            if missing:
+                raise ValueError(
+                    "controller.action_scale mapping is missing robot joints: " + ", ".join(missing)
+                )
+            unknown = [name for name in scale_by_name if name not in set(robot_joint_names)]
+            if unknown:
+                raise ValueError(
+                    "controller.action_scale mapping contains unknown joints: " + ", ".join(sorted(unknown))
+                )
+            return np.asarray([scale_by_name[name] for name in robot_joint_names], dtype=np.float32)
+        return np.asarray(raw, dtype=np.float32)
 
     @staticmethod
     def _extract_feature_dim(shape: Sequence[object]) -> int | None:

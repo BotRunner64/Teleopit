@@ -62,33 +62,58 @@ class MotionTrackingOnPolicyRunner(MjlabOnPolicyRunner):
         self.registry_name = registry_name
 
     def export_policy_to_onnx(
-        self, path: str, filename: str = "policy.onnx", verbose: bool = False
+        self,
+        path: str,
+        filename: str = "policy.onnx",
+        verbose: bool = False,
+        *,
+        include_motion_labels: bool = False,
     ) -> None:
         os.makedirs(path, exist_ok=True)
-        cmd = cast(MotionCommand, self.env.unwrapped.command_manager.get_term("motion"))
-        model = _OnnxMotionModel(self.alg.get_policy(), cmd.motion)
+        output_path = os.path.join(path, filename)
+        if include_motion_labels:
+            cmd = cast(MotionCommand, self.env.unwrapped.command_manager.get_term("motion"))
+            model = _OnnxMotionModel(self.alg.get_policy(), cmd.motion)
+            model.to("cpu")
+            model.eval()
+            dummy_inputs = model.policy.get_dummy_inputs()
+            time_step = torch.zeros(1, 1)
+            input_names = model.policy.input_names + ["time_step"]
+            torch.onnx.export(
+                model,
+                (*dummy_inputs, time_step),
+                output_path,
+                export_params=True,
+                opset_version=18,
+                verbose=verbose,
+                input_names=input_names,
+                output_names=[
+                    "actions",
+                    "joint_pos",
+                    "joint_vel",
+                    "body_pos_w",
+                    "body_quat_w",
+                    "body_lin_vel_w",
+                    "body_ang_vel_w",
+                ],
+                dynamic_axes={},
+                dynamo=False,
+            )
+            return
+
+        model = self.alg.get_policy().as_onnx(verbose=False)
         model.to("cpu")
         model.eval()
-        dummy_inputs = model.policy.get_dummy_inputs()
-        time_step = torch.zeros(1, 1)
-        input_names = model.policy.input_names + ["time_step"]
+        dummy_inputs = model.get_dummy_inputs()
         torch.onnx.export(
             model,
-            (*dummy_inputs, time_step),
-            os.path.join(path, filename),
+            dummy_inputs,
+            output_path,
             export_params=True,
             opset_version=18,
             verbose=verbose,
-            input_names=input_names,
-            output_names=[
-                "actions",
-                "joint_pos",
-                "joint_vel",
-                "body_pos_w",
-                "body_quat_w",
-                "body_lin_vel_w",
-                "body_ang_vel_w",
-            ],
+            input_names=model.input_names,
+            output_names=model.output_names,
             dynamic_axes={},
             dynamo=False,
         )
