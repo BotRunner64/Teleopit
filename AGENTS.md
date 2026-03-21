@@ -19,12 +19,13 @@ Module-internal isolation: all modules run in-process and communicate via `InPro
 ## Supported Surface
 
 - Default training task: `Tracking-Flat-G1-VelCmdHistory`
+- Optional adaptive training task: `Tracking-Flat-G1-VelCmdHistoryAdaptive`
 - Optional deploy-aligned training task: `Tracking-Flat-G1-MotionTrackingDeploy`
 - Default inference observation: `velcmd_history` (166D, dual-input ONNX with `obs` + `obs_history`)
 - Optional deploy-aligned inference observation: `motion_tracking_deploy` (1587D, single-input ONNX with `obs`)
 - Safe runtime defaults stay on VelCmdHistory; deploy-aligned motion tracking is opt-in via dedicated Hydra configs
 - Realtime inference uses a retargeted-reference timeline before observation build; `reference_steps=[0]` remains the default production path, while motion-tracking deploy configs opt into the deployed future/history window
-- Adaptive sampling, teacher-student training, and old legacy task variants are removed
+- Teacher-student training and older legacy task variants are removed; `VelCmdHistoryAdaptive` remains supported as the adaptive-sampling variant
 
 ## Directory Structure
 
@@ -71,8 +72,8 @@ train_mimic/              # Training package
 ├── app.py                # Shared app helpers for train/play/benchmark
 ├── tasks/tracking/config/
 │   ├── constants.py      # Public task constants
-│   ├── registry.py       # Registers VelCmdHistory and MotionTrackingDeploy tasks
-│   ├── env.py            # VelCmdHistory / MotionTrackingDeploy env builders
+│   ├── registry.py       # Registers VelCmdHistory, VelCmdHistoryAdaptive, and MotionTrackingDeploy tasks
+│   ├── env.py            # VelCmdHistory / VelCmdHistoryAdaptive / MotionTrackingDeploy env builders
 │   └── rl.py             # TemporalCNN PPO cfg + deploy MLP PPO cfg
 ├── tasks/tracking/rl/
 │   ├── runner.py         # ONNX export wrapper for policy + motion labels
@@ -193,13 +194,15 @@ Runtime constraints:
 - Legacy TWIST2 and removed policy/task variants remain unsupported
 
 ### Training Task
-Supported training tasks are `Tracking-Flat-G1-VelCmdHistory` and `Tracking-Flat-G1-MotionTrackingDeploy`.
+Supported training tasks are `Tracking-Flat-G1-VelCmdHistory`, `Tracking-Flat-G1-VelCmdHistoryAdaptive`, and `Tracking-Flat-G1-MotionTrackingDeploy`.
 
 - VelCmdHistory keeps the current production TemporalCNN path
+- VelCmdHistoryAdaptive keeps the same TemporalCNN observation/action path but restores adaptive clip sampling
 - MotionTrackingDeploy is a single-stage PPO task aligned to the deployed sim2real policy semantics; no teacher-student or multi-stage pipeline
 - Training env uses `sampling_mode="uniform"`
 - Playback/benchmark use `play=True`, which switches motion sampling to `start`
 - VelCmdHistory defaults to `window_steps=[0]`
+- VelCmdHistoryAdaptive also uses `window_steps=[0]`, but trains with `sampling_mode="adaptive"`
 - MotionTrackingDeploy uses the deployed future/history reference window and MLP actor/critic
 - MotionTrackingDeploy also enables the sibling `motion_tracking` locomotion regularization set: `survival`, `joint_vel_l2`, `action_rate_l2`, `feet_air_time_ref`, `feet_air_time_ref_dense`, `joint_pos_limits`, and `joint_torque_limits`
 - `save_onnx.py` exports either dual-input TemporalCNN ONNX or single-input deploy MLP ONNX based on checkpoint contents
@@ -214,6 +217,7 @@ Quick reference:
 ```bash
 python train_mimic/scripts/data/build_dataset.py --spec train_mimic/configs/datasets/twist2_full.yaml
 python train_mimic/scripts/train.py --motion_file data/datasets/twist2_full/train.npz
+python train_mimic/scripts/train.py --task Tracking-Flat-G1-VelCmdHistoryAdaptive --motion_file data/datasets/twist2_full/train.npz
 python train_mimic/scripts/train.py --task Tracking-Flat-G1-MotionTrackingDeploy --motion_file data/datasets/twist2_full/train.npz
 python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_tracking_velcmd_history/<run>/model_30000.pt --output policy.onnx --history_length 10
 python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_tracking_motion_tracking_deploy/<run>/model_30000.pt --output policy.onnx

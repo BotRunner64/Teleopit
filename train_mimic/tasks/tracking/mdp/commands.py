@@ -57,6 +57,56 @@ def _batched_quat_slerp(
     return result / result.norm(dim=-1, keepdim=True)
 
 
+def _compute_clip_counts(
+    motion_ids: torch.Tensor, episode_failed: torch.Tensor, bin_count: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return (exposure_count, failure_count) per clip bin."""
+    exposure = torch.bincount(motion_ids, minlength=bin_count).float()
+    failure = torch.bincount(
+        motion_ids[episode_failed], minlength=bin_count
+    ).float()
+    return exposure, failure
+
+
+def _compute_clip_failure_rate(
+    motion_ids: torch.Tensor, episode_failed: torch.Tensor, bin_count: int
+) -> torch.Tensor:
+    """Compute per-clip failure rate for the current adaptive-sampling window."""
+    exposure, failure = _compute_clip_counts(motion_ids, episode_failed, bin_count)
+    rate = torch.zeros(bin_count, dtype=torch.float32, device=motion_ids.device)
+    valid = exposure > 0
+    rate[valid] = failure[valid] / exposure[valid]
+    return rate
+
+
+def _is_distributed() -> bool:
+    """Return True when running inside an initialized torch.distributed group."""
+    return torch.distributed.is_available() and torch.distributed.is_initialized()
+
+
+def _normalize_sampling_probabilities(
+    sampling_probabilities: torch.Tensor,
+    *,
+    adaptive_uniform_ratio: float,
+    bin_count: int,
+) -> torch.Tensor:
+    """Normalize adaptive sampling weights and fail fast on invalid mass."""
+    prob_sum = sampling_probabilities.sum()
+    if not torch.isfinite(prob_sum) or prob_sum <= 0:
+        raise ValueError(
+            "Adaptive sampling produced an invalid probability mass. "
+            f"sum={prob_sum.item() if torch.isfinite(prob_sum) else prob_sum}, "
+            f"adaptive_uniform_ratio={adaptive_uniform_ratio}, bin_count={bin_count}. "
+            "Increase adaptive_uniform_ratio or accumulate failure statistics before "
+            "using pure adaptive sampling."
+        )
+
+    sampling_probabilities = sampling_probabilities / prob_sum
+    if not torch.isfinite(sampling_probabilities).all():
+        raise ValueError("Adaptive sampling probabilities contain NaN or Inf values.")
+    return sampling_probabilities
+
+
 class MotionLib:
     """Clip-aware motion library.
 
@@ -354,6 +404,15 @@ class MotionCommand(CommandTerm):
         self.body_ang_vel_b = torch.zeros(self.num_envs, nb, 3, device=self.device)
 
         self.bin_count = max(self.motion.num_clips, 1)
+        self.bin_failed_rate = torch.zeros(
+            self.bin_count, dtype=torch.float, device=self.device
+        )
+        self._accum_exposure_count = torch.zeros(
+            self.bin_count, dtype=torch.float, device=self.device
+        )
+        self._accum_failure_count = torch.zeros(
+            self.bin_count, dtype=torch.float, device=self.device
+        )
         self.kernel = torch.ones(1, device=self.device)
 
         self.metrics["error_anchor_pos"] = torch.zeros(self.num_envs, device=self.device)
@@ -547,6 +606,38 @@ class MotionCommand(CommandTerm):
     # Sampling
     # ------------------------------------------------------------------
 
+    def _adaptive_sampling(self, env_ids: torch.Tensor):
+        current_motion_ids = self.motion_ids[env_ids]
+        episode_failed = self._env.termination_manager.terminated[env_ids]
+        exposure, failure = _compute_clip_counts(
+            current_motion_ids, episode_failed, self.bin_count
+        )
+        self._accum_exposure_count += exposure
+        self._accum_failure_count += failure
+
+        sampling_probabilities = (
+            self.bin_failed_rate
+            + self.cfg.adaptive_uniform_ratio / float(self.bin_count)
+        )
+        sampling_probabilities = _normalize_sampling_probabilities(
+            sampling_probabilities,
+            adaptive_uniform_ratio=self.cfg.adaptive_uniform_ratio,
+            bin_count=self.bin_count,
+        )
+
+        sampled_clips = torch.multinomial(
+            sampling_probabilities, len(env_ids), replacement=True
+        )
+        self.motion_ids[env_ids] = sampled_clips
+        self.motion_times[env_ids] = self.motion.sample_times(sampled_clips)
+
+        entropy = -(sampling_probabilities * (sampling_probabilities + 1e-12).log()).sum()
+        entropy_norm = entropy / math.log(self.bin_count) if self.bin_count > 1 else 1.0
+        top1_prob, top1_bin = sampling_probabilities.max(dim=0)
+        self.metrics["sampling_entropy"][:] = entropy_norm
+        self.metrics["sampling_top1_prob"][:] = top1_prob
+        self.metrics["sampling_top1_bin"][:] = top1_bin.float() / self.bin_count
+
     def _uniform_sampling(self, env_ids: torch.Tensor):
         self.motion_ids[env_ids] = self.motion.sample_motion_ids(len(env_ids))
         self.motion_times[env_ids] = self.motion.sample_times(self.motion_ids[env_ids])
@@ -558,8 +649,11 @@ class MotionCommand(CommandTerm):
         if self.cfg.sampling_mode == "start":
             self.motion_ids[env_ids] = self.motion.sample_motion_ids(len(env_ids))
             self.motion_times[env_ids] = self.motion.sample_start_times(self.motion_ids[env_ids])
-        else:
+        elif self.cfg.sampling_mode == "uniform":
             self._uniform_sampling(env_ids)
+        else:
+            assert self.cfg.sampling_mode == "adaptive"
+            self._adaptive_sampling(env_ids)
 
         if env_ids.numel() == 0:
             return
@@ -684,6 +778,27 @@ class MotionCommand(CommandTerm):
 
         self._refresh_body_local_cache()
 
+        if self.cfg.sampling_mode == "adaptive":
+            # Sync raw counts across ranks for unified statistics
+            if _is_distributed():
+                torch.distributed.all_reduce(self._accum_exposure_count)
+                torch.distributed.all_reduce(self._accum_failure_count)
+
+            # Only update EMA when new data exists (fixes decay-on-empty-step)
+            if self._accum_exposure_count.sum() > 0:
+                valid = self._accum_exposure_count > 0
+                global_rate = torch.zeros_like(self.bin_failed_rate)
+                global_rate[valid] = (
+                    self._accum_failure_count[valid]
+                    / self._accum_exposure_count[valid]
+                )
+                self.bin_failed_rate = (
+                    self.cfg.adaptive_alpha * global_rate
+                    + (1 - self.cfg.adaptive_alpha) * self.bin_failed_rate
+                )
+
+            self._accum_exposure_count.zero_()
+            self._accum_failure_count.zero_()
 
     # ------------------------------------------------------------------
     # Visualization
@@ -769,7 +884,11 @@ class MotionCommandCfg(CommandTermCfg):
     pose_range: dict[str, tuple[float, float]] = field(default_factory=dict)
     velocity_range: dict[str, tuple[float, float]] = field(default_factory=dict)
     joint_position_range: tuple[float, float] = (-0.52, 0.52)
-    sampling_mode: Literal["uniform", "start"] = "uniform"
+    adaptive_kernel_size: int = 1
+    adaptive_lambda: float = 0.8
+    adaptive_uniform_ratio: float = 0.1
+    adaptive_alpha: float = 0.001
+    sampling_mode: Literal["adaptive", "uniform", "start"] = "uniform"
     window_steps: tuple[int, ...] = (0,)
 
     @dataclass

@@ -2,7 +2,7 @@
 
 这篇文档只回答一个问题：**你现在想做什么？**
 
-如果你需要完整背景，先看 [`../README.md`](../README.md)。当前仓库只支持一条正式主线：`Tracking-Flat-G1-VelCmdHistory` 训练产出的 166D 双输入 ONNX。
+如果你需要完整背景，先看 [`../README.md`](../README.md)。当前仓库默认主线仍是 `Tracking-Flat-G1-VelCmdHistory` 训练产出的 166D 双输入 ONNX，同时保留 `Tracking-Flat-G1-VelCmdHistoryAdaptive` 作为自适应采样训练变体。
 
 ## 先决条件
 

@@ -1,6 +1,6 @@
 # 架构与边界
 
-Teleopit 当前按单一正式主线组织：训练侧只保留 `Tracking-Flat-G1-VelCmdHistory`，推理侧只保留 166D VelCmdHistory 双输入 ONNX。
+Teleopit 当前按两条运行主线组织：训练侧支持 `Tracking-Flat-G1-VelCmdHistory`、`Tracking-Flat-G1-VelCmdHistoryAdaptive` 和 `Tracking-Flat-G1-MotionTrackingDeploy`，其中默认推理主线仍是 166D VelCmdHistory 双输入 ONNX。
 
 ```text
 configs / scripts

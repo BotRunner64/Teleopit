@@ -381,6 +381,18 @@ def make_velcmd_history_tracking_env_cfg(
     return cfg
 
 
+def make_velcmd_history_adaptive_tracking_env_cfg(
+    *, play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+    """Create the G1 VelCmdHistory env with adaptive clip sampling."""
+    cfg = make_velcmd_history_tracking_env_cfg(play=play)
+    if not play:
+        motion_cmd = cfg.commands["motion"]
+        assert isinstance(motion_cmd, MotionCommandCfg)
+        motion_cmd.sampling_mode = "adaptive"
+    return cfg
+
+
 def make_motion_tracking_deploy_env_cfg(
     *, play: bool = False,
 ) -> ManagerBasedRlEnvCfg:

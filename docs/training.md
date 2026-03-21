@@ -1,13 +1,13 @@
 # 训练指南
 
-当前 `train_mimic` 只保留一个正式训练任务：`Tracking-Flat-G1-VelCmdHistory`。
+当前 `train_mimic` 保留三个训练任务：`Tracking-Flat-G1-VelCmdHistory`、`Tracking-Flat-G1-VelCmdHistoryAdaptive` 和 `Tracking-Flat-G1-MotionTrackingDeploy`。
 
 对应约束：
 
-- 训练脚本不再暴露 `--task` 参数
-- policy 结构固定为 `TemporalCNNModel`
-- 导出的 ONNX 固定为双输入 `obs` + `obs_history`
-- adaptive sampling 已移除
+- 训练脚本支持 `--task` 参数；默认仍是 `Tracking-Flat-G1-VelCmdHistory`
+- policy 结构按 task 决定：VelCmdHistory / VelCmdHistoryAdaptive 使用 `TemporalCNNModel`，MotionTrackingDeploy 使用 deploy MLP
+- 导出的 ONNX 按 checkpoint 内容决定：VelCmdHistory 家族是双输入 `obs` + `obs_history`，MotionTrackingDeploy 是单输入 `obs`
+- `Tracking-Flat-G1-VelCmdHistoryAdaptive` 保留了 adaptive sampling 变体
 
 > 入口导航：数据准备看 [`dataset.md`](dataset.md)，整体边界看 [`architecture.md`](architecture.md)。
 
@@ -91,9 +91,9 @@ python train_mimic/scripts/save_onnx.py             --checkpoint logs/rsl_rl/g1_
 
 导出结果约束：
 
-- 只支持 VelCmdHistory `TemporalCNN` checkpoint
-- ONNX 输入固定为 `obs` 和 `obs_history`
-- 推理侧只接受 166D 双输入模型
+- 支持 VelCmdHistory / VelCmdHistoryAdaptive 的 `TemporalCNN` checkpoint，也支持 MotionTrackingDeploy 的 deploy MLP checkpoint
+- ONNX 输入按 checkpoint 类型决定：VelCmdHistory 家族导出 `obs` + `obs_history`，MotionTrackingDeploy 导出 `obs`
+- 推理侧支持 166D 双输入 VelCmdHistory ONNX 和 1587D 单输入 MotionTrackingDeploy ONNX
 
 ## 播放与评估
 
@@ -131,6 +131,6 @@ train_mimic/scripts/data
 关键实现：
 
 - `train_mimic/app.py`：train/play/benchmark 共用入口装配
-- `train_mimic/tasks/tracking/config/env.py`：唯一 VelCmdHistory env builder
-- `train_mimic/tasks/tracking/config/rl.py`：唯一 TemporalCNN PPO runner cfg
-- `train_mimic/tasks/tracking/mdp/commands.py`：仅保留 `uniform` / `start` 采样模式
+- `train_mimic/tasks/tracking/config/env.py`：VelCmdHistory / VelCmdHistoryAdaptive / MotionTrackingDeploy env builders
+- `train_mimic/tasks/tracking/config/rl.py`：VelCmdHistory TemporalCNN PPO cfg + MotionTrackingDeploy MLP PPO cfg
+- `train_mimic/tasks/tracking/mdp/commands.py`：支持 `adaptive` / `uniform` / `start` 采样模式

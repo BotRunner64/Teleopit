@@ -1,4 +1,4 @@
-"""Tests for the single VelCmdHistory task registration."""
+"""Tests for supported tracking task registration."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import pytest
 
 from train_mimic.app import DEFAULT_TASK
 from train_mimic.tasks.tracking.config.constants import (
+    VELCMD_HISTORY_ADAPTIVE_EXPERIMENT_NAME,
+    VELCMD_HISTORY_ADAPTIVE_TASK,
     VELCMD_HISTORY_EXPERIMENT_NAME,
     VELCMD_HISTORY_TASK,
 )
@@ -50,6 +52,21 @@ def test_play_env_disables_corruption_and_random_push() -> None:
     assert "push_robot" not in play_cfg.events
     assert play_cfg.commands["motion"].sampling_mode == "start"
     assert play_cfg.commands["motion"].window_steps == (0,)
+
+
+def test_velcmd_history_adaptive_task_is_registered() -> None:
+    import mjlab.tasks  # noqa: F401
+    import train_mimic.tasks  # noqa: F401
+    from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
+
+    env_cfg = load_env_cfg(VELCMD_HISTORY_ADAPTIVE_TASK)
+
+    assert env_cfg.commands["motion"].sampling_mode == "adaptive"
+    assert env_cfg.commands["motion"].window_steps == (0,)
+    assert load_rl_cfg(VELCMD_HISTORY_ADAPTIVE_TASK).experiment_name == (
+        VELCMD_HISTORY_ADAPTIVE_EXPERIMENT_NAME
+    )
+    assert load_runner_cls(VELCMD_HISTORY_ADAPTIVE_TASK) is MotionTrackingOnPolicyRunner
 
 
 def test_removed_task_variants_are_not_registered() -> None:
