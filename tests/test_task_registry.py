@@ -8,8 +8,12 @@ from train_mimic.app import DEFAULT_TASK
 from train_mimic.tasks.tracking.config.constants import (
     VELCMD_HISTORY_ADAPTIVE_EXPERIMENT_NAME,
     VELCMD_HISTORY_ADAPTIVE_TASK,
+    VELCMD_HISTORY_DEPLOY_EXPERIMENT_NAME,
+    VELCMD_HISTORY_DEPLOY_TASK,
     VELCMD_HISTORY_EXPERIMENT_NAME,
     VELCMD_HISTORY_TASK,
+    VELCMD_REF_WINDOW_EXPERIMENT_NAME,
+    VELCMD_REF_WINDOW_TASK,
 )
 from train_mimic.tasks.tracking.rl import MotionTrackingOnPolicyRunner
 
@@ -67,6 +71,48 @@ def test_velcmd_history_adaptive_task_is_registered() -> None:
         VELCMD_HISTORY_ADAPTIVE_EXPERIMENT_NAME
     )
     assert load_runner_cls(VELCMD_HISTORY_ADAPTIVE_TASK) is MotionTrackingOnPolicyRunner
+
+
+def test_velcmd_ref_window_task_is_registered() -> None:
+    import mjlab.tasks  # noqa: F401
+    import train_mimic.tasks  # noqa: F401
+    from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
+
+    env_cfg = load_env_cfg(VELCMD_REF_WINDOW_TASK)
+    rl_cfg = load_rl_cfg(VELCMD_REF_WINDOW_TASK)
+
+    assert env_cfg.commands["motion"].sampling_mode == "uniform"
+    assert env_cfg.commands["motion"].window_steps == (
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, -1, -2, -3, -4, -5, -6, -7, -8, -9, -10
+    )
+    assert "actor_history" in env_cfg.observations
+    assert "critic_history" in env_cfg.observations
+    assert "actor_ref_window" in env_cfg.observations
+    assert "critic_ref_window" in env_cfg.observations
+    assert rl_cfg.obs_groups["actor"] == ("actor", "actor_history", "actor_ref_window")
+    assert rl_cfg.experiment_name == VELCMD_REF_WINDOW_EXPERIMENT_NAME
+    assert load_runner_cls(VELCMD_REF_WINDOW_TASK) is MotionTrackingOnPolicyRunner
+
+
+def test_velcmd_history_deploy_task_is_registered() -> None:
+    import mjlab.tasks  # noqa: F401
+    import train_mimic.tasks  # noqa: F401
+    from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
+
+    env_cfg = load_env_cfg(VELCMD_HISTORY_DEPLOY_TASK)
+
+    assert env_cfg.commands["motion"].feet_body_names == (
+        "left_ankle_roll_link",
+        "right_ankle_roll_link",
+    )
+    assert "joint_pos_tracking" in env_cfg.rewards
+    assert "joint_vel_tracking" in env_cfg.rewards
+    assert "feet_air_time_ref" in env_cfg.rewards
+    assert "joint_torque_limits" in env_cfg.rewards
+    assert load_rl_cfg(VELCMD_HISTORY_DEPLOY_TASK).experiment_name == (
+        VELCMD_HISTORY_DEPLOY_EXPERIMENT_NAME
+    )
+    assert load_runner_cls(VELCMD_HISTORY_DEPLOY_TASK) is MotionTrackingOnPolicyRunner
 
 
 def test_removed_task_variants_are_not_registered() -> None:
