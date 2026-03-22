@@ -509,7 +509,15 @@ class Sim2RealController:
         init_qpos[7:36] = state.qpos.astype(np.float64)
         self._last_retarget_qpos = init_qpos
         self._last_reference_qpos = None
-        self._reset_policy_state()
+
+        if prev_mode == RobotMode.MOCAP:
+            # Returning from MOCAP: soft reset to keep policy observation
+            # continuity (history buffer, _last_action unchanged).
+            self._reset_mocap_reference_state()
+        else:
+            # First entry from IDLE or recovery from DAMPING: hard reset.
+            self._reset_policy_state()
+
         self._mocap_reentry_armed = prev_mode == RobotMode.MOCAP
 
         self.mode = RobotMode.STANDING
@@ -588,7 +596,10 @@ class Sim2RealController:
         self._fixed_reference_pivot_pos_w = None
         self._qpos_interpolator.reset()
         self._qpos_interpolator.start(init_qpos)
-        self._reset_policy_state()
+        # Soft reset: only clear mocap reference state, keep policy history and
+        # _last_action intact so that the TemporalCNN sees a continuous
+        # observation stream across the Standing -> Mocap transition.
+        self._reset_mocap_reference_state()
         self._mocap_reentry_armed = False
 
         self.mode = RobotMode.MOCAP
@@ -774,6 +785,19 @@ class Sim2RealController:
 
     def _reset_policy_state(self) -> None:
         self._last_action = np.zeros(self.num_actions, dtype=np.float32)
+        self._reset_mocap_reference_state()
+        reset_policy = getattr(self.policy, "reset", None)
+        if callable(reset_policy):
+            reset_policy()
+        self.obs_builder.reset()
+
+    def _reset_mocap_reference_state(self) -> None:
+        """Reset mocap-specific reference state without disrupting policy observation continuity.
+
+        Unlike ``_reset_policy_state``, this preserves ``_last_action``, the
+        policy history buffer, and the observation builder state so that the
+        TemporalCNN sees a continuous observation stream across mode switches.
+        """
         if self._reference_timeline is not None:
             self._reference_timeline.clear()
         if self._reference_manager is not None:
@@ -782,10 +806,6 @@ class Sim2RealController:
         self._motion_anchor_lin_vel_smoother.reset()
         self._motion_anchor_ang_vel_smoother.reset()
         self._last_live_packet_seq = -1
-        reset_policy = getattr(self.policy, "reset", None)
-        if callable(reset_policy):
-            reset_policy()
-        self.obs_builder.reset()
 
     @staticmethod
     def _parse_nonnegative_int(value: object, *, field_name: str) -> int:
