@@ -3,7 +3,7 @@
 
 Usage:
     python train_mimic/scripts/train.py \
-        --num_envs 4096 --max_iterations 30000 \
+        --num_envs 4096 --max_iterations 18000 \
         --motion_file data/datasets/twist2_full/train.npz
 
     # Quick verification
@@ -16,6 +16,12 @@ Usage:
         --num_envs 4096 --max_iterations 30000 \
         --motion_file data/datasets/twist2_full/train.npz \
         --wandb_project teleopit
+
+    # Resume for additional iterations
+    python train_mimic/scripts/train.py \
+        --resume logs/rsl_rl/g1_tracking_velcmd_history/<run>/model_12000.pt \
+        --max_iterations 18000 \
+        --motion_file data/datasets/twist2_full/train.npz
 """
 
 from __future__ import annotations
@@ -43,15 +49,30 @@ from train_mimic.tasks.tracking.config.constants import DEFAULT_TRAIN_MOTION_FIL
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train G1 tracking policy (mjlab).")
     parser.add_argument("--num_envs", type=int, default=None)
-    parser.add_argument("--max_iterations", type=int, default=None)
+    parser.add_argument(
+        "--max_iterations",
+        type=int,
+        default=None,
+        help=(
+            "Number of learning iterations to run in this invocation. When resuming from model_N.pt, "
+            "this adds more iterations on top of N."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--wandb_project", type=str, default=None,
                         help="Enable wandb and set project name (default: tensorboard)")
     parser.add_argument("--experiment_name", type=str, default=None)
     parser.add_argument("--motion_file", type=str, default=None,
                         help="NPZ motion file path (single file, use --merge to create one)")
-    parser.add_argument("--resume", type=str, default=None,
-                        help="Path to checkpoint to resume from")
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help=(
+            "Path to checkpoint to resume from. With --resume, --max_iterations means additional "
+            "iterations to run after loading the checkpoint."
+        ),
+    )
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument(
         "--gpu_ids",
@@ -315,6 +336,12 @@ def _run_worker(args: argparse.Namespace) -> None:
         if args.resume is not None:
             print(f"[INFO] Resuming from: {args.resume}")
             runner.load(args.resume)
+            print(
+                f"[INFO] Running {agent_cfg.max_iterations} additional iterations "
+                f"from checkpoint iteration {runner.current_learning_iteration}"
+            )
+        else:
+            print(f"[INFO] Running {agent_cfg.max_iterations} iterations")
 
         runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
     except KeyboardInterrupt:

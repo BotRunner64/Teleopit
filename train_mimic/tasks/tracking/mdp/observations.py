@@ -167,3 +167,34 @@ def robot_body_ori_b_yaw(env: ManagerBasedRlEnv, command_name: str) -> torch.Ten
     )
     mat = matrix_from_quat(ori_b)
     return mat[..., :2].reshape(mat.shape[0], -1)
+
+
+# ---------------------------------------------------------------------------
+# Pure-ref windowed observation term
+# ---------------------------------------------------------------------------
+
+
+def ref_window_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+    """Pure-ref windowed observations: ref_projected_gravity + ref_joint_pos + ref_joint_vel.
+
+    Returns (B, W, 61) — only quantities that depend solely on the reference
+    trajectory (no robot state), suitable for future-frame encoding.
+    """
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    asset = env.scene[command.cfg.entity_name]
+    gravity_w = asset.data.gravity_vec_w  # (B, 3)
+
+    # ref_projected_gravity_b for each window frame: (B, W, 3)
+    win_quat = command.window_anchor_quat_w  # (B, W, 4)
+    B, W, _ = win_quat.shape
+    win_quat_inv = quat_inv(win_quat.reshape(-1, 4)).reshape(B, W, 4)
+    win_proj_grav = quat_apply(
+        win_quat_inv.reshape(-1, 4),
+        gravity_w[:, None, :].expand(B, W, 3).reshape(-1, 3),
+    ).reshape(B, W, 3)
+
+    # ref joint pos/vel: (B, W, 29)
+    win_joint_pos = command.window_joint_pos
+    win_joint_vel = command.window_joint_vel
+
+    return torch.cat([win_proj_grav, win_joint_pos, win_joint_vel], dim=-1)

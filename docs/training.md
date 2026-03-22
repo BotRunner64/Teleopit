@@ -81,6 +81,7 @@ python train_mimic/scripts/train.py             --gpu_ids 0 1 2 3             --
 - `--num_envs` 在多卡模式下表示每张卡的环境数
 - 默认 logger 是 tensorboard；传 `--wandb_project <name>` 才启用 wandb
 - `--motion_file` 必须指向单个 merged NPZ
+- `--max_iterations` 表示追加训练轮数；resume `model_12000.pt` 且传 `--max_iterations 18000` 会训练到 `model_30000.pt`
 - 默认实验名是 `g1_tracking_velcmd_history`
 
 ## 导出 ONNX

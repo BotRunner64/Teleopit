@@ -7,6 +7,7 @@ from train_mimic.tasks.tracking.mdp.commands import (
     _compute_clip_counts,
     _compute_clip_failure_rate,
     _normalize_sampling_probabilities,
+    _validate_legacy_adaptive_config,
 )
 
 
@@ -92,6 +93,16 @@ def test_normalize_sampling_probabilities_raises_on_zero_mass() -> None:
             adaptive_uniform_ratio=0.0,
             bin_count=5,
         )
+
+
+def test_validate_legacy_adaptive_config_rejects_nondefault_kernel_size() -> None:
+    with pytest.raises(ValueError, match="adaptive_kernel_size"):
+        _validate_legacy_adaptive_config(adaptive_kernel_size=3, adaptive_lambda=0.8)
+
+
+def test_validate_legacy_adaptive_config_rejects_nondefault_lambda() -> None:
+    with pytest.raises(ValueError, match="adaptive_lambda"):
+        _validate_legacy_adaptive_config(adaptive_kernel_size=1, adaptive_lambda=0.5)
 
 
 # ---------------------------------------------------------------------------

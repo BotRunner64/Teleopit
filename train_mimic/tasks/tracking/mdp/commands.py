@@ -107,6 +107,20 @@ def _normalize_sampling_probabilities(
     return sampling_probabilities
 
 
+def _validate_legacy_adaptive_config(*, adaptive_kernel_size: int, adaptive_lambda: float) -> None:
+    """Reject legacy adaptive knobs that are no longer implemented."""
+    if adaptive_kernel_size != 1:
+        raise ValueError(
+            "adaptive_kernel_size is not implemented in the restored adaptive sampler. "
+            f"Expected 1, got {adaptive_kernel_size}."
+        )
+    if adaptive_lambda != 0.8:
+        raise ValueError(
+            "adaptive_lambda is not implemented in the restored adaptive sampler. "
+            f"Expected 0.8, got {adaptive_lambda}."
+        )
+
+
 class MotionLib:
     """Clip-aware motion library.
 
@@ -184,6 +198,21 @@ class MotionLib:
         self.num_clips = len(self.clip_starts)
         self.clip_dt = 1.0 / self.clip_fps
         self.clip_duration_s = (self.clip_lengths.float() - 1.0) * self.clip_dt
+
+        # Compute minimum clip length required by the window
+        max_future = max((s for s in self.window_steps if s > 0), default=0)
+        max_history = -min((s for s in self.window_steps if s < 0), default=0)
+        min_clip_length = max_history + 1 + max_future + 1  # +1 for interpolation
+        short_mask = self.clip_lengths < min_clip_length
+        n_short = int(short_mask.sum().item())
+        if n_short > 0:
+            _LOG.warning(
+                "Disabling %d/%d clips shorter than %d frames (window_steps=%s)",
+                n_short, self.num_clips, min_clip_length, list(self.window_steps),
+            )
+            self.clip_weights = self.clip_weights.clone()
+            self.clip_weights[short_mask] = 0.0
+
         file_window_steps = parse_window_steps(data["window_steps"]) if "window_steps" in data else (0,)
         if (
             "clip_sample_starts" in data
@@ -197,15 +226,23 @@ class MotionLib:
                 data["clip_sample_ends"], dtype=torch.long, device=device
             )
         else:
-            clip_sample_starts, clip_sample_ends = compute_clip_sample_ranges(
-                self.clip_lengths.cpu().numpy(),
-                window_steps=self.window_steps,
-            )
+            # Only compute ranges for clips long enough; short ones get dummy [0,1)
+            lengths_np = self.clip_lengths.cpu().numpy()
+            sample_starts = np.zeros(self.num_clips, dtype=np.int64)
+            sample_ends = np.ones(self.num_clips, dtype=np.int64)
+            long_mask = ~short_mask.cpu().numpy()
+            if long_mask.any():
+                s, e = compute_clip_sample_ranges(
+                    lengths_np[long_mask],
+                    window_steps=self.window_steps,
+                )
+                sample_starts[long_mask] = s
+                sample_ends[long_mask] = e
             self.clip_sample_starts = torch.tensor(
-                clip_sample_starts, dtype=torch.long, device=device
+                sample_starts, dtype=torch.long, device=device
             )
             self.clip_sample_ends = torch.tensor(
-                clip_sample_ends, dtype=torch.long, device=device
+                sample_ends, dtype=torch.long, device=device
             )
         self.clip_sample_start_s = self.clip_sample_starts.float() * self.clip_dt
         self.clip_sample_end_s = self.clip_sample_ends.float() * self.clip_dt
@@ -360,6 +397,10 @@ class MotionCommand(CommandTerm):
 
     def __init__(self, cfg: MotionCommandCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
+        _validate_legacy_adaptive_config(
+            adaptive_kernel_size=cfg.adaptive_kernel_size,
+            adaptive_lambda=cfg.adaptive_lambda,
+        )
 
         self.robot: Entity = env.scene[cfg.entity_name]
         self.robot_anchor_body_index = self.robot.body_names.index(
@@ -431,6 +472,21 @@ class MotionCommand(CommandTerm):
         self.metrics["sampling_top1_prob"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["sampling_top1_bin"] = torch.zeros(self.num_envs, device=self.device)
 
+        # Feet standing state (for feet_air_time_ref rewards)
+        if self.cfg.feet_body_names:
+            self._feet_body_indexes = [
+                self.cfg.body_names.index(n) for n in self.cfg.feet_body_names
+            ]
+        else:
+            self._feet_body_indexes = []
+        self.feet_standing = torch.zeros(
+            (self.num_envs, max(len(self._feet_body_indexes), 1)),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        if self._feet_body_indexes:
+            self._update_feet_standing()
+
         # Ghost model created lazily on first visualization
         self._ghost_model: mujoco.MjModel | None = None
         self._ghost_color = np.array(cfg.viz.ghost_color, dtype=np.float32)
@@ -441,6 +497,31 @@ class MotionCommand(CommandTerm):
 
     def _refresh_frame_cache(self) -> None:
         self._cached_frames = self.motion.get_frames(self.motion_ids, self.motion_times)
+        if self.cfg.window_steps != (0,):
+            self._cached_window_frames = self.motion.get_window_frames(
+                self.motion_ids, self.motion_times
+            )
+        else:
+            self._cached_window_frames = {}
+
+    def _update_feet_standing(self) -> None:
+        """Compute feet contact state from reference motion (z + velocity thresholds)."""
+        if not self._feet_body_indexes:
+            return
+        feet_pos_w = self.body_pos_w[:, self._feet_body_indexes]
+        feet_vel_w = self.body_lin_vel_w[:, self._feet_body_indexes]
+        root_vxy = torch.norm(
+            self.body_lin_vel_w[:, 0, :2], dim=-1, keepdim=True
+        ).clamp_min(1.0)
+        feet_vxy = torch.norm(feet_vel_w[..., :2], dim=-1)
+        feet_vz = feet_vel_w[..., 2].abs()
+        feet_z = feet_pos_w[..., 2]
+        standing = (
+            (feet_z < self.cfg.feet_standing_z_threshold)
+            & (feet_vxy < self.cfg.feet_standing_vxy_threshold * root_vxy)
+            & (feet_vz < self.cfg.feet_standing_vz_threshold * root_vxy)
+        )
+        self.feet_standing = standing.float()
 
     # ------------------------------------------------------------------
     # Properties — motion reference (from cached interpolated frames)
@@ -492,6 +573,25 @@ class MotionCommand(CommandTerm):
     @property
     def anchor_ang_vel_w(self) -> torch.Tensor:
         return self._cached_frames["body_ang_vel_w"][:, self.motion_anchor_body_index]
+
+    # ------------------------------------------------------------------
+    # Properties — windowed reference (from cached window frames)
+    # ------------------------------------------------------------------
+
+    @property
+    def window_anchor_quat_w(self) -> torch.Tensor:
+        """(B, W, 4) - ref anchor quaternion at each window step."""
+        return self._cached_window_frames["body_quat_w"][:, :, self.motion_anchor_body_index]
+
+    @property
+    def window_joint_pos(self) -> torch.Tensor:
+        """(B, W, J) - ref joint positions at each window step."""
+        return self._cached_window_frames["joint_pos"]
+
+    @property
+    def window_joint_vel(self) -> torch.Tensor:
+        """(B, W, J) - ref joint velocities at each window step."""
+        return self._cached_window_frames["joint_vel"]
 
     # ------------------------------------------------------------------
     # Properties — robot actual state (unchanged)
@@ -720,6 +820,7 @@ class MotionCommand(CommandTerm):
         self.robot.clear_state(env_ids=env_ids)
 
         self._refresh_body_local_cache()
+        self._update_feet_standing()
 
     def _refresh_body_local_cache(self) -> None:
         """Recompute body targets in the reference anchor's yaw-only local frame."""
@@ -777,6 +878,7 @@ class MotionCommand(CommandTerm):
         )
 
         self._refresh_body_local_cache()
+        self._update_feet_standing()
 
         if self.cfg.sampling_mode == "adaptive":
             # Sync raw counts across ranks for unified statistics
@@ -890,6 +992,10 @@ class MotionCommandCfg(CommandTermCfg):
     adaptive_alpha: float = 0.001
     sampling_mode: Literal["adaptive", "uniform", "start"] = "uniform"
     window_steps: tuple[int, ...] = (0,)
+    feet_body_names: tuple[str, ...] = ()
+    feet_standing_z_threshold: float = 0.18
+    feet_standing_vxy_threshold: float = 0.2
+    feet_standing_vz_threshold: float = 0.15
 
     @dataclass
     class VizCfg:

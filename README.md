@@ -2,7 +2,7 @@
 
 Teleopit 是一个轻量、可扩展、自包含的人形机器人全身遥操作框架。
 
-当前仓库收敛到两条明确主线：
+当前仓库当前支持的训练 / 推理主线如下：
 
 - 默认主线是 `Tracking-Flat-G1-VelCmdHistory`，对应 `velcmd_history` 166D 观测和 dual-input TemporalCNN ONNX（`obs` + `obs_history`）
 - 新增可选主线是 `Tracking-Flat-G1-MotionTrackingDeploy`，它按兄弟仓库 `motion_tracking/sim2real` 的最终部署 policy 语义做了单阶段训练对齐，对应 `motion_tracking_deploy` 1587D 观测和 single-input MLP ONNX（`obs`）
@@ -107,6 +107,11 @@ python train_mimic/scripts/train.py   --task Tracking-Flat-G1-VelCmdHistoryAdapt
 
 python train_mimic/scripts/train.py   --task Tracking-Flat-G1-MotionTrackingDeploy   --motion_file data/datasets/twist2_full/train.npz
 ```
+
+训练 CLI 约定：
+
+- `--max_iterations` 表示这次调用要追加训练多少轮
+- 例如从 `model_12000.pt` resume 且传 `--max_iterations 18000`，训练会继续到 `model_30000.pt`
 
 导出 ONNX：
 

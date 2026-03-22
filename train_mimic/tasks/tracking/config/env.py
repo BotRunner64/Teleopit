@@ -199,6 +199,64 @@ _VELCMD_CRITIC_TERMS: dict[str, ObservationTermCfg] = {
     ),
 }
 
+_PROPRIO_MIXED_ACTOR_TERMS: dict[str, ObservationTermCfg] = {
+    "projected_gravity": ObservationTermCfg(
+        func=mdp.projected_gravity,
+        noise=Unoise(n_min=-0.05, n_max=0.05),
+    ),
+    "base_ang_vel": ObservationTermCfg(
+        func=mdp.builtin_sensor,
+        params={"sensor_name": "robot/imu_ang_vel"},
+        noise=Unoise(n_min=-0.2, n_max=0.2),
+    ),
+    "joint_pos": ObservationTermCfg(
+        func=mdp.joint_pos_rel,
+        noise=Unoise(n_min=-0.01, n_max=0.01),
+        params={"biased": True},
+    ),
+    "joint_vel": ObservationTermCfg(
+        func=mdp.joint_vel_rel,
+        noise=Unoise(n_min=-0.5, n_max=0.5),
+    ),
+    "actions": ObservationTermCfg(func=mdp.last_action),
+    "ref_base_lin_vel_b": ObservationTermCfg(
+        func=mdp.ref_base_lin_vel_b,
+        params={"command_name": "motion"},
+    ),
+    "ref_base_ang_vel_b": ObservationTermCfg(
+        func=mdp.ref_base_ang_vel_b,
+        params={"command_name": "motion"},
+    ),
+    "motion_anchor_ori_b": ObservationTermCfg(
+        func=mdp.motion_anchor_ori_b,
+        params={"command_name": "motion"},
+        noise=Unoise(n_min=-0.05, n_max=0.05),
+    ),
+}
+
+_PROPRIO_MIXED_CRITIC_TERMS: dict[str, ObservationTermCfg] = {
+    "projected_gravity": ObservationTermCfg(func=mdp.projected_gravity),
+    "base_ang_vel": ObservationTermCfg(
+        func=mdp.builtin_sensor,
+        params={"sensor_name": "robot/imu_ang_vel"},
+    ),
+    "joint_pos": ObservationTermCfg(func=mdp.joint_pos_rel),
+    "joint_vel": ObservationTermCfg(func=mdp.joint_vel_rel),
+    "actions": ObservationTermCfg(func=mdp.last_action),
+    "ref_base_lin_vel_b": ObservationTermCfg(
+        func=mdp.ref_base_lin_vel_b,
+        params={"command_name": "motion"},
+    ),
+    "ref_base_ang_vel_b": ObservationTermCfg(
+        func=mdp.ref_base_ang_vel_b,
+        params={"command_name": "motion"},
+    ),
+    "motion_anchor_ori_b": ObservationTermCfg(
+        func=mdp.motion_anchor_ori_b,
+        params={"command_name": "motion"},
+    ),
+}
+
 _MOTION_DEPLOY_ACTOR_TERMS: dict[str, ObservationTermCfg] = {
     "boot_indicator": ObservationTermCfg(func=mdp.motion_tracking_boot_indicator),
     "tracking_command": ObservationTermCfg(
@@ -390,6 +448,285 @@ def make_velcmd_history_adaptive_tracking_env_cfg(
         motion_cmd = cfg.commands["motion"]
         assert isinstance(motion_cmd, MotionCommandCfg)
         motion_cmd.sampling_mode = "adaptive"
+    return cfg
+
+
+def make_velcmd_history_deploy_tracking_env_cfg(
+    *, play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+    """Create VelCmdHistory env with deploy-style joint/regularization rewards and terminations."""
+    cfg = make_velcmd_history_tracking_env_cfg(play=play)
+
+    # --- Sensors: add feet ground contact sensor ---
+    cfg.scene.sensors = (
+        ContactSensorCfg(
+            name=_MOTION_FEET_GROUND_SENSOR,
+            primary=ContactMatch(
+                mode="subtree",
+                pattern=r"^(left_ankle_roll_link|right_ankle_roll_link)$",
+                entity="robot",
+            ),
+            secondary=ContactMatch(mode="body", pattern="terrain"),
+            fields=("found", "force"),
+            reduce="netforce",
+            num_slots=1,
+            track_air_time=True,
+        ),
+        ContactSensorCfg(
+            name="self_collision",
+            primary=ContactMatch(mode="subtree", pattern="pelvis", entity="robot"),
+            secondary=ContactMatch(mode="subtree", pattern="pelvis", entity="robot"),
+            fields=("found", "force"),
+            reduce="none",
+            num_slots=1,
+            history_length=4,
+        ),
+    )
+
+    # --- Command: add feet standing config ---
+    motion_cmd = cfg.commands["motion"]
+    assert isinstance(motion_cmd, MotionCommandCfg)
+    motion_cmd.feet_body_names = _MOTION_FEET_BODY_NAMES
+    motion_cmd.feet_standing_z_threshold = 0.18
+    motion_cmd.feet_standing_vxy_threshold = 0.2
+    motion_cmd.feet_standing_vz_threshold = 0.15
+
+    # --- Rewards: base tracking + joint tracking + deploy regularization ---
+    cfg.rewards = {
+        # Base motion tracking rewards (inherited from tracking_env_cfg)
+        "motion_global_root_pos": RewardTermCfg(
+            func=mdp.motion_global_anchor_position_error_exp,
+            weight=0.5,
+            params={"command_name": "motion", "std": 0.3},
+        ),
+        "motion_global_root_ori": RewardTermCfg(
+            func=mdp.motion_global_anchor_orientation_error_exp,
+            weight=0.5,
+            params={"command_name": "motion", "std": 0.4},
+        ),
+        "motion_body_pos": RewardTermCfg(
+            func=mdp.motion_relative_body_position_error_exp,
+            weight=1.0,
+            params={"command_name": "motion", "std": 0.3},
+        ),
+        "motion_body_ori": RewardTermCfg(
+            func=mdp.motion_relative_body_orientation_error_exp,
+            weight=1.0,
+            params={"command_name": "motion", "std": 0.4},
+        ),
+        "motion_body_lin_vel": RewardTermCfg(
+            func=mdp.motion_global_body_linear_velocity_error_exp,
+            weight=1.0,
+            params={"command_name": "motion", "std": 1.0},
+        ),
+        "motion_body_ang_vel": RewardTermCfg(
+            func=mdp.motion_global_body_angular_velocity_error_exp,
+            weight=1.0,
+            params={"command_name": "motion", "std": 3.14},
+        ),
+        # Joint tracking rewards (new)
+        "joint_pos_tracking": RewardTermCfg(
+            func=mdp.joint_pos_tracking_exp,
+            weight=1.0,
+            params={"command_name": "motion", "std": 0.5},
+        ),
+        "joint_vel_tracking": RewardTermCfg(
+            func=mdp.joint_vel_tracking_exp,
+            weight=0.5,
+            params={"command_name": "motion", "std": 3.0},
+        ),
+        # Regularization rewards (from deploy)
+        "survival": RewardTermCfg(func=mdp.survival, weight=3.0),
+        "joint_vel_l2": RewardTermCfg(
+            func=mdp.joint_vel_l2,
+            weight=-5.0e-4,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))},
+        ),
+        "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-1.0e-2),
+        "feet_air_time_ref": RewardTermCfg(
+            func=mdp.feet_air_time_ref,
+            weight=5.0,
+            params={
+                "sensor_name": _MOTION_FEET_GROUND_SENSOR,
+                "command_name": "motion",
+                "thres": 0.5,
+            },
+        ),
+        "feet_air_time_ref_dense": RewardTermCfg(
+            func=mdp.feet_air_time_ref_dense,
+            weight=1.0,
+            params={
+                "sensor_name": _MOTION_FEET_GROUND_SENSOR,
+                "command_name": "motion",
+                "body_names": _MOTION_FEET_BODY_NAMES,
+                "site_names": _MOTION_FEET_SITE_NAMES,
+                "air_h_low": 0.035,
+                "air_h_high": 0.155,
+                "contact_h_low": 0.035,
+                "contact_h_high": 0.125,
+                "asset_cfg": SceneEntityCfg("robot"),
+            },
+        ),
+        "joint_pos_limits": RewardTermCfg(
+            func=mdp.joint_pos_limits,
+            weight=-1.0,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))},
+        ),
+        "joint_torque_limits": RewardTermCfg(
+            func=mdp.joint_torque_limits,
+            weight=1.0e-2,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
+                "soft_factor": 0.75,
+            },
+        ),
+        "self_collisions": RewardTermCfg(
+            func=mdp.self_collision_cost,
+            weight=-10.0,
+            params={"sensor_name": "self_collision", "force_threshold": 10.0},
+        ),
+    }
+
+    # --- Terminations: tightened thresholds (deploy-style) ---
+    cfg.terminations = {
+        "time_out": TerminationTermCfg(func=mdp.time_out, time_out=True),
+        "anchor_pos": TerminationTermCfg(
+            func=mdp.bad_anchor_pos_z_only,
+            params={"command_name": "motion", "threshold": 0.25},
+        ),
+        "anchor_ori": TerminationTermCfg(
+            func=mdp.bad_anchor_ori,
+            params={
+                "asset_cfg": SceneEntityCfg("robot"),
+                "command_name": "motion",
+                "threshold": 0.5,
+            },
+        ),
+        "ee_body_pos": TerminationTermCfg(
+            func=mdp.bad_motion_body_pos_z_only,
+            params={
+                "command_name": "motion",
+                "threshold": 0.25,
+                "body_names": _MOTION_BODY_Z_TERMINATE_NAMES,
+            },
+        ),
+    }
+
+    return cfg
+
+
+def make_velcmd_ref_window_tracking_env_cfg(
+    *, play: bool = False,
+) -> ManagerBasedRlEnvCfg:
+    """Create the G1 VelCmdRefWindow training env.
+
+    Splits observations into two temporal groups:
+    - History group (past 10 frames): proprio + mixed ref+proprio observations
+    - Reference window group (20 frames): pure-ref observations (no robot state)
+    """
+    cfg = make_tracking_env_cfg()
+
+    cfg.scene.entities = {"robot": get_g1_robot_cfg()}
+    cfg.scene.sensors = (
+        ContactSensorCfg(
+            name="self_collision",
+            primary=ContactMatch(mode="subtree", pattern="pelvis", entity="robot"),
+            secondary=ContactMatch(mode="subtree", pattern="pelvis", entity="robot"),
+            fields=("found", "force"),
+            reduce="none",
+            num_slots=1,
+            history_length=4,
+        ),
+    )
+
+    joint_pos_action = cfg.actions["joint_pos"]
+    assert isinstance(joint_pos_action, JointPositionActionCfg)
+    joint_pos_action.scale = G1_ACTION_SCALE
+
+    motion_cmd = cfg.commands["motion"]
+    assert isinstance(motion_cmd, MotionCommandCfg)
+    motion_cmd.anchor_body_name = "torso_link"
+    motion_cmd.body_names = _TRACKING_BODY_NAMES
+    motion_cmd.motion_file = DEFAULT_TRAIN_MOTION_FILE
+    motion_cmd.sampling_mode = "uniform"
+    # Format: [0, ...future(non-negative), ...history(negative)]
+    motion_cmd.window_steps = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, -1, -2, -3, -4, -5, -6, -7, -8, -9, -10)
+
+    cfg.events["foot_friction"].params[
+        "asset_cfg"
+    ].geom_names = r"^(left|right)_foot[1-7]_collision$"
+    cfg.events["base_com"].params["asset_cfg"].body_names = ("torso_link",)
+    cfg.terminations["ee_body_pos"].params["body_names"] = (
+        "left_ankle_roll_link",
+        "right_ankle_roll_link",
+        "left_wrist_yaw_link",
+        "right_wrist_yaw_link",
+    )
+    cfg.terminations["anchor_pos"].params["threshold"] = 0.4
+    cfg.terminations["anchor_ori"].params["threshold"] = 1.0
+    cfg.terminations["ee_body_pos"].params["threshold"] = 0.4
+    cfg.viewer.body_name = "torso_link"
+    cfg.episode_length_s = 10.0
+    if cfg.sim.njmax < 500:
+        cfg.sim.njmax = 500
+
+    # Actor: proprio + mixed ref+proprio terms (history group)
+    cfg.observations["actor"] = ObservationGroupCfg(
+        terms=deepcopy(_PROPRIO_MIXED_ACTOR_TERMS),
+        concatenate_terms=True,
+        enable_corruption=True,
+    )
+
+    # Critic: proprio + mixed ref+proprio terms (no noise)
+    cfg.observations["critic"] = ObservationGroupCfg(
+        terms=deepcopy(_PROPRIO_MIXED_CRITIC_TERMS),
+        concatenate_terms=True,
+        enable_corruption=False,
+    )
+
+    # History groups: deepcopy of actor/critic terms with history_length=10
+    cfg.observations["actor_history"] = ObservationGroupCfg(
+        terms=deepcopy(_PROPRIO_MIXED_ACTOR_TERMS),
+        concatenate_terms=True,
+        enable_corruption=True,
+        history_length=10,
+        flatten_history_dim=False,
+    )
+    cfg.observations["critic_history"] = ObservationGroupCfg(
+        terms=deepcopy(_PROPRIO_MIXED_CRITIC_TERMS),
+        concatenate_terms=True,
+        enable_corruption=False,
+        history_length=10,
+        flatten_history_dim=False,
+    )
+
+    # Ref window groups: pure-ref windowed observations (3D output directly)
+    cfg.observations["actor_ref_window"] = ObservationGroupCfg(
+        terms={
+            "ref_window_b": ObservationTermCfg(
+                func=mdp.ref_window_b,
+                params={"command_name": "motion"},
+            ),
+        },
+        concatenate_terms=True,
+        enable_corruption=False,
+    )
+    cfg.observations["critic_ref_window"] = ObservationGroupCfg(
+        terms={
+            "ref_window_b": ObservationTermCfg(
+                func=mdp.ref_window_b,
+                params={"command_name": "motion"},
+            ),
+        },
+        concatenate_terms=True,
+        enable_corruption=False,
+    )
+
+    if play:
+        _apply_play_mode_overrides(cfg)
+        cfg.observations["actor_history"].enable_corruption = False
+        cfg.observations["critic_history"].enable_corruption = False
+
     return cfg
 
 

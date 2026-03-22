@@ -36,6 +36,24 @@ def survival(env: ManagerBasedRlEnv) -> torch.Tensor:
     return torch.ones(env.num_envs, dtype=torch.float32, device=env.device)
 
 
+def joint_pos_tracking_exp(
+    env: ManagerBasedRlEnv, command_name: str, std: float
+) -> torch.Tensor:
+    """Joint position tracking reward using MotionCommand interface."""
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    error = torch.mean(torch.abs(command.joint_pos - command.robot_joint_pos), dim=-1)
+    return torch.exp(-error / std**2)
+
+
+def joint_vel_tracking_exp(
+    env: ManagerBasedRlEnv, command_name: str, std: float
+) -> torch.Tensor:
+    """Joint velocity tracking reward using MotionCommand interface."""
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    error = torch.mean(torch.abs(command.joint_vel - command.robot_joint_vel), dim=-1)
+    return torch.exp(-error / std**2)
+
+
 def motion_global_anchor_position_error_exp(
     env: ManagerBasedRlEnv, command_name: str, std: float
 ) -> torch.Tensor:
