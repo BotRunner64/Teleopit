@@ -24,7 +24,7 @@ MIN_FRAMES_AT_TARGET = 22  # preprocess.min_frames in YAML spec
 MIN_FRAMES_AT_SOURCE = MIN_FRAMES_AT_TARGET * (SEED_FPS // TARGET_FPS)  # 88
 
 DEFAULT_INPUT = "data/SEED/seed_metadata_v003.csv"
-DEFAULT_OUTPUT = "data/SEED/seed_metadata_v003_3h.csv"
+DEFAULT_OUTPUT = "train_mimic/data/seed/seed_metadata_v003_3h.csv"
 
 
 def parse_args() -> argparse.Namespace:
