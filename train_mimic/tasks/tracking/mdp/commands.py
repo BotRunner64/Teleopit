@@ -128,9 +128,10 @@ class MotionLib:
     (``clip_starts``, ``clip_lengths``, ``clip_fps``, ``clip_weights``).  Falls
     back to single-clip mode when the metadata keys are absent (legacy format).
 
-    Motion data is kept on CPU (numpy arrays) to avoid GPU OOM on large
-    datasets.  Only the small per-batch interpolated frames are transferred to
-    GPU each step (~6 MB for 4096 envs, negligible vs PCIe bandwidth).
+    Motion data is stored as GPU tensors for fast gather+lerp interpolation.
+    All indexing, lerp, and slerp run entirely on device with zero CPU
+    round-trips.  Numpy arrays are kept alongside for external consumers
+    (e.g. runner checkpoint buffers).
     """
 
     def __init__(
@@ -170,6 +171,14 @@ class MotionLib:
         )[:, body_idx_np]
 
         self.time_step_total = self._joint_pos.shape[0]
+
+        # GPU tensors for fast gather+lerp interpolation (zero CPU round-trips).
+        self._joint_pos_t = torch.from_numpy(self._joint_pos).to(device)
+        self._joint_vel_t = torch.from_numpy(self._joint_vel).to(device)
+        self._body_pos_w_t = torch.from_numpy(self._body_pos_w).to(device)
+        self._body_quat_w_t = torch.from_numpy(self._body_quat_w).to(device)
+        self._body_lin_vel_w_t = torch.from_numpy(self._body_lin_vel_w).to(device)
+        self._body_ang_vel_w_t = torch.from_numpy(self._body_ang_vel_w).to(device)
 
         # --- clip-aware metadata (small — lives on GPU for sampling) ---
         if "clip_starts" in data:
@@ -284,7 +293,7 @@ class MotionLib:
         motion_ids: torch.Tensor,
         motion_times: torch.Tensor,
         steps: tuple[int, ...],
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         fps = self.clip_fps[motion_ids]
         starts = self.clip_starts[motion_ids]
         lengths = self.clip_lengths[motion_ids]
@@ -305,15 +314,15 @@ class MotionLib:
         frame_i0 = torch.clamp(frame_i0, min=zero, max=max_frame)
         frame_i1 = torch.clamp(frame_i1, min=zero, max=max_frame)
 
-        idx0 = starts[:, None] + frame_i0
-        idx1 = starts[:, None] + frame_i1
+        idx0 = (starts[:, None] + frame_i0).reshape(-1)
+        idx1 = (starts[:, None] + frame_i1).reshape(-1)
         window = len(steps)
-        return (
-            idx0.cpu().numpy().reshape(-1),
-            idx1.cpu().numpy().reshape(-1),
-            alpha.cpu().numpy().reshape(-1),
-            window,
-        )
+        return idx0, idx1, alpha.reshape(-1), window
+
+    _ALL_KEYS = frozenset((
+        "joint_pos", "joint_vel",
+        "body_pos_w", "body_quat_w", "body_lin_vel_w", "body_ang_vel_w",
+    ))
 
     def get_window_frames(
         self,
@@ -321,50 +330,70 @@ class MotionLib:
         motion_times: torch.Tensor,
         *,
         window_steps: tuple[int, ...] | list[int] | None = None,
+        keys: frozenset[str] | None = None,
+        body_indices: list[int] | None = None,
     ) -> dict[str, torch.Tensor]:
+        """Interpolate motion frames for a batch of (motion_id, time) pairs.
+
+        All indexing, lerp, and slerp run entirely on device.
+
+        Args:
+            keys: If given, only compute these arrays (skip the rest).
+            body_indices: If given, only index these bodies for body_* arrays.
+                This dramatically reduces slerp cost when only the anchor
+                body is needed.
+        """
         steps = parse_window_steps(self.window_steps if window_steps is None else window_steps)
-        idx0_np, idx1_np, alpha_np, window = self._compute_interpolation_state(
+        idx0, idx1, alpha, window = self._compute_interpolation_state(
             motion_ids,
             motion_times,
             steps,
         )
         batch = motion_ids.shape[0]
+        want = self._ALL_KEYS if keys is None else keys
 
         result: dict[str, torch.Tensor] = {}
-        a1 = alpha_np[:, None]
-        for key, arr in (("joint_pos", self._joint_pos), ("joint_vel", self._joint_vel)):
-            v0, v1 = arr[idx0_np], arr[idx1_np]
-            interp = v0 + a1 * (v1 - v0)
-            result[key] = torch.from_numpy(interp.reshape(batch, window, -1)).to(
-                self._device,
-                non_blocking=True,
-            )
 
-        a2 = alpha_np[:, None, None]
-        for key, arr in (
-            ("body_pos_w", self._body_pos_w),
-            ("body_lin_vel_w", self._body_lin_vel_w),
-            ("body_ang_vel_w", self._body_ang_vel_w),
+        # joint_pos, joint_vel: (T, D) → GPU gather + lerp
+        a1 = alpha[:, None]
+        for key, arr_t in (("joint_pos", self._joint_pos_t), ("joint_vel", self._joint_vel_t)):
+            if key not in want:
+                continue
+            v0, v1 = arr_t[idx0], arr_t[idx1]
+            result[key] = (v0 + a1 * (v1 - v0)).reshape(batch, window, -1)
+
+        # body arrays: (T, B, D) — GPU gather + lerp, optionally pre-slice bodies
+        a2 = alpha[:, None, None]
+        for key, arr_t in (
+            ("body_pos_w", self._body_pos_w_t),
+            ("body_lin_vel_w", self._body_lin_vel_w_t),
+            ("body_ang_vel_w", self._body_ang_vel_w_t),
         ):
-            v0, v1 = arr[idx0_np], arr[idx1_np]
+            if key not in want:
+                continue
+            if body_indices is not None:
+                v0, v1 = arr_t[idx0][:, body_indices], arr_t[idx1][:, body_indices]
+            else:
+                v0, v1 = arr_t[idx0], arr_t[idx1]
             interp = v0 + a2 * (v1 - v0)
-            result[key] = torch.from_numpy(interp.reshape(batch, window, *interp.shape[1:])).to(
-                self._device,
-                non_blocking=True,
-            )
+            result[key] = interp.reshape(batch, window, *interp.shape[1:])
 
-        q0 = torch.from_numpy(np.ascontiguousarray(self._body_quat_w[idx0_np]))
-        q1 = torch.from_numpy(np.ascontiguousarray(self._body_quat_w[idx1_np]))
-        alpha_t = torch.from_numpy(alpha_np)
-        nb = q0.shape[1]
-        q0_flat = q0.reshape(batch * window * nb, 4)
-        q1_flat = q1.reshape(batch * window * nb, 4)
-        alpha_flat = alpha_t.unsqueeze(-1).expand(batch * window, nb).reshape(batch * window * nb)
-        result["body_quat_w"] = (
-            _batched_quat_slerp(q0_flat, q1_flat, alpha_flat)
-            .reshape(batch, window, nb, 4)
-            .to(self._device, non_blocking=True)
-        )
+        # body_quat_w: GPU slerp, optionally pre-slice bodies
+        if "body_quat_w" in want:
+            if body_indices is not None:
+                q0 = self._body_quat_w_t[idx0][:, body_indices]
+                q1 = self._body_quat_w_t[idx1][:, body_indices]
+            else:
+                q0 = self._body_quat_w_t[idx0]
+                q1 = self._body_quat_w_t[idx1]
+            nb = q0.shape[1]
+            q0_flat = q0.reshape(-1, 4)
+            q1_flat = q1.reshape(-1, 4)
+            alpha_flat = alpha.unsqueeze(-1).expand(batch * window, nb).reshape(-1)
+            result["body_quat_w"] = (
+                _batched_quat_slerp(q0_flat, q1_flat, alpha_flat)
+                .reshape(batch, window, nb, 4)
+            )
         return result
 
     # ------------------------------------------------------------------
@@ -377,9 +406,7 @@ class MotionLib:
         """Look up interpolated motion state for ``(motion_id, time)`` pairs.
 
         Handles time wrapping (loop) and sub-frame linear / slerp interpolation.
-        Frame indices are computed on GPU (where motion_ids / motion_times
-        live), then transferred to CPU for numpy-based indexing and
-        interpolation.  The small interpolated result is sent back to GPU.
+        All computation (indexing, lerp, slerp) runs on GPU.
         """
         windowed = self.get_window_frames(motion_ids, motion_times, window_steps=(0,))
         return {
@@ -495,11 +522,16 @@ class MotionCommand(CommandTerm):
     # Frame cache
     # ------------------------------------------------------------------
 
+    # Keys needed by window_* properties (ref_window_b observation).
+    _WINDOW_KEYS = frozenset(("joint_pos", "joint_vel", "body_quat_w"))
+
     def _refresh_frame_cache(self) -> None:
         self._cached_frames = self.motion.get_frames(self.motion_ids, self.motion_times)
         if self.cfg.window_steps != (0,):
             self._cached_window_frames = self.motion.get_window_frames(
-                self.motion_ids, self.motion_times
+                self.motion_ids, self.motion_times,
+                keys=self._WINDOW_KEYS,
+                body_indices=[self.motion_anchor_body_index],
             )
         else:
             self._cached_window_frames = {}
@@ -581,7 +613,8 @@ class MotionCommand(CommandTerm):
     @property
     def window_anchor_quat_w(self) -> torch.Tensor:
         """(B, W, 4) - ref anchor quaternion at each window step."""
-        return self._cached_window_frames["body_quat_w"][:, :, self.motion_anchor_body_index]
+        # Window frames are fetched with body_indices=[anchor], so body dim is 0.
+        return self._cached_window_frames["body_quat_w"][:, :, 0]
 
     @property
     def window_joint_pos(self) -> torch.Tensor:
