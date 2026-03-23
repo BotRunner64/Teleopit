@@ -451,10 +451,10 @@ def make_velcmd_history_adaptive_tracking_env_cfg(
     return cfg
 
 
-def make_velcmd_history_deploy_tracking_env_cfg(
+def make_velcmd_history_regular_tracking_env_cfg(
     *, play: bool = False,
 ) -> ManagerBasedRlEnvCfg:
-    """Create VelCmdHistory env with deploy-style joint/regularization rewards and terminations."""
+    """Create VelCmdHistory env with regular-style feet rewards and terminations."""
     cfg = make_velcmd_history_tracking_env_cfg(play=play)
 
     # --- Sensors: add feet ground contact sensor ---
@@ -543,28 +543,35 @@ def make_velcmd_history_deploy_tracking_env_cfg(
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))},
         ),
         "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-1.0e-2),
-        "feet_air_time_ref": RewardTermCfg(
-            func=mdp.feet_air_time_ref,
+        "feet_air_time": RewardTermCfg(
+            func=mdp.feet_air_time,
             weight=5.0,
             params={
                 "sensor_name": _MOTION_FEET_GROUND_SENSOR,
                 "command_name": "motion",
-                "thres": 0.5,
+                "air_time_target": 0.5,
             },
         ),
-        "feet_air_time_ref_dense": RewardTermCfg(
-            func=mdp.feet_air_time_ref_dense,
-            weight=1.0,
+        "feet_stumble": RewardTermCfg(
+            func=mdp.feet_stumble,
+            weight=-1.25,
+            params={"sensor_name": _MOTION_FEET_GROUND_SENSOR},
+        ),
+        "feet_contact_forces": RewardTermCfg(
+            func=mdp.feet_contact_forces,
+            weight=-5e-4,
             params={
                 "sensor_name": _MOTION_FEET_GROUND_SENSOR,
-                "command_name": "motion",
-                "body_names": _MOTION_FEET_BODY_NAMES,
-                "site_names": _MOTION_FEET_SITE_NAMES,
-                "air_h_low": 0.035,
-                "air_h_high": 0.155,
-                "contact_h_low": 0.035,
-                "contact_h_high": 0.125,
+                "max_contact_force": 350.0,
+            },
+        ),
+        "feet_slip": RewardTermCfg(
+            func=mdp.feet_slip,
+            weight=-0.1,
+            params={
+                "sensor_name": _MOTION_FEET_GROUND_SENSOR,
                 "asset_cfg": SceneEntityCfg("robot"),
+                "body_names": _MOTION_FEET_BODY_NAMES,
             },
         ),
         "joint_pos_limits": RewardTermCfg(

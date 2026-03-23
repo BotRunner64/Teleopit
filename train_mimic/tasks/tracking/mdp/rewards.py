@@ -365,3 +365,143 @@ class feet_air_time_ref_dense:
         ).clamp(0.0, 1.0)
         penalty = torch.where(both_contact, -contact_ratio, penalty)
         return penalty.mean(dim=1)
+
+
+# ---------------------------------------------------------------------------
+# TWIST2-style feet rewards (adapted to mjlab API)
+# ---------------------------------------------------------------------------
+
+
+class feet_air_time:
+    """Reward feet air time matching a target duration (TWIST2-style).
+
+    Accumulates air time per foot; on first contact, rewards
+    ``(air_time - target).clamp(max=0)`` so that too-short air phases are
+    penalised. Only active when the reference root XY speed > 0.05 m/s.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+        self.sensor_name = str(cfg.params["sensor_name"])
+        self.command_name = str(cfg.params["command_name"])
+        self.air_time_target = float(cfg.params.get("air_time_target", 0.5))
+        self.feet_air_time = torch.zeros(
+            (env.num_envs, 0), dtype=torch.float32, device=env.device
+        )
+        self._last_contacts = torch.zeros(
+            (env.num_envs, 0), dtype=torch.bool, device=env.device
+        )
+
+    def reset(self, env_ids: torch.Tensor | slice | None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self.feet_air_time[env_ids] = 0.0
+        self._last_contacts[env_ids] = False
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        sensor_name: str,
+        command_name: str,
+        air_time_target: float = 0.5,
+    ) -> torch.Tensor:
+        del sensor_name, command_name, air_time_target
+        sensor: ContactSensor = env.scene[self.sensor_name]
+        data = sensor.data
+        if data.force is None:
+            raise RuntimeError(f"Contact sensor '{self.sensor_name}' must expose 'force'")
+        contact = data.force[..., 2].abs() > 5.0  # [B, N]  — TWIST2: fz > 5N
+
+        # Lazy init on first call (shape unknown at __init__)
+        if self.feet_air_time.shape != contact.shape:
+            self.feet_air_time = torch.zeros_like(contact, dtype=torch.float32)
+            self._last_contacts = torch.zeros_like(contact, dtype=torch.bool)
+
+        # contact_filt = contact OR last_contacts (same as TWIST2)
+        contact_filt = contact | self._last_contacts
+        self._last_contacts = contact
+
+        first_contact = (self.feet_air_time > 0.0) & contact_filt
+
+        self.feet_air_time += env.step_dt
+        air_time = (self.feet_air_time - self.air_time_target) * first_contact.float()
+        air_time = air_time.clamp(max=0.0)
+        self.feet_air_time *= ~contact_filt
+
+        reward = air_time.sum(dim=1)
+
+        # Gate by reference root XY speed > 0.05
+        command = cast(MotionCommand, env.command_manager.get_term(self.command_name))
+        ref_root_vxy = torch.norm(command.body_lin_vel_w[:, 0, :2], dim=-1)
+        reward *= (ref_root_vxy > 0.05).float()
+
+        return reward
+
+
+def feet_stumble(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+) -> torch.Tensor:
+    """Penalise stumbling: lateral contact force > 4x vertical (TWIST2-style)."""
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        raise RuntimeError(f"Contact sensor '{sensor_name}' must expose 'force'")
+    force = data.force  # [B, N, 3]
+    lateral = torch.norm(force[..., :2], dim=-1)  # [B, N]
+    vertical = torch.abs(force[..., 2])  # [B, N]
+    stumble = torch.any(lateral > 4.0 * vertical, dim=1)
+    return stumble.float()
+
+
+def feet_contact_forces(
+    env: ManagerBasedRlEnv,
+    sensor_name: str,
+    max_contact_force: float = 350.0,
+) -> torch.Tensor:
+    """Penalise excessive vertical contact forces (TWIST2-style).
+
+    Computes L2 norm of vertical forces across all feet, then penalises the
+    excess above *max_contact_force*.  This matches TWIST2's implementation
+    where two feet at 300 N each (norm ≈ 424 N) would trigger a penalty.
+    """
+    sensor: ContactSensor = env.scene[sensor_name]
+    data = sensor.data
+    if data.force is None:
+        raise RuntimeError(f"Contact sensor '{sensor_name}' must expose 'force'")
+    fz = data.force[..., 2]  # [B, N]
+    fz_norm = torch.norm(fz, dim=-1)  # [B]
+    excess = (fz_norm - max_contact_force).clamp(min=0.0)
+    return excess
+
+
+class feet_slip:
+    """Penalise horizontal foot velocity while in contact (TWIST2-style)."""
+
+    def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
+        asset_cfg = cast(SceneEntityCfg, cfg.params.get("asset_cfg", _DEFAULT_ASSET_CFG))
+        self.asset: Entity = env.scene[asset_cfg.name]
+        body_names = cast(list[str], cfg.params["body_names"])
+        body_ids, _ = self.asset.find_bodies(body_names, preserve_order=True)
+        self._body_ids = torch.tensor(body_ids, device=env.device, dtype=torch.long)
+        self.sensor_name = str(cfg.params["sensor_name"])
+
+    def __call__(
+        self,
+        env: ManagerBasedRlEnv,
+        sensor_name: str,
+        body_names: tuple[str, ...],
+        asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+    ) -> torch.Tensor:
+        del sensor_name, body_names, asset_cfg
+        sensor: ContactSensor = env.scene[self.sensor_name]
+        data = sensor.data
+        if data.force is None:
+            raise RuntimeError(f"Contact sensor '{self.sensor_name}' must expose 'force'")
+        contact = (data.force[..., 2].abs() > 5.0).float()  # [B, N]  — TWIST2: fz > 5N
+
+        feet_vel_xy = self.asset.data.body_link_lin_vel_w.index_select(
+            1, self._body_ids
+        )[..., :2]  # [B, N, 2]
+        speed_xy = torch.norm(feet_vel_xy, dim=-1)  # [B, N]
+        slip = torch.sqrt(speed_xy) * contact
+        return slip.sum(dim=1)

@@ -8,9 +8,9 @@ from train_mimic.app import DEFAULT_TASK
 from train_mimic.tasks.tracking.config.constants import (
     VELCMD_HISTORY_ADAPTIVE_EXPERIMENT_NAME,
     VELCMD_HISTORY_ADAPTIVE_TASK,
-    VELCMD_HISTORY_DEPLOY_EXPERIMENT_NAME,
-    VELCMD_HISTORY_DEPLOY_TASK,
     VELCMD_HISTORY_EXPERIMENT_NAME,
+    VELCMD_HISTORY_REGULAR_EXPERIMENT_NAME,
+    VELCMD_HISTORY_REGULAR_TASK,
     VELCMD_HISTORY_TASK,
     VELCMD_REF_WINDOW_EXPERIMENT_NAME,
     VELCMD_REF_WINDOW_TASK,
@@ -94,12 +94,12 @@ def test_velcmd_ref_window_task_is_registered() -> None:
     assert load_runner_cls(VELCMD_REF_WINDOW_TASK) is MotionTrackingOnPolicyRunner
 
 
-def test_velcmd_history_deploy_task_is_registered() -> None:
+def test_velcmd_history_regular_task_is_registered() -> None:
     import mjlab.tasks  # noqa: F401
     import train_mimic.tasks  # noqa: F401
     from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 
-    env_cfg = load_env_cfg(VELCMD_HISTORY_DEPLOY_TASK)
+    env_cfg = load_env_cfg(VELCMD_HISTORY_REGULAR_TASK)
 
     assert env_cfg.commands["motion"].feet_body_names == (
         "left_ankle_roll_link",
@@ -107,12 +107,15 @@ def test_velcmd_history_deploy_task_is_registered() -> None:
     )
     assert "joint_pos_tracking" in env_cfg.rewards
     assert "joint_vel_tracking" in env_cfg.rewards
-    assert "feet_air_time_ref" in env_cfg.rewards
+    assert "feet_air_time" in env_cfg.rewards
+    assert "feet_stumble" in env_cfg.rewards
+    assert "feet_contact_forces" in env_cfg.rewards
+    assert "feet_slip" in env_cfg.rewards
     assert "joint_torque_limits" in env_cfg.rewards
-    assert load_rl_cfg(VELCMD_HISTORY_DEPLOY_TASK).experiment_name == (
-        VELCMD_HISTORY_DEPLOY_EXPERIMENT_NAME
+    assert load_rl_cfg(VELCMD_HISTORY_REGULAR_TASK).experiment_name == (
+        VELCMD_HISTORY_REGULAR_EXPERIMENT_NAME
     )
-    assert load_runner_cls(VELCMD_HISTORY_DEPLOY_TASK) is MotionTrackingOnPolicyRunner
+    assert load_runner_cls(VELCMD_HISTORY_REGULAR_TASK) is MotionTrackingOnPolicyRunner
 
 
 def test_removed_task_variants_are_not_registered() -> None:

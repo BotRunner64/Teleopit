@@ -4,7 +4,7 @@ from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 
 from train_mimic.tasks.tracking.config.constants import (
     MOTION_TRACKING_DEPLOY_EXPERIMENT_NAME,
-    VELCMD_HISTORY_DEPLOY_EXPERIMENT_NAME,
+    VELCMD_HISTORY_REGULAR_EXPERIMENT_NAME,
     VELCMD_HISTORY_EXPERIMENT_NAME,
     VELCMD_REF_WINDOW_EXPERIMENT_NAME,
 )
@@ -132,10 +132,10 @@ def make_velcmd_ref_window_tracking_ppo_runner_cfg(
     )
 
 
-def make_velcmd_history_deploy_tracking_ppo_runner_cfg(
-    experiment_name: str = VELCMD_HISTORY_DEPLOY_EXPERIMENT_NAME,
+def make_velcmd_history_regular_tracking_ppo_runner_cfg(
+    experiment_name: str = VELCMD_HISTORY_REGULAR_EXPERIMENT_NAME,
 ) -> RslRlOnPolicyRunnerCfg:
-    """Create RL runner configuration for VelCmdHistoryDeploy."""
+    """Create RL runner configuration for VelCmdHistoryRegular."""
     return _make_temporal_runner_cfg(experiment_name)
 
 
