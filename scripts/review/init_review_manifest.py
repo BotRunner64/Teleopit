@@ -59,7 +59,7 @@ def main() -> None:
 
     # Read manifest_resolved.csv
     # Columns: clip_id, source, file_rel, num_frames, fps, resolved_split, resolved_npz_path,
-    # weight, clip_index, sample_start, sample_end, window_steps
+    # weight, clip_index
     rows: list[ReviewRow] = []
     with manifest_path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -73,9 +73,6 @@ def main() -> None:
             print(f"ERROR: manifest missing columns: {missing}", file=sys.stderr)
             sys.exit(1)
         has_clip_index = "clip_index" in reader.fieldnames
-        has_sample_start = "sample_start" in reader.fieldnames
-        has_sample_end = "sample_end" in reader.fieldnames
-        has_window_steps = "window_steps" in reader.fieldnames
 
         for idx, raw in enumerate(reader, start=2):
             clip_id = raw["clip_id"].strip()
@@ -87,9 +84,6 @@ def main() -> None:
             resolved_split = raw["resolved_split"].strip()
             weight = float(raw["weight"])
             clip_index = int(raw["clip_index"]) if has_clip_index else -1
-            sample_start = int(raw["sample_start"]) if has_sample_start else 0
-            sample_end = int(raw["sample_end"]) if has_sample_end else 0
-            window_steps = raw["window_steps"].strip() if has_window_steps else "[0]"
             duration_s = num_frames / fps if fps > 0 else 0.0
 
             rows.append(
@@ -104,9 +98,6 @@ def main() -> None:
                     duration_s=duration_s,
                     weight=weight,
                     clip_index=clip_index,
-                    sample_start=sample_start,
-                    sample_end=sample_end,
-                    window_steps=window_steps,
                 )
             )
 

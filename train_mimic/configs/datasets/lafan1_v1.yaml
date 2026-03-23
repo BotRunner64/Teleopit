@@ -5,8 +5,6 @@ hash_salt: ""
 preprocess:
   normalize_root_xy: true
   ground_align: clip_min_foot
-window:
-  reference_steps: [0]
 sources:
   - name: lafan1_v1
     type: bvh

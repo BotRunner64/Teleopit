@@ -13,7 +13,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import ast
 import csv
 import sys
 from pathlib import Path
@@ -27,19 +26,9 @@ from train_mimic.data.dataset_lib import (
     extract_clip_arrays,
     merge_clip_dicts,
     merge_npz_files,
-    parse_window_steps,
     utc_now_iso,
     write_json,
 )
-
-
-def _parse_manifest_window_steps(raw: str | None) -> tuple[int, ...]:
-    if raw is None:
-        return (0,)
-    text = str(raw).strip()
-    if text == "":
-        return (0,)
-    return parse_window_steps(ast.literal_eval(text))
 
 
 def main() -> None:
@@ -75,14 +64,11 @@ def main() -> None:
 
     # Read filtered manifest
     # Columns: clip_id, source, file_rel, num_frames, fps, resolved_split, resolved_npz_path,
-    # weight, clip_index, sample_start, sample_end, window_steps
+    # weight, clip_index
     rows = []
     with manifest_path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         has_clip_index = "clip_index" in (reader.fieldnames or [])
-        has_sample_start = "sample_start" in (reader.fieldnames or [])
-        has_sample_end = "sample_end" in (reader.fieldnames or [])
-        has_window_steps = "window_steps" in (reader.fieldnames or [])
         for idx, raw in enumerate(reader, start=2):
             rows.append({
                 "clip_id": raw["clip_id"].strip(),
@@ -94,9 +80,6 @@ def main() -> None:
                 "resolved_npz_path": raw["resolved_npz_path"].strip(),
                 "weight": float(raw["weight"]),
                 "clip_index": int(raw["clip_index"]) if has_clip_index else -1,
-                "sample_start": int(raw["sample_start"]) if has_sample_start else 0,
-                "sample_end": int(raw["sample_end"]) if has_sample_end else 0,
-                "window_steps": _parse_manifest_window_steps(raw.get("window_steps") if has_window_steps else None),
                 "line_no": idx,
             })
 
@@ -142,15 +125,6 @@ def main() -> None:
     train_rows = [r for r in rows if r["resolved_split"] == "train"]
     val_rows = [r for r in rows if r["resolved_split"] == "val"]
 
-    dataset_window_steps = sorted({tuple(r["window_steps"]) for r in rows})
-    if len(dataset_window_steps) > 1:
-        print(
-            f"ERROR: filtered manifest contains inconsistent window_steps values: {dataset_window_steps}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    window_steps = dataset_window_steps[0] if dataset_window_steps else (0,)
-
     if not train_rows:
         print("ERROR: no train clips in filtered manifest", file=sys.stderr)
         sys.exit(1)
@@ -192,7 +166,7 @@ def main() -> None:
             weights_list = [r["weight"] for r in split_rows]
             stats = merge_clip_dicts(
                 clip_dicts, out,
-                target_fps=args.target_fps, weights=weights_list, window_steps=window_steps,
+                target_fps=args.target_fps, weights=weights_list,
             )
         else:
             # Legacy per-clip NPZ files — use file-based merge
@@ -200,7 +174,7 @@ def main() -> None:
             weights_list = [r["weight"] for r in split_rows]
             stats = merge_npz_files(
                 files, out,
-                target_fps=args.target_fps, weights=weights_list, window_steps=window_steps,
+                target_fps=args.target_fps, weights=weights_list,
             )
 
         print(f"  {split_name}.npz: {stats['frames']} frames, {stats['duration_s'] / 60:.1f} min")
@@ -219,7 +193,6 @@ def main() -> None:
         "source_manifest": str(manifest_path),
         "output_dir": str(output_dir),
         "target_fps": args.target_fps,
-        "window": {"reference_steps": list(window_steps)},
         "clip_counts": {
             "total": len(rows),
             "train": len(train_rows),

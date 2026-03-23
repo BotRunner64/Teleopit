@@ -88,13 +88,11 @@ def main() -> None:
         writer.writerow([
             "clip_id", "source", "file_rel", "num_frames", "fps",
             "resolved_split", "resolved_npz_path", "weight", "clip_index",
-            "sample_start", "sample_end", "window_steps",
         ])
         for r in sorted(kept_rows, key=lambda x: x.clip_id):
             writer.writerow([
                 r.clip_id, r.source, r.file_rel, r.num_frames, r.fps,
                 r.resolved_split, r.resolved_npz_path, r.weight, r.clip_index,
-                r.sample_start, r.sample_end, r.window_steps,
             ])
 
     # Write summary JSON

@@ -35,9 +35,6 @@ def _write_manifest(path: Path) -> None:
                 "resolved_npz_path",
                 "weight",
                 "clip_index",
-                "sample_start",
-                "sample_end",
-                "window_steps",
             ]
         )
         writer.writerow(
@@ -51,9 +48,6 @@ def _write_manifest(path: Path) -> None:
                 "/tmp/placeholder_train.npz",
                 2.5,
                 -1,
-                1,
-                3,
-                "[0, 2, -1]",
             ]
         )
         writer.writerow(
@@ -67,9 +61,6 @@ def _write_manifest(path: Path) -> None:
                 "/tmp/placeholder_val.npz",
                 0.75,
                 -1,
-                1,
-                4,
-                "[0, 2, -1]",
             ]
         )
 
@@ -142,9 +133,6 @@ def test_export_reviewed_manifest_preserves_weight_and_filters_keep(
                 fps=24,
                 duration_s=4 / 24,
                 weight=2.5,
-                sample_start=1,
-                sample_end=3,
-                window_steps="[0, 2, -1]",
                 decision="keep",
             ),
             ReviewRow(
@@ -157,9 +145,6 @@ def test_export_reviewed_manifest_preserves_weight_and_filters_keep(
                 fps=30,
                 duration_s=5 / 30,
                 weight=0.75,
-                sample_start=1,
-                sample_end=4,
-                window_steps="[0, 2, -1]",
                 decision="drop",
             ),
         ],
@@ -188,9 +173,6 @@ def test_export_reviewed_manifest_preserves_weight_and_filters_keep(
     assert len(rows) == 1
     assert rows[0]["clip_id"] == "src:clip_train"
     assert float(rows[0]["weight"]) == 2.5
-    assert int(rows[0]["sample_start"]) == 1
-    assert int(rows[0]["sample_end"]) == 3
-    assert rows[0]["window_steps"] == "[0, 2, -1]"
 
 
 def test_build_dataset_from_review_resamples_mixed_fps_and_preserves_weights(
@@ -218,9 +200,6 @@ def test_build_dataset_from_review_resamples_mixed_fps_and_preserves_weights(
                 "resolved_npz_path",
                 "weight",
                 "clip_index",
-                "sample_start",
-                "sample_end",
-                "window_steps",
             ]
         )
         writer.writerow(
@@ -234,9 +213,6 @@ def test_build_dataset_from_review_resamples_mixed_fps_and_preserves_weights(
                 str(train_npz),
                 2.5,
                 -1,
-                1,
-                2,
-                "[0, 2, -1]",
             ]
         )
         writer.writerow(
@@ -250,9 +226,6 @@ def test_build_dataset_from_review_resamples_mixed_fps_and_preserves_weights(
                 str(val_npz),
                 0.75,
                 -1,
-                1,
-                3,
-                "[0, 2, -1]",
             ]
         )
 
@@ -279,11 +252,9 @@ def test_build_dataset_from_review_resamples_mixed_fps_and_preserves_weights(
     assert int(val["fps"]) == 30
     assert train["clip_weights"].tolist() == [2.5]
     assert val["clip_weights"].tolist() == [0.75]
-    assert train["window_steps"].tolist() == [0, 2, -1]
-    assert val["window_steps"].tolist() == [0, 2, -1]
 
 
-def test_init_review_manifest_preserves_window_metadata(tmp_path: Path, monkeypatch) -> None:
+def test_init_review_manifest_preserves_weight_metadata(tmp_path: Path, monkeypatch) -> None:
     manifest_path = tmp_path / "manifest_resolved.csv"
     review_path = tmp_path / "review_state.csv"
     _write_manifest(manifest_path)
@@ -305,6 +276,5 @@ def test_init_review_manifest_preserves_window_metadata(tmp_path: Path, monkeypa
     init_review_manifest.main()
 
     rows = load_review_state(review_path)
-    assert rows[0].sample_start == 1
-    assert rows[0].sample_end == 3
-    assert rows[0].window_steps == "[0, 2, -1]"
+    assert rows[0].weight == 2.5
+    assert rows[1].weight == 0.75

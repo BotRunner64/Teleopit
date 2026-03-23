@@ -16,12 +16,10 @@ import yaml
 import numpy as np
 
 from train_mimic.data.dataset_lib import (
-    compute_clip_sample_ranges,
     hash_split,
     inspect_clip_dict,
     inspect_npz,
     merge_npz_files,
-    parse_window_steps,
     resample_along_time,
     utc_now_iso,
     write_json,
@@ -94,15 +92,6 @@ class DatasetSpec:
     hash_salt: str
     sources: list[DatasetSourceSpec]
     preprocess: DatasetPreprocessSpec = field(default_factory=DatasetPreprocessSpec)
-    window_steps: tuple[int, ...] = (0,)
-
-
-@dataclass(frozen=True)
-class DatasetWindowSpec:
-    reference_steps: tuple[int, ...] = (0,)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"reference_steps": list(self.reference_steps)}
 
 
 @dataclass(frozen=True)
@@ -116,9 +105,6 @@ class DatasetClipRow:
     resolved_npz_path: str
     weight: float = 1.0
     clip_index: int = -1  # index into merged NPZ clip_starts/clip_lengths; -1 = standalone clip
-    sample_start: int = 0
-    sample_end: int = 0
-    window_steps: tuple[int, ...] = (0,)
 
 
 @dataclass(frozen=True)
@@ -207,15 +193,6 @@ def _load_preprocess_spec(raw: object, spec_path: Path) -> DatasetPreprocessSpec
     return validate_preprocess_spec(spec)
 
 
-def _load_window_spec(raw: object, spec_path: Path) -> DatasetWindowSpec:
-    if raw is None:
-        return DatasetWindowSpec()
-    if not isinstance(raw, dict):
-        raise ValueError(f"dataset spec window must be a mapping: {spec_path}")
-    reference_steps = parse_window_steps(raw.get("reference_steps"))
-    return DatasetWindowSpec(reference_steps=reference_steps)
-
-
 def load_dataset_spec(path: str | Path) -> DatasetSpec:
     spec_path = Path(path).expanduser().resolve()
     if not spec_path.is_file():
@@ -238,7 +215,6 @@ def load_dataset_spec(path: str | Path) -> DatasetSpec:
 
     hash_salt = str(payload.get("hash_salt", ""))
     preprocess = _load_preprocess_spec(payload.get("preprocess"), spec_path)
-    window = _load_window_spec(payload.get("window"), spec_path)
     raw_sources = payload.get("sources")
     if not isinstance(raw_sources, list) or not raw_sources:
         raise ValueError(f"dataset spec must define a non-empty sources list: {spec_path}")
@@ -308,7 +284,6 @@ def load_dataset_spec(path: str | Path) -> DatasetSpec:
         hash_salt=hash_salt,
         sources=sources,
         preprocess=preprocess,
-        window_steps=window.reference_steps,
     )
 
 
@@ -725,10 +700,6 @@ def collect_clip_rows(spec: DatasetSpec, *, paths: DatasetPaths) -> list[Dataset
         for npz_path in npz_files:
             meta = inspect_npz(npz_path)
             rel_under_source = npz_path.relative_to(source_dir).with_suffix("").as_posix()
-            sample_start_arr, sample_end_arr = compute_clip_sample_ranges(
-                np.asarray([meta.num_frames], dtype=np.int64),
-                window_steps=spec.window_steps,
-            )
             rows.append(
                 DatasetClipRow(
                     clip_id=f"{source.name}:{rel_under_source}",
@@ -739,9 +710,6 @@ def collect_clip_rows(spec: DatasetSpec, *, paths: DatasetPaths) -> list[Dataset
                     resolved_split="",
                     resolved_npz_path=str(npz_path),
                     weight=source.weight,
-                    sample_start=int(sample_start_arr[0]),
-                    sample_end=int(sample_end_arr[0]),
-                    window_steps=spec.window_steps,
                 )
             )
     return assign_splits(rows, spec.val_percent, spec.hash_salt)
@@ -761,9 +729,6 @@ def assign_splits(rows: list[DatasetClipRow], val_percent: int, hash_salt: str) 
             resolved_split=hash_split(row.clip_id, val_percent, hash_salt),
             resolved_npz_path=row.resolved_npz_path,
             weight=row.weight,
-            sample_start=row.sample_start,
-            sample_end=row.sample_end,
-            window_steps=row.window_steps,
         )
         for row in rows
     ]
@@ -792,9 +757,6 @@ def assign_splits(rows: list[DatasetClipRow], val_percent: int, hash_salt: str) 
                 resolved_split=split,
                 resolved_npz_path=row.resolved_npz_path,
                 weight=row.weight,
-                sample_start=row.sample_start,
-                sample_end=row.sample_end,
-                window_steps=row.window_steps,
             )
         )
     return adjusted
@@ -848,9 +810,6 @@ def write_manifest_resolved(rows: list[DatasetClipRow], dataset_dir: Path) -> Pa
                 "resolved_npz_path",
                 "weight",
                 "clip_index",
-                "sample_start",
-                "sample_end",
-                "window_steps",
             ]
         )
         for row in sorted(rows, key=lambda item: item.clip_id):
@@ -865,9 +824,6 @@ def write_manifest_resolved(rows: list[DatasetClipRow], dataset_dir: Path) -> Pa
                     row.resolved_npz_path,
                     row.weight,
                     row.clip_index,
-                    row.sample_start,
-                    row.sample_end,
-                    list(row.window_steps),
                 ]
             )
     return out_path
@@ -894,7 +850,6 @@ def _batch_convert_chunk(
     output_path: str,
     label: str,
     preprocess: DatasetPreprocessSpec,
-    window_steps: tuple[int, ...],
 ) -> dict[str, Any]:
     """Worker: convert a batch of PKL/seed_csv files and write one merged chunk NPZ.
 
@@ -989,13 +944,6 @@ def _batch_convert_chunk(
     merged["clip_lengths"] = clip_lengths_arr
     merged["clip_fps"] = np.full(kept, target_fps, dtype=np.int64)
     merged["clip_weights"] = np.array(clip_weights, dtype=np.float64)
-    sample_starts, sample_ends = compute_clip_sample_ranges(
-        clip_lengths_arr,
-        window_steps=window_steps,
-    )
-    merged["window_steps"] = np.asarray(parse_window_steps(window_steps), dtype=np.int64)
-    merged["clip_sample_starts"] = sample_starts
-    merged["clip_sample_ends"] = sample_ends
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     np.savez(output_path, **merged)
@@ -1020,8 +968,6 @@ def _batch_convert_chunk(
 def _merge_chunk_files(
     chunk_paths: list[Path],
     output_path: Path,
-    *,
-    window_steps: tuple[int, ...],
 ) -> dict[str, Any]:
     """Merge pre-merged chunk NPZ files into a single output."""
     acc: dict[str, list[np.ndarray]] = {k: [] for k in _ARRAY_KEYS}
@@ -1054,13 +1000,6 @@ def _merge_chunk_files(
     merged["clip_lengths"] = clip_lengths
     merged["clip_fps"] = np.concatenate(all_clip_fps)
     merged["clip_weights"] = np.concatenate(all_clip_weights)
-    sample_starts, sample_ends = compute_clip_sample_ranges(
-        clip_lengths,
-        window_steps=window_steps,
-    )
-    merged["window_steps"] = np.asarray(parse_window_steps(window_steps), dtype=np.int64)
-    merged["clip_sample_starts"] = sample_starts
-    merged["clip_sample_ends"] = sample_ends
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(output_path, **merged)
@@ -1084,7 +1023,6 @@ def _batch_convert_split(
     jobs: int,
     split_name: str,
     preprocess: DatasetPreprocessSpec,
-    window_steps: tuple[int, ...],
 ) -> dict[str, Any]:
     """Convert clips for one split using parallel chunk workers."""
     if not clips:
@@ -1096,7 +1034,7 @@ def _batch_convert_split(
 
     if num_workers <= 1:
         stats = _batch_convert_chunk(
-            file_paths, weights, target_fps, str(output_path), split_name, preprocess, window_steps,
+            file_paths, weights, target_fps, str(output_path), split_name, preprocess,
         )
         if int(stats["clips"]) <= 0:
             raise ValueError(f"no valid clips remain for split {split_name} after preprocessing")
@@ -1104,7 +1042,7 @@ def _batch_convert_split(
 
     # Split into chunks, one per worker
     chunk_size = (len(clips) + num_workers - 1) // num_workers
-    chunk_args: list[tuple[list[str], list[float], int, str, str, DatasetPreprocessSpec, tuple[int, ...]]] = []
+    chunk_args: list[tuple[list[str], list[float], int, str, str, DatasetPreprocessSpec]] = []
     for i in range(num_workers):
         start = i * chunk_size
         end = min(start + chunk_size, len(clips))
@@ -1118,7 +1056,6 @@ def _batch_convert_split(
             chunk_out,
             f"{split_name}[{i}]",
             preprocess,
-            window_steps,
         ))
 
     chunk_results: dict[str, dict[str, Any]] = {}
@@ -1146,7 +1083,6 @@ def _batch_convert_split(
             str(output_path),
             split_name,
             preprocess,
-            window_steps,
         )
 
     # Merge chunk files into final output
@@ -1163,7 +1099,7 @@ def _batch_convert_split(
         if int(chunk_stat.get("clips", 0)) > 0:
             kept_file_paths.extend(list(chunk_stat.get("kept_file_paths", [])))
     print(f"[MERGE] {split_name}: merging {len(chunk_paths)} chunks ...", flush=True)
-    stats = _merge_chunk_files(chunk_paths, output_path, window_steps=window_steps)
+    stats = _merge_chunk_files(chunk_paths, output_path)
     stats["kept_file_paths"] = kept_file_paths
     for p in [Path(args[3]) for args in chunk_args]:
         p.unlink(missing_ok=True)
@@ -1237,7 +1173,6 @@ def _build_dataset_batch(
         jobs,
         "train",
         spec.preprocess,
-        spec.window_steps,
     )
     val_stats = _batch_convert_split(
         [(e[0], e[3]) for e in val_entries],
@@ -1246,7 +1181,6 @@ def _build_dataset_batch(
         jobs,
         "val",
         spec.preprocess,
-        spec.window_steps,
     )
 
     train_kept_paths = list(train_stats.pop("kept_file_paths", []))
@@ -1255,10 +1189,6 @@ def _build_dataset_batch(
     # 3. Read back per-clip frame counts from merged NPZ files
     train_clip_lengths = np.load(train_out, allow_pickle=True)["clip_lengths"]
     val_clip_lengths = np.load(val_out, allow_pickle=True)["clip_lengths"]
-    train_sample_starts = np.load(train_out, allow_pickle=True)["clip_sample_starts"]
-    train_sample_ends = np.load(train_out, allow_pickle=True)["clip_sample_ends"]
-    val_sample_starts = np.load(val_out, allow_pickle=True)["clip_sample_starts"]
-    val_sample_ends = np.load(val_out, allow_pickle=True)["clip_sample_ends"]
 
     if len(train_kept_paths) != len(train_clip_lengths):
         raise ValueError(
@@ -1289,11 +1219,9 @@ def _build_dataset_batch(
 
     # 4. Write manifest with correct num_frames and clip_index for kept clips only
     rows: list[DatasetClipRow] = []
-    for clip_index, (entry, num_frames, sample_start, sample_end) in enumerate(zip(
+    for clip_index, (entry, num_frames) in enumerate(zip(
         train_kept_entries,
         train_clip_lengths,
-        train_sample_starts,
-        train_sample_ends,
     )):
         path, clip_id, source, weight, split = entry
         rows.append(DatasetClipRow(
@@ -1306,15 +1234,10 @@ def _build_dataset_batch(
             resolved_npz_path=str(train_out),
             weight=weight,
             clip_index=clip_index,
-            sample_start=int(sample_start),
-            sample_end=int(sample_end),
-            window_steps=spec.window_steps,
         ))
-    for clip_index, (entry, num_frames, sample_start, sample_end) in enumerate(zip(
+    for clip_index, (entry, num_frames) in enumerate(zip(
         val_kept_entries,
         val_clip_lengths,
-        val_sample_starts,
-        val_sample_ends,
     )):
         path, clip_id, source, weight, split = entry
         rows.append(DatasetClipRow(
@@ -1327,9 +1250,6 @@ def _build_dataset_batch(
             resolved_npz_path=str(val_out),
             weight=weight,
             clip_index=clip_index,
-            sample_start=int(sample_start),
-            sample_end=int(sample_end),
-            window_steps=spec.window_steps,
         ))
     manifest_path = write_manifest_resolved(rows, paths.dataset_dir)
 
@@ -1348,7 +1268,6 @@ def _build_dataset_batch(
         "skip_fk_check": bool(skip_fk_check),
         "jobs": int(jobs),
         "preprocess": spec.preprocess.to_dict(),
-        "window": {"reference_steps": list(spec.window_steps)},
         "sources": [asdict(source) for source in spec.sources],
         "splits": {
             "train": train_stats,
@@ -1412,14 +1331,12 @@ def build_dataset_from_spec(
         train_out,
         target_fps=spec.target_fps,
         weights=train_weights,
-        window_steps=spec.window_steps,
     )
     val_stats = merge_npz_files(
         val_files,
         val_out,
         target_fps=spec.target_fps,
         weights=val_weights,
-        window_steps=spec.window_steps,
     )
 
     manifest_path = write_manifest_resolved(rows, paths.dataset_dir)
@@ -1437,7 +1354,6 @@ def build_dataset_from_spec(
         "skip_fk_check": bool(skip_fk_check),
         "jobs": int(jobs),
         "preprocess": spec.preprocess.to_dict(),
-        "window": {"reference_steps": list(spec.window_steps)},
         "sources": [asdict(source) for source in spec.sources],
         "splits": {
             "train": train_stats,

@@ -5,8 +5,6 @@ hash_salt: ""
 preprocess:
   normalize_root_xy: true
   ground_align: clip_min_foot
-window:
-  reference_steps: [0]
 sources:
   - name: OMOMO_g1_GMR
     type: pkl

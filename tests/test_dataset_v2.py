@@ -111,11 +111,10 @@ sources:
     assert spec.sources[0].weight == 2.5
     assert spec.sources[1].type == "bvh"
     assert spec.sources[1].bvh_format == "lafan1"
-    assert spec.window_steps == (0,)
 
 
-def test_load_dataset_spec_parses_preprocess_and_window(tmp_path: Path) -> None:
-    spec_path = tmp_path / "windowed.yaml"
+def test_load_dataset_spec_parses_preprocess(tmp_path: Path) -> None:
+    spec_path = tmp_path / "preprocessed.yaml"
     spec_path.write_text(
         f"""name: demo
 target_fps: 30
@@ -125,8 +124,6 @@ preprocess:
   normalize_root_xy: true
   ground_align: clip_min_foot
   min_frames: 10
-window:
-  reference_steps: [0, 2, -1]
 sources:
   - name: clips
     type: npz
@@ -139,7 +136,6 @@ sources:
     assert spec.preprocess.normalize_root_xy is True
     assert spec.preprocess.ground_align == "clip_min_foot"
     assert spec.preprocess.min_frames == 10
-    assert spec.window_steps == (0, 2, -1)
 
 
 def test_load_dataset_spec_rejects_bvh_without_format(tmp_path: Path) -> None:
@@ -293,12 +289,10 @@ def test_build_dataset_from_spec_writes_single_directory_outputs(tmp_path: Path)
     assert (dataset_dir / "manifest_resolved.csv").is_file()
     assert (dataset_dir / "build_info.json").is_file()
     assert report["clip_counts"]["total"] == 2
-    assert report["window"]["reference_steps"] == [0]
 
     train_data = np.load(dataset_dir / "train.npz", allow_pickle=True)
-    assert np.array_equal(train_data["window_steps"], np.asarray([0], dtype=np.int64))
-    assert "clip_sample_starts" in train_data.files
-    assert "clip_sample_ends" in train_data.files
+    assert "clip_starts" in train_data.files
+    assert "clip_lengths" in train_data.files
 
 
 def test_convert_source_to_npz_clips_applies_preprocess(tmp_path: Path) -> None:
@@ -367,7 +361,7 @@ def test_merge_clip_dicts_rejects_non_positive_target_fps(tmp_path: Path) -> Non
         merge_clip_dicts([clip_dict], tmp_path / "merged.npz", target_fps=0)
 
 
-def test_merge_clip_dicts_accepts_single_frame_current_only_window(tmp_path: Path) -> None:
+def test_merge_clip_dicts_accepts_single_frame_clip(tmp_path: Path) -> None:
     clip_path = tmp_path / "clip_single.npz"
     _write_npz_from_pkl(clip_path)
     clip_dict = dict(np.load(clip_path, allow_pickle=True))
@@ -381,12 +375,10 @@ def test_merge_clip_dicts_accepts_single_frame_current_only_window(tmp_path: Pat
     ]:
         clip_dict[key] = np.asarray(clip_dict[key])[:1]
 
-    merge_clip_dicts([clip_dict], tmp_path / "merged_single.npz", window_steps=(0,))
+    merge_clip_dicts([clip_dict], tmp_path / "merged_single.npz")
 
     merged = np.load(tmp_path / "merged_single.npz", allow_pickle=True)
     assert merged["clip_lengths"].tolist() == [1]
-    assert merged["clip_sample_starts"].tolist() == [0]
-    assert merged["clip_sample_ends"].tolist() == [1]
 
 
 def test_batch_convert_chunk_preprocess_sees_resampled_target_fps(
@@ -421,7 +413,6 @@ def test_batch_convert_chunk_preprocess_sees_resampled_target_fps(
         str(tmp_path / "merged.npz"),
         "train",
         preprocess=dataset_builder.DatasetPreprocessSpec(),
-        window_steps=(0,),
     )
 
     assert observed_fps == [30]
@@ -475,7 +466,6 @@ def test_batch_convert_chunk_skips_filtered_short_clips(
             ground_align="clip_min_foot",
             min_frames=22,
         ),
-        window_steps=(0, 1, 2, 3, 4, -1, -2, -4, -8, -12, -16),
     )
 
     merged = np.load(tmp_path / "merged.npz", allow_pickle=True)
@@ -531,8 +521,6 @@ def test_build_dataset_batch_manifest_skips_filtered_entries(
         clip_starts = np.zeros(len(lengths), dtype=np.int64)
         if len(lengths) > 1:
             clip_starts[1:] = np.cumsum(clip_lengths[:-1])
-        sample_starts = np.zeros(len(lengths), dtype=np.int64)
-        sample_ends = clip_lengths - 1
         np.savez(
             path,
             fps=30,
@@ -547,13 +535,10 @@ def test_build_dataset_batch_manifest_skips_filtered_entries(
             clip_lengths=clip_lengths,
             clip_fps=np.full(len(lengths), 30, dtype=np.int64),
             clip_weights=np.ones(len(lengths), dtype=np.float64),
-            window_steps=np.asarray([0], dtype=np.int64),
-            clip_sample_starts=sample_starts,
-            clip_sample_ends=sample_ends,
         )
 
-    def _batch_convert_split(clips, target_fps, output_path, jobs, split_name, preprocess, window_steps):
-        _ = clips, target_fps, jobs, preprocess, window_steps
+    def _batch_convert_split(clips, target_fps, output_path, jobs, split_name, preprocess):
+        _ = clips, target_fps, jobs, preprocess
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if split_name == "train":

@@ -1,4 +1,4 @@
-name: seed_v1_smoke
+name: seed_v2_3h
 target_fps: 30
 val_percent: 5
 hash_salt: ""
@@ -7,7 +7,10 @@ preprocess:
   ground_align: clip_min_foot
   min_frames: 22
 sources:
-  - name: seed_smoke
+  - name: seed_3h_sampled
     type: seed_csv
-    input: data/SEED/g1/csv/221118
+    input: data/SEED/g1/csv
+    metadata_csv: data/SEED/seed_metadata_v003_3h.csv
     weight: 1.0
+    filters:
+      is_mirror: [false]

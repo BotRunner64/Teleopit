@@ -6,8 +6,6 @@ preprocess:
   normalize_root_xy: true
   ground_align: clip_min_foot
   min_frames: 22
-window:
-  reference_steps: [0, 1, 2, 3, 4, -1, -2, -4, -8, -12, -16]
 sources:
   - name: seed_full
     type: seed_csv
