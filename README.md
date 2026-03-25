@@ -35,14 +35,6 @@ pip install modelscope
 python scripts/download_assets.py
 ```
 
-也可以只下载部分资源：
-
-```bash
-python scripts/download_assets.py --only ckpt   # 仅 checkpoint
-python scripts/download_assets.py --only data   # 仅训练数据
-python scripts/download_assets.py --only gmr    # 仅 GMR retargeting assets
-python scripts/download_assets.py --only bvh    # 仅示例 BVH
-```
 
 下载内容说明：
 
