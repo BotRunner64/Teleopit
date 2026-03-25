@@ -1,9 +1,10 @@
 <p align="center">
-  <img src="assets/teleopit_logo.jpg" width="160" alt="Teleopit">
+  <img src="assets/teleopit_logo.jpg" width="80" alt="Teleopit">
 </p>
 
 <p align="center">
-  轻量、可扩展的人形机器人全身遥操作框架
+  <h1 align="center">Teleopit</h1>
+  <h3 align="center">轻量、可扩展的人形机器人全身遥操作框架</h3>
 </p>
 
 <p align="center">
@@ -107,3 +108,9 @@ python train_mimic/scripts/save_onnx.py \
 - [数据集](docs/dataset.md)：数据下载与自定义构建
 - [配置说明](docs/configuration.md)：Hydra 配置入口
 - [架构](docs/architecture.md)：系统边界与技术规格
+
+## 更新日志
+
+### v0.1.0 (2025-03-25)
+
+首个公开版本：General-Tracking-G1 全身追踪训练、ONNX sim2sim 推理、Pico 4 VR 遥操作、Unitree G1 真机部署。
