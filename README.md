@@ -28,38 +28,32 @@ pip install -e '.[sim2real]'  # 真机部署
 
 ## 下载模型和数据
 
-从 ModelScope 下载预训练模型和示例数据：
+一键下载所有资源（模型、数据、GMR retargeting assets）：
 
 ```bash
 pip install modelscope
-modelscope download --model BingqianWu/Teleopit --local_dir teleopit-assets
+python scripts/download_assets.py
 ```
 
-将下载的文件放到项目对应位置：
+也可以只下载部分资源：
 
 ```bash
-# checkpoint（推理用）
-cp teleopit-assets/checkpoints/track.onnx .
-
-# 示例 BVH（sim2sim 演示用）
-mkdir -p data/sample_bvh
-cp teleopit-assets/data/sample_bvh/aiming1_subject1.bvh data/sample_bvh/
-
-# 训练数据（shard 目录，可直接传给 --motion_file）
-mkdir -p data/datasets/seed
-cp -r teleopit-assets/data/train data/datasets/seed/train
-cp -r teleopit-assets/data/val data/datasets/seed/val
+python scripts/download_assets.py --only ckpt   # 仅 checkpoint
+python scripts/download_assets.py --only data   # 仅训练数据
+python scripts/download_assets.py --only gmr    # 仅 GMR retargeting assets
+python scripts/download_assets.py --only bvh    # 仅示例 BVH
 ```
 
 下载内容说明：
 
-| 文件 | 用途 |
-|------|------|
-| `checkpoints/track.onnx` | ONNX 推理模型 |
-| `checkpoints/track.pt` | PyTorch checkpoint（resume 训练用） |
-| `data/train/shard_*.npz` | 训练集（shard 格式，~25G 总量） |
-| `data/val/shard_*.npz` | 验证集（~1.4G） |
-| `data/sample_bvh/aiming1_subject1.bvh` | 示例动作文件 |
+| 资源 | 大小 | 用途 |
+|------|------|------|
+| `checkpoints/track.onnx` | 4M | ONNX 推理模型 |
+| `checkpoints/track.pt` | 27M | PyTorch checkpoint（resume 训练用） |
+| `data/train/shard_*.npz` | ~25G | 训练集 |
+| `data/val/shard_*.npz` | ~1.4G | 验证集 |
+| `data/sample_bvh/*.bvh` | 5M | 示例动作文件 |
+| `gmr_assets/` | ~1.2G | GMR retargeting 机器人模型 |
 
 ## Quick Start
 

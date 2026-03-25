@@ -83,3 +83,10 @@ Thumbs.db
 # Hydra runtime output
 .hydra/
 .hydra/
+
+# GMR retargeting assets (downloaded from ModelScope)
+teleopit/retargeting/gmr/assets/
+
+# ModelScope download cache
+data/modelscope_cache/
+data/modelscope_upload/
