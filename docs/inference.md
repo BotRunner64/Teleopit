@@ -1,33 +1,28 @@
 # 推理与运行指南
 
-当前推理主线已经收敛为单一路径：**166D 观测 + 双输入 ONNX policy（`obs` + `obs_history`）**。
-
-这篇文档覆盖离线 sim2sim、UDP 实时 online sim2sim、viewer、录制和离线渲染。
+本文档覆盖离线 sim2sim、UDP 实时 online sim2sim、viewer、录制和离线渲染。配置约束与 FAQ 见 [configuration.md](configuration.md)。
 
 ## 运行前确认
 
-- 已安装核心依赖：`pip install -e .`
-- 已准备由 `train_mimic/scripts/save_onnx.py` 导出的 ONNX policy
-- `controller.policy_path=...` 已显式提供
-- 离线 BVH 运行时请显式传 `input.bvh_file=...`
-
-## 运行约束
-
-- 运行时只接受 166D 双输入 ONNX。
-- 单输入 ONNX、旧 TWIST2 ONNX 和其他观测维度会在启动时直接报错。
-- 观测定义与 ONNX 输入维度不匹配时 fail fast，不会自动 pad/trim。
-- `viewers` 是唯一 viewer 配置入口；旧 `viewer` alias 已移除。
+- 已安装：`pip install -e .`
+- 已准备 ONNX policy（见 [README](../README.md) 下载说明）
+- 命令行需显式提供 `controller.policy_path=...` 和 `input.bvh_file=...`（离线模式）
 
 ## 离线 sim2sim
 
 ```bash
-python scripts/run_sim.py           controller.policy_path=policy.onnx           input.bvh_file=data/lafan1/dance1_subject2.bvh
+python scripts/run_sim.py \
+    controller.policy_path=policy.onnx \
+    input.bvh_file=data/lafan1/dance1_subject2.bvh
 ```
 
 `hc_mocap` 示例：
 
 ```bash
-python scripts/run_sim.py           controller.policy_path=policy.onnx           input.bvh_file=data/hc_mocap/walk.bvh           input.bvh_format=hc_mocap
+python scripts/run_sim.py \
+    controller.policy_path=policy.onnx \
+    input.bvh_file=data/hc_mocap/walk.bvh \
+    input.bvh_format=hc_mocap
 ```
 
 常用 override：
@@ -36,7 +31,10 @@ python scripts/run_sim.py           controller.policy_path=policy.onnx          
 python scripts/run_sim.py controller.policy_path=policy.onnx viewers=none
 python scripts/run_sim.py controller.policy_path=policy.onnx viewers=all
 python scripts/run_sim.py controller.policy_path=policy.onnx 'viewers=[retarget,sim2sim]'
-python scripts/run_sim.py controller.policy_path=policy.onnx +num_steps=5000 +record=true
+python scripts/run_sim.py \
+    controller.policy_path=policy.onnx \
+    +num_steps=5000 \
+    +record=true
 ```
 
 ## UDP 实时 online sim2sim
@@ -52,9 +50,15 @@ python scripts/send_bvh_udp.py --bvh data/hc_mocap/wander.bvh --loop
 常见 override：
 
 ```bash
-python scripts/run_sim.py --config-name online controller.policy_path=policy.onnx input.udp_port=1119
-python scripts/run_sim.py --config-name online controller.policy_path=policy.onnx viewers=none
-python scripts/run_sim.py --config-name online controller.policy_path=policy.onnx num_steps=300
+python scripts/run_sim.py --config-name online \
+    controller.policy_path=policy.onnx \
+    input.udp_port=1119
+python scripts/run_sim.py --config-name online \
+    controller.policy_path=policy.onnx \
+    viewers=none
+python scripts/run_sim.py --config-name online \
+    controller.policy_path=policy.onnx \
+    num_steps=300
 ```
 
 运行时行为：
@@ -83,7 +87,11 @@ python scripts/run_sim.py --config-name online controller.policy_path=policy.onn
 ## 录制
 
 ```bash
-python scripts/run_sim.py           controller.policy_path=policy.onnx           input.bvh_file=data/lafan1/dance1_subject2.bvh           +record=true           recording.output_path=outputs/session.h5
+python scripts/run_sim.py \
+    controller.policy_path=policy.onnx \
+    input.bvh_file=data/lafan1/dance1_subject2.bvh \
+    +record=true \
+    recording.output_path=outputs/session.h5
 ```
 
 录制文件包含：
@@ -99,8 +107,13 @@ python scripts/run_sim.py           controller.policy_path=policy.onnx          
 ## 渲染
 
 ```bash
-MUJOCO_GL=egl python scripts/render_sim.py --bvh data/lafan1/dance1_subject2.bvh --policy policy.onnx
-MUJOCO_GL=egl python scripts/render_sim.py --bvh data/hc_mocap/wander.bvh --format hc_mocap --policy policy.onnx
+MUJOCO_GL=egl python scripts/render_sim.py \
+    --bvh data/lafan1/dance1_subject2.bvh \
+    --policy policy.onnx
+MUJOCO_GL=egl python scripts/render_sim.py \
+    --bvh data/hc_mocap/wander.bvh \
+    --format hc_mocap \
+    --policy policy.onnx
 ```
 
 ## 继续阅读

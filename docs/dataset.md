@@ -1,10 +1,34 @@
-# 数据集构建
+# 数据集
 
-当前训练侧只保留一条正式数据主线：
+## 下载预构建数据集（推荐）
 
-`typed source YAML -> preprocess/filter -> 标准训练 NPZ（train.npz / val.npz）`
+从 ModelScope 下载已处理好的训练数据，可直接用于训练和评估：
 
-用户只需要理解一个命令：
+```bash
+# 下载训练数据
+modelscope download --model BingqianWu/Teleopit --include "data/train/**" --include "data/val/**" --local_dir teleopit-assets
+
+# 放到项目目录
+mkdir -p data/datasets/seed
+cp -r teleopit-assets/data/train data/datasets/seed/train
+cp -r teleopit-assets/data/val data/datasets/seed/val
+```
+
+训练时直接传 shard 目录：
+
+```bash
+python train_mimic/scripts/train.py --motion_file data/datasets/seed/train
+```
+
+如需自定义构建数据集，继续阅读下文。
+
+---
+
+## 自定义构建
+
+数据主线：`typed source YAML -> preprocess/filter -> 标准训练 NPZ`
+
+核心命令：
 
 ```bash
 python train_mimic/scripts/data/build_dataset.py \
@@ -177,13 +201,36 @@ python train_mimic/scripts/data/check_motion_npz_fk.py \
 - `quat_mean < 0.05 rad`
 - `quat_p95 < 0.10 rad`
 
-## 和训练主线的连接
+## 拆分为 shard（用于分发或大文件管理）
 
-构建完成后，训练和评估直接消费：
+如果 merged NPZ 过大（如 >5G），可以拆成多个 shard：
+
+```bash
+python train_mimic/scripts/data/split_shards.py \
+    --input data/datasets/twist2_full/train.npz \
+    --output data/datasets/twist2_full/train_shards \
+    --max_size_gb 2
+```
+
+每个 shard 是自包含的 merged NPZ（含完整 clip metadata），训练时直接传目录：
 
 ```bash
 python train_mimic/scripts/train.py \
+    --motion_file data/datasets/twist2_full/train_shards
+```
+
+## 和训练主线的连接
+
+构建完成后，训练和评估直接消费（支持单文件或 shard 目录）：
+
+```bash
+# 单文件
+python train_mimic/scripts/train.py \
     --motion_file data/datasets/twist2_full/train.npz
+
+# shard 目录
+python train_mimic/scripts/train.py \
+    --motion_file data/datasets/twist2_full/train_shards
 
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \

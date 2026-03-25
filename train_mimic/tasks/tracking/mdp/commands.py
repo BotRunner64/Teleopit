@@ -4,7 +4,8 @@ import copy
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal
 
 import mujoco
 import numpy as np
@@ -121,10 +122,116 @@ def _validate_legacy_adaptive_config(*, adaptive_kernel_size: int, adaptive_lamb
         )
 
 
+def _load_shard_dir(shard_dir: Path) -> dict[str, Any]:
+    """Load and merge all shard NPZ files from a directory.
+
+    Each shard is a self-contained merged NPZ with clip metadata.  This
+    function concatenates motion arrays across shards and rebuilds the
+    clip-level metadata (``clip_starts`` offsets are adjusted).
+    """
+    shard_files = sorted(shard_dir.glob("*.npz"))
+    if not shard_files:
+        raise FileNotFoundError(f"No .npz files found in {shard_dir}")
+
+    _LOG.info("Loading %d shards from %s ...", len(shard_files), shard_dir)
+
+    motion_keys = [
+        "joint_pos", "joint_vel", "body_pos_w", "body_quat_w",
+        "body_lin_vel_w", "body_ang_vel_w",
+    ]
+    arrays: dict[str, list[np.ndarray]] = {k: [] for k in motion_keys}
+    all_clip_lengths: list[np.ndarray] = []
+    all_clip_fps: list[np.ndarray] = []
+    all_clip_weights: list[np.ndarray] = []
+    all_clip_sample_starts: list[np.ndarray] = []
+    all_clip_sample_ends: list[np.ndarray] = []
+    window_steps: np.ndarray | None = None
+    fps = None
+    body_names: np.ndarray | None = None
+
+    for sf in shard_files:
+        d = np.load(sf, allow_pickle=True)
+        for k in motion_keys:
+            arrays[k].append(np.asarray(d[k]))
+
+        # --- validate metadata consistency across shards ---
+        cur_fps = d["fps"]
+        cur_body_names = np.asarray(d["body_names"])
+        if fps is None:
+            fps = cur_fps
+            body_names = cur_body_names
+        else:
+            if int(cur_fps) != int(fps):
+                raise ValueError(
+                    f"Inconsistent fps across shards: {sf} has {int(cur_fps)}, "
+                    f"expected {int(fps)}"
+                )
+            if not np.array_equal(cur_body_names, body_names):
+                raise ValueError(
+                    f"Inconsistent body_names across shards: {sf} differs from first shard"
+                )
+
+        # --- clip metadata (with fallback for legacy single-clip NPZ) ---
+        n_frames = d["joint_pos"].shape[0]
+        if "clip_lengths" in d:
+            shard_clip_lengths = np.asarray(d["clip_lengths"])
+        else:
+            shard_clip_lengths = np.array([n_frames], dtype=np.int64)
+
+        n_clips = len(shard_clip_lengths)
+        all_clip_lengths.append(shard_clip_lengths)
+
+        if "clip_fps" in d:
+            all_clip_fps.append(np.asarray(d["clip_fps"]))
+        else:
+            all_clip_fps.append(np.full(n_clips, int(fps), dtype=np.int64))
+
+        if "clip_weights" in d:
+            all_clip_weights.append(np.asarray(d["clip_weights"]))
+        else:
+            all_clip_weights.append(np.ones(n_clips, dtype=np.float64))
+
+        if "clip_sample_starts" in d:
+            all_clip_sample_starts.append(np.asarray(d["clip_sample_starts"]))
+        if "clip_sample_ends" in d:
+            all_clip_sample_ends.append(np.asarray(d["clip_sample_ends"]))
+        if "window_steps" in d and window_steps is None:
+            window_steps = np.asarray(d["window_steps"])
+
+    merged: dict[str, Any] = {k: np.concatenate(v, axis=0) for k, v in arrays.items()}
+    merged["fps"] = fps
+    merged["body_names"] = body_names
+
+    clip_lengths = np.concatenate(all_clip_lengths)
+    clip_starts = np.zeros(len(clip_lengths), dtype=np.int64)
+    if len(clip_lengths) > 1:
+        clip_starts[1:] = np.cumsum(clip_lengths[:-1])
+    merged["clip_starts"] = clip_starts
+    merged["clip_lengths"] = clip_lengths
+    merged["clip_fps"] = np.concatenate(all_clip_fps)
+    merged["clip_weights"] = np.concatenate(all_clip_weights)
+
+    # Propagate precomputed sample ranges if all shards had them
+    n_total_clips = len(clip_lengths)
+    if all_clip_sample_starts and sum(len(a) for a in all_clip_sample_starts) == n_total_clips:
+        merged["clip_sample_starts"] = np.concatenate(all_clip_sample_starts)
+    if all_clip_sample_ends and sum(len(a) for a in all_clip_sample_ends) == n_total_clips:
+        merged["clip_sample_ends"] = np.concatenate(all_clip_sample_ends)
+    if window_steps is not None:
+        merged["window_steps"] = window_steps
+
+    _LOG.info(
+        "Loaded %d shards: %d clips, %d total frames",
+        len(shard_files), len(clip_lengths), merged["joint_pos"].shape[0],
+    )
+    return merged
+
+
 class MotionLib:
     """Clip-aware motion library.
 
-    Loads a merged NPZ that contains flat motion arrays plus per-clip metadata
+    Loads a merged NPZ (single file) or a directory of shard NPZ files.
+    Each shard/file contains flat motion arrays plus per-clip metadata
     (``clip_starts``, ``clip_lengths``, ``clip_fps``, ``clip_weights``).  Falls
     back to single-clip mode when the metadata keys are absent (legacy format).
 
@@ -144,11 +251,11 @@ class MotionLib:
         self._device = device
         self.window_steps = parse_window_steps(window_steps)
 
-        # .npz is a zip archive — mmap_mode is ignored by np.load for .npz.
-        # We load one array at a time and immediately body-filter + keep only
-        # the numpy result, so the full unfiltered array can be GC'd before
-        # the next one is loaded.
-        data = np.load(motion_file, allow_pickle=True)
+        motion_path = Path(motion_file)
+        if motion_path.is_dir():
+            data = _load_shard_dir(motion_path)
+        else:
+            data = np.load(motion_file, allow_pickle=True)
         body_idx_np = body_indexes.cpu().numpy()
 
         self._joint_pos = np.asarray(data["joint_pos"], dtype=np.float32)  # (T, 29)

@@ -1,127 +1,109 @@
-# Teleopit
+<p align="center">
+  <img src="assets/teleopit_logo.jpg" width="160" alt="Teleopit">
+</p>
 
-Teleopit 是一个轻量、可扩展、自包含的人形机器人全身遥操作框架。
+<p align="center">
+  轻量、可扩展的人形机器人全身遥操作框架
+</p>
 
-训练任务为 `General-Tracking-G1`，对应 `velcmd_history` 166D 观测和 dual-input TemporalCNN ONNX（`obs` + `obs_history`），使用较大的 TemporalCNN actor/critic（1024,512,256,256,128）。
+<p align="center">
+  <a href="#quick-start">Quick Start</a> •
+  <a href="docs/pico4.md">Pico VR 部署</a> •
+  <a href="docs/sim2real.md">真机部署</a> •
+  <a href="docs/training.md">训练</a>
+</p>
 
-## Architecture
+<p align="center">
+  <img src="assets/demo.gif" width="360" alt="Teleopit Demo">
+</p>
 
-```text
-InputProvider (BVH file / UDP realtime / Pico4)
-    -> Retargeter (GMR)
-    -> ObservationBuilder (166D)
-    -> Controller (dual-input TemporalCNN ONNX)
-    -> Robot (MuJoCo sim or Unitree G1)
-```
-
-离线/在线推理由 `teleopit/runtime/` 和 `teleopit/pipeline.py` 装配，真机状态机保留在 `teleopit/sim2real/controller.py`。训练闭环由 `train_mimic/` 提供。
-
-在线 realtime 路径会先把 retarget 后的 `qpos` 写入短时 reference timeline，再按控制时刻从 timeline 采样 reference window。默认配置使用 `reference_steps=[0]`。
-
-Realtime 配置还会先做短暂 warmup，再按 low/high watermark 维持 reference buffer 水位。推理侧的 `motion_joint_vel`、anchor 线速度和角速度也支持 EMA 平滑，入口配置为 `realtime_buffer_warmup_steps`、`realtime_buffer_low_watermark_steps`、`realtime_buffer_high_watermark_steps`、`reference_velocity_smoothing_alpha`、`reference_anchor_velocity_smoothing_alpha`。
-
-## Install
-
-项目要求 Python `3.10+`。
+## 安装
 
 ```bash
-pip install -e .
-pip install -e '.[train]'
-pip install -e '.[sim2real]'
-pip install -e '.[train,sim2real]'
+pip install -e .              # 推理（sim2sim）
+pip install -e '.[train]'     # 训练
+pip install -e '.[sim2real]'  # 真机部署
 ```
 
-运行测试：
+## 下载模型和数据
+
+从 ModelScope 下载预训练模型和示例数据：
 
 ```bash
-pip install -e '.[dev]'
-pytest tests/ -v
+pip install modelscope
+modelscope download --model BingqianWu/Teleopit --local_dir teleopit-assets
 ```
+
+将下载的文件放到项目对应位置：
+
+```bash
+# checkpoint（推理用）
+cp teleopit-assets/checkpoints/track.onnx .
+
+# 示例 BVH（sim2sim 演示用）
+mkdir -p data/sample_bvh
+cp teleopit-assets/data/sample_bvh/aiming1_subject1.bvh data/sample_bvh/
+
+# 训练数据（shard 目录，可直接传给 --motion_file）
+mkdir -p data/datasets/seed
+cp -r teleopit-assets/data/train data/datasets/seed/train
+cp -r teleopit-assets/data/val data/datasets/seed/val
+```
+
+下载内容说明：
+
+| 文件 | 用途 |
+|------|------|
+| `checkpoints/track.onnx` | ONNX 推理模型 |
+| `checkpoints/track.pt` | PyTorch checkpoint（resume 训练用） |
+| `data/train/shard_*.npz` | 训练集（shard 格式，~25G 总量） |
+| `data/val/shard_*.npz` | 验证集（~1.4G） |
+| `data/sample_bvh/aiming1_subject1.bvh` | 示例动作文件 |
 
 ## Quick Start
 
 离线 sim2sim：
 
 ```bash
-python scripts/run_sim.py   controller.policy_path=policy.onnx   input.bvh_file=data/lafan1/dance1_subject2.bvh
+python scripts/run_sim.py \
+    controller.policy_path=track.onnx \
+    input.bvh_file=data/sample_bvh/aiming1_subject1.bvh
 ```
 
-UDP 实时 sim2sim：
+训练（传 shard 目录）：
 
 ```bash
-# Terminal 1
-python scripts/run_sim.py --config-name online controller.policy_path=policy.onnx
-
-# Terminal 2
-python scripts/send_bvh_udp.py --bvh data/hc_mocap/wander.bvh --loop
+python train_mimic/scripts/train.py \
+    --motion_file data/datasets/seed/train \
+    --num_envs 4096 \
+    --max_iterations 30000
 ```
-
-Pico4 sim2sim：
-
-```bash
-python scripts/run_sim.py --config-name pico4_sim controller.policy_path=policy.onnx
-```
-
-G1 sim2real：
-
-```bash
-python scripts/run_sim2real.py controller.policy_path=policy.onnx
-```
-
-训练：
-
-```bash
-python train_mimic/scripts/train.py   --motion_file data/datasets/twist2_full/train.npz
-```
-
-训练 CLI 约定：
-
-- `--max_iterations` 表示这次调用要追加训练多少轮
-- 例如从 `model_12000.pt` resume 且传 `--max_iterations 18000`，训练会继续到 `model_30000.pt`
 
 导出 ONNX：
 
 ```bash
-python train_mimic/scripts/save_onnx.py   --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt   --output policy.onnx   --history_length 10
+python train_mimic/scripts/save_onnx.py \
+    --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
+    --output track.onnx \
+    --history_length 10
 ```
 
-## Supported Surface
+## 更多用法
 
-- 训练 task：`General-Tracking-G1`
-- 推理观测：`velcmd_history`（166D）
-- ONNX 签名：dual-input `obs` + `obs_history`
-- 训练采样模式：`uniform`
-- playback / benchmark 采样模式：`start`
-- 训练 `window_steps=[0]`
-- actor/critic 使用较大的 TemporalCNN 配置（1024,512,256,256,128）
-- realtime / offline reference window 配置入口：`retarget_buffer_enabled`、`retarget_buffer_window_s`、`retarget_buffer_delay_s`、`reference_steps`
+| 场景 | 命令 | 文档 |
+|------|------|------|
+| **Pico 4 VR 遥操作** | `python scripts/run_sim.py --config-name pico4_sim ...` | **[Pico VR 部署](docs/pico4.md)** |
+| **Pico 4 真机部署** | `python scripts/run_sim2real.py --config-name pico4_sim2real ...` | **[Pico VR 部署](docs/pico4.md)** |
+| UDP 实时 sim2sim | `python scripts/run_sim.py --config-name online ...` | [inference.md](docs/inference.md) |
+| G1 真机部署（UDP） | `python scripts/run_sim2real.py ...` | [sim2real.md](docs/sim2real.md) |
+| 训练与导出 | `python train_mimic/scripts/train.py ...` | [training.md](docs/training.md) |
 
+## 文档
 
-## Dataset Flow
-
-训练数据主线是：`typed source YAML -> preprocess/filter -> merged NPZ(train/val)`。
-
-- dataset spec 支持 `preprocess` 段，用于 root xy 归一化、脚底对地和基础过滤
-- dataset spec 支持 `window.reference_steps`，builder 会把有效采样范围写入 merged NPZ
-- `MotionLib` 会按 `window_steps` 约束采样有效中心帧
-- `window_steps=[0]` 保持当前主路径行为
-
-## Constraints
-
-- `controller.policy_path` 必须显式提供，且文件必须存在。
-- `controller.observation_type` 必须与 ONNX 训练语义匹配；不会自动切换，也不会 pad/trim。
-- 离线 BVH 运行必须显式传 `input.bvh_file=...`。
-- viewer 只接受 `viewers` 配置键；旧 `viewer` alias 已移除。
-- Pico4 依赖 `xrobotoolkit_sdk`，不会随 `pip install -e .` 自动安装。
-- sim2sim 默认应使用 `g1_mjlab.xml`；`g1_mocap_29dof.xml` 仅用于运动学可视化。
-
-## Docs
-
-- [`docs/getting-started.md`](docs/getting-started.md)：最短上手路径
-- [`docs/inference.md`](docs/inference.md)：离线/在线推理、viewer、录制、渲染
-- [`docs/training.md`](docs/training.md)：训练、播放、benchmark、导出 ONNX
-- [`docs/sim2real.md`](docs/sim2real.md)：Unitree G1 实机部署与状态机
-- [`docs/dataset.md`](docs/dataset.md)：数据集构建主线
-- [`docs/configuration.md`](docs/configuration.md)：Hydra 配置入口
-- [`docs/architecture.md`](docs/architecture.md)：系统边界和装配关系
-- [`docs/training_troubleshooting.md`](docs/training_troubleshooting.md)：训练问题排查
+- **[Pico VR 部署](docs/pico4.md)**：Pico 4 / Pico 4 Ultra 全身追踪遥操作完整指南
+- [真机部署](docs/sim2real.md)：Unitree G1 部署、状态机、UDP 输入
+- [推理与运行](docs/inference.md)：离线/在线推理、viewer、录制
+- [训练](docs/training.md)：训练、评估、导出 ONNX
+- [数据集](docs/dataset.md)：数据下载与自定义构建
+- [配置说明](docs/configuration.md)：Hydra 配置入口
+- [架构](docs/architecture.md)：系统边界与技术规格

@@ -2,7 +2,7 @@
 
 本文档记录 Teleopit 训练过程中的常见问题及解决方案。
 
-> 入口导航：训练流程看 [`docs/training.md`](training.md)，数据准备看 [`docs/dataset.md`](dataset.md)，项目总入口看 [`docs/getting-started.md`](getting-started.md)。
+> 入口导航：训练流程看 [training.md](training.md)，数据准备看 [dataset.md](dataset.md)，项目总入口看 [README](../README.md)。
 
 > 说明：本文中的 `data/twist2_retarget_*` 路径主要是历史排障样本与旧数据目录名示例，不代表当前推荐的数据管理入口；当前推荐路径是 `train_mimic/scripts/data/build_dataset.py` 生成的 `data/datasets/<dataset>/{train,val}.npz`。
 
@@ -37,7 +37,8 @@
 先检查当前 clip 是否与 FK 一致：
 
 ```bash
-python train_mimic/scripts/data/check_motion_npz_fk.py     --npz data/datasets/<dataset>/clips/<source>/<clip>.npz
+python train_mimic/scripts/data/check_motion_npz_fk.py \
+    --npz data/datasets/<dataset>/clips/<source>/<clip>.npz
 ```
 
 建议判据：
@@ -48,13 +49,19 @@ python train_mimic/scripts/data/check_motion_npz_fk.py     --npz data/datasets/<
 如果检查失败，优先重新生成数据：
 
 ```bash
-python train_mimic/scripts/convert_pkl_to_npz.py     --input data/twist2_retarget_pkl/<source>     --output data/twist2_retarget_npz/<source>     --merge
+python train_mimic/scripts/convert_pkl_to_npz.py \
+    --input data/twist2_retarget_pkl/<source> \
+    --output data/twist2_retarget_npz/<source> \
+    --merge
 ```
 
 然后做一个短训练 smoke test：
 
 ```bash
-python train_mimic/scripts/train.py --num_envs 64 --max_iterations 100 --motion_file data/twist2_retarget_npz/<source>/merged.npz
+python train_mimic/scripts/train.py \
+    --num_envs 64 \
+    --max_iterations 100 \
+    --motion_file data/twist2_retarget_npz/<source>/merged.npz
 ```
 
 预期现象：
@@ -242,7 +249,10 @@ RuntimeError: indices should be either on cpu or on the same device as the index
 3. 如果仍失败，再检查 `/dev/dri/renderD*` 权限与用户组（通常需加入 `video`/`render` 组并重新登录）
 4. 若机器无可用 GPU EGL，可尝试 CPU 渲染后端：
    ```bash
-   MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa python train_mimic/scripts/benchmark.py ... --video
+   MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa \
+       python train_mimic/scripts/benchmark.py \
+       ... \
+       --video
    ```
 
 ---

@@ -85,7 +85,8 @@ target_dof_pos = clip(action, low, high) * action_scale + default_dof_pos
 python scripts/run_sim.py \
   controller.policy_path=policy.onnx \
   input.bvh_file=data/lafan1/dance1_subject2.bvh \
-  policy_hz=50 pd_hz=1000
+  policy_hz=50 \
+  pd_hz=1000
 ```
 
 ### 改 viewer
@@ -93,19 +94,25 @@ python scripts/run_sim.py \
 ```bash
 python scripts/run_sim.py controller.policy_path=policy.onnx viewers=all
 python scripts/run_sim.py controller.policy_path=policy.onnx viewers=none
-python scripts/run_sim.py controller.policy_path=policy.onnx 'viewers=[retarget,sim2sim]'
+python scripts/run_sim.py \
+    controller.policy_path=policy.onnx \
+    'viewers=[retarget,sim2sim]'
 ```
 
 ### 改 UDP 端口
 
 ```bash
-python scripts/run_sim.py --config-name online controller.policy_path=policy.onnx input.udp_port=1119
+python scripts/run_sim.py --config-name online \
+    controller.policy_path=policy.onnx \
+    input.udp_port=1119
 ```
 
 ### 改真机网络接口
 
 ```bash
-python scripts/run_sim2real.py controller.policy_path=policy.onnx real_robot.network_interface=enp3s0
+python scripts/run_sim2real.py \
+    controller.policy_path=policy.onnx \
+    real_robot.network_interface=enp3s0
 ```
 
 ## 设计原则：不做静默修补
@@ -147,7 +154,7 @@ python scripts/run_sim.py controller.policy_path=policy.onnx viewers=none
 
 ## 继续阅读
 
-- 上手导航：[`docs/getting-started.md`](getting-started.md)
+- 上手导航：[README](../README.md)
 - 推理与运行：[`docs/inference.md`](inference.md)
 - 数据集流程：[`docs/dataset.md`](dataset.md)
 - 训练流程：[`docs/training.md`](training.md)
