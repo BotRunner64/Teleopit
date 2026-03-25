@@ -1,4 +1,4 @@
-"""Tests for VelCmdHistory observation helpers and builder."""
+"""Tests for observation helpers and builder."""
 
 from __future__ import annotations
 

@@ -3,7 +3,7 @@
 # Do NOT copy from deploy.yaml (contains known waist_yaw scale error).
 
 num_actions: 29
-# Inference is fixed to the VelCmdHistory 166D observation path.
+# Inference uses the 166D velcmd_history observation path (General-Tracking-G1).
 
 kps: [40.2, 99.1, 40.2, 99.1, 28.5, 28.5,
       40.2, 99.1, 40.2, 99.1, 28.5, 28.5,

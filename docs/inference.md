@@ -1,19 +1,19 @@
 # 推理与运行指南
 
-当前推理主线已经收敛为单一路径：**166D VelCmdHistory 观测 + 双输入 ONNX policy（`obs` + `obs_history`）**。
+当前推理主线已经收敛为单一路径：**166D 观测 + 双输入 ONNX policy（`obs` + `obs_history`）**。
 
 这篇文档覆盖离线 sim2sim、UDP 实时 online sim2sim、viewer、录制和离线渲染。
 
 ## 运行前确认
 
 - 已安装核心依赖：`pip install -e .`
-- 已准备由 `train_mimic/scripts/save_onnx.py` 导出的 VelCmdHistory ONNX
+- 已准备由 `train_mimic/scripts/save_onnx.py` 导出的 ONNX policy
 - `controller.policy_path=...` 已显式提供
 - 离线 BVH 运行时请显式传 `input.bvh_file=...`
 
 ## 运行约束
 
-- 运行时只接受 166D VelCmdHistory 双输入 ONNX。
+- 运行时只接受 166D 双输入 ONNX。
 - 单输入 ONNX、旧 TWIST2 ONNX 和其他观测维度会在启动时直接报错。
 - 观测定义与 ONNX 输入维度不匹配时 fail fast，不会自动 pad/trim。
 - `viewers` 是唯一 viewer 配置入口；旧 `viewer` alias 已移除。

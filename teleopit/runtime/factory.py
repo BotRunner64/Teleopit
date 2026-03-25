@@ -5,10 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from teleopit.controllers.observation import (
-    MotionTrackingObservationBuilder,
-    VelCmdObservationBuilder,
-)
+from teleopit.controllers.observation import VelCmdObservationBuilder
 
 from .common import cfg_get, cfg_set, normalize_path_in_cfg, parse_viewers, require_section
 
@@ -150,11 +147,9 @@ def _build_obs_builder(robot_cfg: Any, controller_cfg: Any, sim_cfg: dict[str, o
     }
     if observation_type == "velcmd_history":
         return VelCmdObservationBuilder(obs_cfg)
-    if observation_type in {"motion_tracking", "motion_tracking_deploy"}:
-        return MotionTrackingObservationBuilder(obs_cfg)
     raise ValueError(
         f"Unsupported controller.observation_type='{observation_type}'. "
-        "Supported values are velcmd_history and motion_tracking_deploy."
+        "Supported value is velcmd_history."
     )
 
 

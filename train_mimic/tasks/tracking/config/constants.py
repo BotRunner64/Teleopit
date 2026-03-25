@@ -1,24 +1,7 @@
 """Public constants for supported tracking tasks."""
 
 DEFAULT_TRAIN_MOTION_FILE = "data/datasets/twist2_full/train.npz"
-VELCMD_HISTORY_TASK = "Tracking-Flat-G1-VelCmdHistory"
-VELCMD_HISTORY_EXPERIMENT_NAME = "g1_tracking_velcmd_history"
-VELCMD_HISTORY_ADAPTIVE_TASK = "Tracking-Flat-G1-VelCmdHistoryAdaptive"
-VELCMD_HISTORY_ADAPTIVE_EXPERIMENT_NAME = "g1_tracking_velcmd_history_adaptive"
-VELCMD_REF_WINDOW_TASK = "Tracking-Flat-G1-VelCmdRefWindow"
-VELCMD_REF_WINDOW_EXPERIMENT_NAME = "g1_tracking_velcmd_ref_window"
-MOTION_TRACKING_DEPLOY_TASK = "Tracking-Flat-G1-MotionTrackingDeploy"
-MOTION_TRACKING_DEPLOY_EXPERIMENT_NAME = "g1_tracking_motion_tracking_deploy"
-VELCMD_HISTORY_REGULAR_TASK = "Tracking-Flat-G1-VelCmdHistoryRegular"
-VELCMD_HISTORY_REGULAR_EXPERIMENT_NAME = "g1_tracking_velcmd_history_regular"
-VELCMD_HISTORY_LARGE_TASK = "Tracking-Flat-G1-VelCmdHistoryLarge"
-VELCMD_HISTORY_LARGE_EXPERIMENT_NAME = "g1_tracking_velcmd_history_large"
+GENERAL_TRACKING_TASK = "General-Tracking-G1"
+GENERAL_TRACKING_EXPERIMENT_NAME = "g1_general_tracking"
 
-SUPPORTED_TASKS = (
-    VELCMD_HISTORY_TASK,
-    VELCMD_HISTORY_ADAPTIVE_TASK,
-    VELCMD_REF_WINDOW_TASK,
-    MOTION_TRACKING_DEPLOY_TASK,
-    VELCMD_HISTORY_REGULAR_TASK,
-    VELCMD_HISTORY_LARGE_TASK,
-)
+SUPPORTED_TASKS = (GENERAL_TRACKING_TASK,)

@@ -19,7 +19,7 @@ Usage:
 
     # Resume for additional iterations
     python train_mimic/scripts/train.py \
-        --resume logs/rsl_rl/g1_tracking_velcmd_history/<run>/model_12000.pt \
+        --resume logs/rsl_rl/g1_general_tracking/<run>/model_12000.pt \
         --max_iterations 18000 \
         --motion_file data/datasets/twist2_full/train.npz
 """

@@ -9,7 +9,7 @@ import pytest
 
 from train_mimic.app import DEFAULT_TASK, validate_checkpoint_path, validate_motion_file
 from train_mimic.scripts import train
-from train_mimic.tasks.tracking.config.rl import make_velcmd_history_tracking_ppo_runner_cfg
+from train_mimic.tasks.tracking.config.rl import make_general_tracking_ppo_runner_cfg
 
 
 class _CudaStub:
@@ -126,7 +126,7 @@ class TestTrainLauncherHelpers:
 
 
 def test_tracking_runner_configs_disable_model_upload() -> None:
-    assert make_velcmd_history_tracking_ppo_runner_cfg().upload_model is False
+    assert make_general_tracking_ppo_runner_cfg().upload_model is False
 
 
 def test_validate_motion_file_rejects_directories(tmp_path: Path) -> None:

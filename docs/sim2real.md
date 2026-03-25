@@ -4,8 +4,8 @@
 
 当前真机路径只支持：
 
-- `Tracking-Flat-G1-VelCmdHistory` 训练得到的策略
-- 166D VelCmdHistory 双输入 ONNX（`obs` + `obs_history`）
+- `General-Tracking-G1` 训练得到的策略
+- 166D 双输入 ONNX（`obs` + `obs_history`）
 
 > 如果你还在熟悉离线/在线推理主路径，先看 [`inference.md`](inference.md)。
 
@@ -100,7 +100,7 @@ python scripts/run_sim2real.py --config-name pico4_sim2real controller.policy_pa
 
 ## 关键约束
 
-- 真机路径只支持 166D VelCmdHistory 双输入 ONNX。
+- 真机路径只支持 166D 双输入 ONNX。
 - `RLPolicyController` 会维护 history buffer，并在 reset 时清空。
 - 真机没有 state-estimation fallback；不接受其他观测定义。
 - `Pico4InputProvider` 的输入空间变换必须以实际 retarget / sim2sim 结果验证。

@@ -183,7 +183,7 @@ actual_video_length = min(video_length, num_eval_steps)
 
 ```bash
 python train_mimic/scripts/benchmark.py \
-    --checkpoint logs/rsl_rl/g1_tracking_velcmd_history/{run_name}/model_30000.pt \
+    --checkpoint logs/rsl_rl/g1_general_tracking/{run_name}/model_30000.pt \
     --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
     --num_envs 1 \
     --num_eval_steps 2000 \

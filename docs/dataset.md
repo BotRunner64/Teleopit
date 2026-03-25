@@ -186,7 +186,7 @@ python train_mimic/scripts/train.py \
     --motion_file data/datasets/twist2_full/train.npz
 
 python train_mimic/scripts/benchmark.py \
-    --checkpoint logs/rsl_rl/g1_tracking_velcmd_history/<run>/model_30000.pt \
+    --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
     --motion_file data/datasets/twist2_full/val.npz \
     --num_envs 1
 ```

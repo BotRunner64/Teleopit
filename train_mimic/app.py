@@ -8,11 +8,11 @@ from typing import Any
 
 from train_mimic.tasks.tracking.config.constants import (
     DEFAULT_TRAIN_MOTION_FILE,
+    GENERAL_TRACKING_TASK,
     SUPPORTED_TASKS,
-    VELCMD_HISTORY_TASK,
 )
 
-DEFAULT_TASK = VELCMD_HISTORY_TASK
+DEFAULT_TASK = GENERAL_TRACKING_TASK
 
 
 def validate_motion_file(motion_file: str) -> None:

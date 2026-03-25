@@ -1,4 +1,4 @@
-"""Integration tests for Sim2RealController VelCmdHistory startup validation."""
+"""Integration tests for Sim2RealController startup validation."""
 from __future__ import annotations
 
 from pathlib import Path

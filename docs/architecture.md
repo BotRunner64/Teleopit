@@ -1,6 +1,6 @@
 # 架构与边界
 
-Teleopit 当前按两条运行主线组织：训练侧支持 `Tracking-Flat-G1-VelCmdHistory`、`Tracking-Flat-G1-VelCmdHistoryAdaptive` 和 `Tracking-Flat-G1-MotionTrackingDeploy`，其中默认推理主线仍是 166D VelCmdHistory 双输入 ONNX。
+Teleopit 当前按两条运行主线组织：训练侧支持 `General-Tracking-G1` 单一任务，推理主线是 166D 双输入 ONNX。
 
 ```text
 configs / scripts
@@ -29,13 +29,13 @@ train_mimic/scripts/data
 - `teleopit/sim2real/controller.py`
   - 真机状态机与控制行为。
 - `teleopit/controllers/observation.py`
-  - 只暴露 `VelCmdObservationBuilder`。
+  - 只暴露 `ObservationBuilder`。
 - `teleopit/controllers/rl_policy.py`
-  - 只接受 166D 双输入 VelCmdHistory ONNX。
+  - 只接受 166D 双输入 ONNX。
 - `train_mimic/app.py`
   - train/play/benchmark 共用 task 装配与校验。
 - `train_mimic/tasks/tracking/config/`
-  - 只保留一个公开 task 注册面。
+  - 只保留一个公开 task 注册面（`General-Tracking-G1`）。
 - `train_mimic/data/dataset_builder.py`
   - 数据集构建唯一正式入口。
 
@@ -51,4 +51,4 @@ train_mimic/scripts/data
 - 离线 BVH 运行必须显式提供 `input.bvh_file`。
 - `viewers` 是唯一 viewer 配置入口。
 - 观测定义与 ONNX 输入维度不匹配时启动即报错。
-- sim2real 也只支持 166D VelCmdHistory 双输入 ONNX。
+- sim2real 也只支持 166D 双输入 ONNX。
