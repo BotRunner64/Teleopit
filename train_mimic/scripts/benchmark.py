@@ -290,7 +290,10 @@ def main() -> int:
     if args.video and args.video_length is None:
         motion_data = np.load(args.motion_file)
         clip_fps = float(motion_data["fps"])
-        max_clip_frames = int(motion_data["clip_lengths"].max())
+        if "clip_lengths" in motion_data:
+            max_clip_frames = int(motion_data["clip_lengths"].max())
+        else:
+            max_clip_frames = int(motion_data["joint_pos"].shape[0])
         step_dt = env.unwrapped.step_dt
         args.video_length = int(max_clip_frames / clip_fps / step_dt)
         print(f"[INFO] Auto video_length={args.video_length} steps "
