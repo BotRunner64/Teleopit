@@ -31,32 +31,26 @@ ASSET_GROUPS = {
     "bvh": [
         ("data/sample_bvh/aiming1_subject1.bvh", "data/sample_bvh/aiming1_subject1.bvh"),
     ],
+    "train": [
+        ("train_assets", "train_mimic/assets"),
+    ],
     "gmr": [
         ("gmr_assets", "teleopit/retargeting/gmr/assets"),
     ],
 }
 
 
-def run(cmd):
-    print(f"  $ {' '.join(cmd)}")
-    subprocess.check_call(cmd)
-
-
 def download_all(groups, cache_dir):
     """Download from ModelScope to a local cache, then copy to project paths."""
     try:
-        from modelscope import snapshot_download  # noqa: F401
+        from modelscope import snapshot_download
     except ImportError:
         print("modelscope not installed. Installing...")
-        run([sys.executable, "-m", "pip", "install", "modelscope"])
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "modelscope"])
+        from modelscope import snapshot_download
 
-    # Download entire repo to cache (ModelScope handles incremental caching)
     print(f"\nDownloading {REPO_ID} to {cache_dir} ...")
-    run([
-        sys.executable, "-m", "modelscope", "download",
-        "--model", REPO_ID,
-        "--local_dir", str(cache_dir),
-    ])
+    snapshot_download(REPO_ID, local_dir=str(cache_dir))
 
     # Copy assets to their target locations
     for group in groups:
