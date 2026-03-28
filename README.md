@@ -100,6 +100,10 @@ python train_mimic/scripts/save_onnx.py \
 
 ## 更新日志
 
+### v0.1.1 (2025-03-28)
+
+数据集 shard-only 改造、adaptive_bin 采样、外部资源管理、仓库瘦身。
+
 ### v0.1.0 (2025-03-25)
 
 首个公开版本：General-Tracking-G1 全身追踪训练、ONNX sim2sim 推理、Pico 4 VR 遥操作、Unitree G1 真机部署。
