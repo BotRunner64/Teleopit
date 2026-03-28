@@ -73,6 +73,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "iterations to run after loading the checkpoint."
         ),
     )
+    parser.add_argument("--sampling_mode", type=str, default=None,
+                        choices=["uniform", "adaptive", "adaptive_bin", "start"],
+                        help="Motion sampling mode (default: from task config)")
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument(
         "--gpu_ids",
@@ -294,6 +297,8 @@ def _run_worker(args: argparse.Namespace) -> None:
     if args.motion_file is not None:
         env_cfg.commands["motion"].motion_file = args.motion_file
     validate_motion_file(env_cfg.commands["motion"].motion_file)
+    if args.sampling_mode is not None:
+        env_cfg.commands["motion"].sampling_mode = args.sampling_mode
     if args.max_iterations is not None:
         agent_cfg.max_iterations = args.max_iterations
     if args.experiment_name is not None:
