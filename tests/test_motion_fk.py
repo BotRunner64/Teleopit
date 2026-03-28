@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from train_mimic.data.motion_fk import (
+    DEFAULT_G1_XML_PATH,
     MotionFkExtractor,
     compute_npz_fk_consistency,
     normalize_quaternion,
@@ -18,6 +19,13 @@ from train_mimic.scripts.convert_pkl_to_npz import (
     main as convert_main,
     convert_pkl_to_npz,
 )
+
+pytestmark = [
+    pytest.mark.skipif(
+        not DEFAULT_G1_XML_PATH.is_file(),
+        reason="GMR G1 assets not downloaded",
+    )
+]
 
 
 def _synthetic_motion_payload() -> dict[str, object]:

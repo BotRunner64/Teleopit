@@ -5,13 +5,7 @@
 从 ModelScope 下载已处理好的训练数据，可直接用于训练和评估：
 
 ```bash
-# 下载训练数据
-modelscope download --model BingqianWu/Teleopit --include "data/train/**" --include "data/val/**" --local_dir teleopit-assets
-
-# 放到项目目录
-mkdir -p data/datasets/seed
-cp -r teleopit-assets/data/train data/datasets/seed/train
-cp -r teleopit-assets/data/val data/datasets/seed/val
+python scripts/download_assets.py --only data
 ```
 
 训练时直接传 shard 目录：

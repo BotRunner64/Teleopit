@@ -28,6 +28,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from mjlab.viewer.viser import ViserMujocoScene
 
+from teleopit.runtime.assets import UNITREE_G1_MJLAB_XML, missing_gmr_assets_message
 from train_mimic.data.review_lib import (
     ReviewRow,
     ReviewStats,
@@ -37,7 +38,7 @@ from train_mimic.data.review_lib import (
     utc_now_iso,
 )
 
-DEFAULT_XML = PROJECT_ROOT / "train_mimic" / "assets" / "g1" / "g1_sim2sim_29dof.xml"
+DEFAULT_XML = UNITREE_G1_MJLAB_XML
 
 
 # ---------------------------------------------------------------------------
@@ -698,7 +699,12 @@ def main() -> None:
         "--review", type=str, default=None,
         help="Path to review_state.csv (default: data/datasets/review/{dataset}/review_state.csv)",
     )
-    parser.add_argument("--xml", type=str, default=None, help="Robot XML path")
+    parser.add_argument(
+        "--xml",
+        type=str,
+        default=None,
+        help="Robot XML path (default: teleopit/retargeting/gmr/assets/unitree_g1/g1_mjlab.xml)",
+    )
     parser.add_argument("--port", type=int, default=8012, help="Viser server port")
     parser.add_argument(
         "--sort", type=str, default="unreviewed_first",
@@ -721,7 +727,11 @@ def main() -> None:
 
     xml_path = Path(args.xml) if args.xml else DEFAULT_XML
     if not xml_path.is_file():
-        print(f"ERROR: robot XML not found: {xml_path}", file=sys.stderr)
+        print(
+            "ERROR: "
+            + missing_gmr_assets_message(xml_path, label="Robot XML"),
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     app = ReviewViewerApp(

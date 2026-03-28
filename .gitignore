@@ -62,6 +62,8 @@ venv.bak/
 *.h5
 *.onnx
 track.pt
+assets/demo.gif
+assets/demo.mp4
 /data/
 !scripts/data/
 !scripts/data/*.py
@@ -87,6 +89,9 @@ Thumbs.db
 
 # GMR retargeting assets (downloaded from ModelScope)
 teleopit/retargeting/gmr/assets/
+
+# Legacy training-side robot assets are no longer tracked; FK tooling reuses GMR unitree_g1.
+train_mimic/assets/
 
 # ModelScope download cache
 data/modelscope_cache/

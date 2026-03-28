@@ -49,7 +49,7 @@ teleopit/                 # Core inference package
 │   └── udp_bvh_provider.py   # UDPBVHInputProvider — realtime UDP BVH receiver
 ├── retargeting/
 │   ├── core.py           # RetargetingModule + extract_mimic_obs()
-│   └── gmr/              # Self-contained GMR (assets, IK solver, robot configs)
+│   └── gmr/              # Self-contained GMR code; heavyweight assets are downloaded into an ignored path
 ├── robots/
 │   └── mujoco_robot.py   # MuJoCoRobot — MuJoCo sim wrapper
 ├── sim/
@@ -184,10 +184,16 @@ python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_general_trac
 ```
 
 ### GMR Retargeting
-- Self-contained in `teleopit/retargeting/gmr/` with all assets
+- Self-contained in `teleopit/retargeting/gmr/`; assets need `scripts/download_assets.py --only gmr`
 - Supports `lafan1` BVH (22 joints, 30fps, centimeters)
 - Supports `hc_mocap` BVH (50 joints, 60fps downsampled to 30fps, meters)
 - `lafan1-resolved` still needs an adapter layer and remains unsupported
+
+### External Assets
+- Do not commit robot meshes, datasets, checkpoints, or demo media to Git; use `scripts/download_assets.py`
+- `teleopit/retargeting/gmr/assets/` is gitignored; downloaded at runtime
+- `train_mimic/assets/` is no longer tracked; FK tooling reuses `teleopit/retargeting/gmr/assets/unitree_g1/g1_mjlab.xml`
+- Run `python scripts/check_large_tracked_files.py` before pushing
 
 ### IK Offset Calibration
 For each `(robot_body, human_bone)` pair, IK config stores a quaternion offset `R_offset` (`w,x,y,z`, scalar-first):

@@ -19,12 +19,20 @@ from train_mimic.data.dataset_builder import (
 )
 from train_mimic.data.dataset_lib import inspect_npz, merge_clip_dicts
 from train_mimic.data.motion_fk import (
+    DEFAULT_G1_XML_PATH,
     MotionFkExtractor,
     normalize_quaternion,
     quat_rotate_inverse,
     quat_wxyz_to_xyzw,
 )
 from train_mimic.scripts.convert_pkl_to_npz import _MJLAB_G1_BODY_NAMES, convert_pkl_to_npz
+
+pytestmark = [
+    pytest.mark.skipif(
+        not DEFAULT_G1_XML_PATH.is_file(),
+        reason="GMR G1 assets not downloaded",
+    )
+]
 
 
 def _synthetic_motion_payload() -> dict[str, object]:

@@ -8,6 +8,7 @@ import numpy as np
 from omegaconf import DictConfig
 
 from teleopit.interfaces import RobotState
+from teleopit.runtime.assets import GMR_ASSETS_ROOT, missing_gmr_assets_message
 
 
 def _quat_conjugate(quat_wxyz: np.ndarray) -> np.ndarray:
@@ -61,7 +62,13 @@ class MuJoCoRobot:
             xml_path = Path.cwd() / xml_path
         xml_path = xml_path.resolve()
         if not xml_path.exists():
-            raise FileNotFoundError(f"MuJoCo XML not found: {xml_path}")
+            try:
+                xml_path.relative_to(GMR_ASSETS_ROOT)
+            except ValueError:
+                raise FileNotFoundError(f"MuJoCo XML not found: {xml_path}") from None
+            raise FileNotFoundError(
+                missing_gmr_assets_message(xml_path, label="MuJoCo XML")
+            )
 
         self.xml_path: str = str(xml_path)
         self.model = mujoco.MjModel.from_xml_path(self.xml_path)
