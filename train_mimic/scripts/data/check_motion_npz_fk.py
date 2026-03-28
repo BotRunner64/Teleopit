@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
         "--xml",
         type=str,
         default=None,
-        help="Optional MuJoCo XML path (default: train_mimic/assets/g1/g1_sim2sim_29dof.xml)",
+        help="Optional MuJoCo XML path (default: teleopit/retargeting/gmr/assets/unitree_g1/g1_mjlab.xml)",
     )
     parser.add_argument(
         "--sample_count",

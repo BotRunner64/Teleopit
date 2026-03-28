@@ -17,13 +17,11 @@ DEFAULT_TASK = GENERAL_TRACKING_TASK
 
 def validate_motion_file(motion_file: str) -> None:
     p = Path(motion_file)
-    if p.is_file():
-        return
     if p.is_dir() and any(p.glob("*.npz")):
         return
     raise FileNotFoundError(
-        f"Motion file/directory not found: {motion_file}. Provide --motion_file "
-        f"pointing to a merged NPZ or a directory of shard NPZ files. "
+        f"Motion shard directory not found: {motion_file}. Provide --motion_file "
+        f"pointing to a directory of shard NPZ files. "
         f"Example: {DEFAULT_TRAIN_MOTION_FILE}"
     )
 

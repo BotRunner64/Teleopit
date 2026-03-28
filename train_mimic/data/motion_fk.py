@@ -9,10 +9,10 @@ from typing import Iterable
 import mujoco
 import numpy as np
 
+from teleopit.runtime.assets import UNITREE_G1_MJLAB_XML, missing_gmr_assets_message
 
-DEFAULT_G1_XML_PATH = (
-    Path(__file__).resolve().parent.parent / "assets" / "g1" / "g1_sim2sim_29dof.xml"
-)
+
+DEFAULT_G1_XML_PATH = UNITREE_G1_MJLAB_XML
 
 
 def quat_xyzw_to_wxyz(q: np.ndarray) -> np.ndarray:
@@ -112,7 +112,12 @@ class MotionFkExtractor:
         resolved_xml = Path(xml_path) if xml_path is not None else DEFAULT_G1_XML_PATH
         resolved_xml = resolved_xml.expanduser().resolve()
         if not resolved_xml.is_file():
-            raise FileNotFoundError(f"MuJoCo XML not found: {resolved_xml}")
+            raise FileNotFoundError(
+                missing_gmr_assets_message(
+                    resolved_xml,
+                    label="MuJoCo XML for MotionFkExtractor",
+                )
+            )
 
         self.xml_path = resolved_xml
         self.model = mujoco.MjModel.from_xml_path(str(resolved_xml))
@@ -252,4 +257,3 @@ def compute_npz_fk_consistency(
         quat_p95=float(np.percentile(quat_err, 95)),
         quat_max=float(quat_err.max()),
     )
-

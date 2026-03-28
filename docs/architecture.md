@@ -52,7 +52,7 @@ train_mimic/scripts/data
 - actor/critic：TemporalCNN（1024, 512, 256, 256, 128）
 - 训练采样模式：`uniform`；playback / benchmark 采样模式：`start`
 - 训练 `window_steps=[0]`
-- 数据格式：支持单个 merged NPZ 或 shard 目录（多个 NPZ）
+- 数据格式：只支持 shard 目录（内含一个或多个 `shard_*.npz`）
 
 ## Realtime 配置
 

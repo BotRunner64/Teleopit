@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Rebuild train.npz / val.npz from a filtered manifest (review results).
+"""Rebuild train/val shard directories from a filtered manifest (review results).
 
 Reads filtered_manifest.csv (output of export_reviewed_manifest.py),
-verifies all NPZ files exist, and merges them into cleaned train/val splits.
+verifies all NPZ files exist, and rebuilds cleaned train/val shard splits.
 
 Usage:
     python scripts/data/build_dataset_from_review.py \
@@ -140,10 +140,12 @@ def main() -> None:
         if not split_rows:
             return None
         print(f"Merging {len(split_rows)} {split_name} clips...")
-        out = output_dir / f"{split_name}.npz"
+        split_dir = output_dir / split_name
+        split_dir.mkdir(parents=True, exist_ok=True)
+        out = split_dir / "shard_000.npz"
 
         if has_indexed_clips:
-            # Extract individual clip slices from merged NPZ files
+            # Extract individual clip slices from shard NPZ files
             clip_dicts = []
             for r in split_rows:
                 npz_path = Path(r["resolved_npz_path"])
@@ -177,7 +179,9 @@ def main() -> None:
                 target_fps=args.target_fps, weights=weights_list,
             )
 
-        print(f"  {split_name}.npz: {stats['frames']} frames, {stats['duration_s'] / 60:.1f} min")
+        stats["output"] = str(split_dir)
+        stats["shards"] = 1
+        print(f"  {split_name}/: {stats['frames']} frames, {stats['duration_s'] / 60:.1f} min")
         return stats
 
     train_stats = _merge_split(train_rows, "train")

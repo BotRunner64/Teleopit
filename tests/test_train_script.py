@@ -29,7 +29,7 @@ def _args(**overrides: object) -> argparse.Namespace:
         "seed": 42,
         "wandb_project": None,
         "experiment_name": None,
-        "motion_file": "data/datasets/twist2_full/train.npz",
+        "motion_file": "data/datasets/twist2_full/train",
         "resume": None,
         "device": None,
         "gpu_ids": None,
@@ -129,8 +129,13 @@ def test_tracking_runner_configs_disable_model_upload() -> None:
     assert make_general_tracking_ppo_runner_cfg().upload_model is False
 
 
-def test_validate_motion_file_rejects_directories(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError, match="Motion file not found"):
+def test_validate_motion_file_accepts_shard_directories(tmp_path: Path) -> None:
+    (tmp_path / "shard_000.npz").write_bytes(b"placeholder")
+    validate_motion_file(str(tmp_path))
+
+
+def test_validate_motion_file_rejects_non_shard_paths(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="Motion shard directory not found"):
         validate_motion_file(str(tmp_path))
 
 

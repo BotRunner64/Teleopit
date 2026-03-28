@@ -49,7 +49,7 @@ teleopit/                 # Core inference package
 │   └── udp_bvh_provider.py   # UDPBVHInputProvider — realtime UDP BVH receiver
 ├── retargeting/
 │   ├── core.py           # RetargetingModule + extract_mimic_obs()
-│   └── gmr/              # Self-contained GMR (assets, IK solver, robot configs)
+│   └── gmr/              # Self-contained GMR code; heavyweight assets are downloaded into an ignored path
 ├── robots/
 │   └── mujoco_robot.py   # MuJoCoRobot — MuJoCo sim wrapper
 ├── sim/
@@ -171,22 +171,29 @@ The single supported training task is `General-Tracking-G1` (experiment name: `g
 
 ### Dataset Pipeline
 - Dataset build spec supports a `preprocess` section for root-xy normalization, ground alignment, and basic clip filtering
-- Dataset build spec supports `window.reference_steps`; merged `train.npz` / `val.npz` now store `window_steps`, `clip_sample_starts`, and `clip_sample_ends`
+- Final dataset outputs are shard-only: `data/datasets/<dataset>/train/shard_*.npz` and `data/datasets/<dataset>/val/shard_*.npz`
+- Each shard stores clip-aware metadata (`clip_starts`, `clip_lengths`, `clip_fps`, `clip_weights`); `MotionLib` loads only shard directories
 - `MotionLib` samples only valid center frames for the configured `window_steps`; default is `window_steps=[0]`
 
 Quick reference:
 
 ```bash
 python train_mimic/scripts/data/build_dataset.py --spec train_mimic/configs/datasets/twist2_full.yaml
-python train_mimic/scripts/train.py --motion_file data/datasets/twist2_full/train.npz
+python train_mimic/scripts/train.py --motion_file data/datasets/twist2_full/train
 python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt --output policy.onnx --history_length 10
 ```
 
 ### GMR Retargeting
-- Self-contained in `teleopit/retargeting/gmr/` with all assets
+- Self-contained in `teleopit/retargeting/gmr/`; assets need `scripts/download_assets.py --only gmr`
 - Supports `lafan1` BVH (22 joints, 30fps, centimeters)
 - Supports `hc_mocap` BVH (50 joints, 60fps downsampled to 30fps, meters)
 - `lafan1-resolved` still needs an adapter layer and remains unsupported
+
+### External Assets
+- Do not commit robot meshes, datasets, checkpoints, or demo media to Git; use `scripts/download_assets.py`
+- `teleopit/retargeting/gmr/assets/` is gitignored; downloaded at runtime
+- `train_mimic/assets/` is no longer tracked; FK tooling reuses `teleopit/retargeting/gmr/assets/unitree_g1/g1_mjlab.xml`
+- Run `python scripts/check_large_tracked_files.py` before pushing
 
 ### IK Offset Calibration
 For each `(robot_body, human_bone)` pair, IK config stores a quaternion offset `R_offset` (`w,x,y,z`, scalar-first):

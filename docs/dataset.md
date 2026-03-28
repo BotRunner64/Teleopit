@@ -5,13 +5,7 @@
 从 ModelScope 下载已处理好的训练数据，可直接用于训练和评估：
 
 ```bash
-# 下载训练数据
-modelscope download --model BingqianWu/Teleopit --include "data/train/**" --include "data/val/**" --local_dir teleopit-assets
-
-# 放到项目目录
-mkdir -p data/datasets/seed
-cp -r teleopit-assets/data/train data/datasets/seed/train
-cp -r teleopit-assets/data/val data/datasets/seed/val
+python scripts/download_assets.py --only data
 ```
 
 训练时直接传 shard 目录：
@@ -26,7 +20,7 @@ python train_mimic/scripts/train.py --motion_file data/datasets/seed/train
 
 ## 自定义构建
 
-数据主线：`typed source YAML -> preprocess/filter -> 标准训练 NPZ`
+数据主线：`typed source YAML -> preprocess/filter -> shard-only 训练数据`
 
 核心命令：
 
@@ -43,8 +37,10 @@ python train_mimic/scripts/data/build_dataset.py \
 data/datasets/<dataset>/
 ├── clips/                  # 可选；仅在需要逐 clip 中间产物时存在
 │   └── <source>/...
-├── train.npz
-├── val.npz
+├── train/
+│   └── shard_*.npz
+├── val/
+│   └── shard_*.npz
 ├── manifest_resolved.csv
 └── build_info.json
 ```
@@ -54,7 +50,7 @@ data/datasets/<dataset>/
 补充说明：
 
 - 如果 spec 包含 `bvh` 或 `npz` source，builder 会保留/生成标准 `clips/`
-- 如果 spec 全部是 `pkl` source，builder 会走 batch merge 路径，直接并行转成 split 级别的 `train.npz` / `val.npz`，默认不再写中间 clip 文件
+- 如果 spec 全部是 `pkl` 或 `seed_csv` source，builder 会走 batch 路径，直接并行产出 split 级别的 shard 文件，默认不再写中间 clip 文件
 
 ## YAML spec
 
@@ -68,8 +64,6 @@ hash_salt: ""
 preprocess:
   normalize_root_xy: true
   ground_align: clip_min_foot
-window:
-  reference_steps: [0]
 sources:
   - name: OMOMO_g1_GMR
     type: pkl
@@ -83,16 +77,15 @@ sources:
 字段说明：
 
 - `name`: dataset 名称，对应输出目录 `data/datasets/<name>/`
-- `target_fps`: merge 前统一重采样到的目标帧率
+- `target_fps`: 写入 shard 前统一重采样到的目标帧率
 - `val_percent`: 基于 `clip_id` hash 的验证集比例
 - `hash_salt`: 可选 split salt
 - `preprocess.normalize_root_xy`: 是否把根 body 首帧 `xy` 平移到原点
 - `preprocess.ground_align`: `none` / `clip_min_foot` / `frame_min_foot`
 - `preprocess.min_frames`: clip 最短长度约束
 - `preprocess.max_root_lin_vel` / `min_peak_body_height` / `max_all_off_ground_s`: 基础过滤阈值
-- `window.reference_steps`: 训练侧 reference/history/future window，格式与 realtime `reference_steps` 一致，必须包含 `0`
 - `sources[].name`: source 名称；在会生成 clip 中间产物的路径里，它也会成为 `clips/<source>/` 子目录名
-- `sources[].type`: `bvh` / `pkl` / `npz`
+- `sources[].type`: `bvh` / `pkl` / `npz` / `seed_csv`
 - `sources[].input`: 原始输入文件或目录。对于 `type: npz`，目录应直接指向 clip 目录，不要指向已有 dataset 根目录
 - `sources[].weight`: 可选源级别采样权重，默认 `1.0`
 - `sources[].bvh_format`: 仅 `bvh` source 必填，当前支持 `lafan1` / `hc_mocap` / `nokov`
@@ -101,21 +94,22 @@ sources:
 
 ## 转换规则
 
-统一转换目标是标准训练 NPZ；每个 clip 在 merge 前都会先经过 preprocess/filter；中间 clip 是否落盘取决于 source 类型组合：
+统一转换目标是标准训练 shard；每个 clip 在写入 shard 前都会先经过 preprocess/filter；中间 clip 是否落盘取决于 source 类型组合：
 
 - `bvh -> retarget pkl -> npz clip`
-- `pkl -> npz clip`，或在 `pkl-only` dataset 中直接 batch merge 到 split 输出
+- `pkl -> npz clip`，或在 `pkl-only` dataset 中直接 batch 写入 split shard
 - `npz -> validate + copy/reuse`
 
-最终 build 阶段始终产出标准 merged NPZ，不再区分原始输入类型。
+最终 build 阶段始终产出 shard 目录，不再支持单文件 `train.npz` / `val.npz`。
 
-merged NPZ 额外会写入：
+每个 shard 会写入：
 
-- `window_steps`
-- `clip_sample_starts`
-- `clip_sample_ends`
+- `clip_starts`
+- `clip_lengths`
+- `clip_fps`
+- `clip_weights`
 
-这些字段定义了给定 `reference_steps` 下每个 clip 的有效中心帧范围，训练采样器会据此避免 future/history window 越界。
+这些字段定义了 shard 内 clip 边界和采样权重。训练采样器会在运行时根据 `window_steps` 计算每个 clip 的有效中心帧范围。
 
 ## 常用命令
 
@@ -201,14 +195,14 @@ python train_mimic/scripts/data/check_motion_npz_fk.py \
 - `quat_mean < 0.05 rad`
 - `quat_p95 < 0.10 rad`
 
-## 拆分为 shard（用于分发或大文件管理）
+## 重新切分 shard（用于分发或大文件管理）
 
-如果 merged NPZ 过大（如 >5G），可以拆成多个 shard：
+如果现有 shard 目录过大（如单个 shard >5G），可以重新切成更多 shard：
 
 ```bash
 python train_mimic/scripts/data/split_shards.py \
-    --input data/datasets/twist2_full/train.npz \
-    --output data/datasets/twist2_full/train_shards \
+    --input data/datasets/twist2_full/train \
+    --output data/datasets/twist2_full/train_small_shards \
     --max_size_gb 2
 ```
 
@@ -216,24 +210,19 @@ python train_mimic/scripts/data/split_shards.py \
 
 ```bash
 python train_mimic/scripts/train.py \
-    --motion_file data/datasets/twist2_full/train_shards
+    --motion_file data/datasets/twist2_full/train_small_shards
 ```
 
 ## 和训练主线的连接
 
-构建完成后，训练和评估直接消费（支持单文件或 shard 目录）：
+构建完成后，训练和评估直接消费 shard 目录：
 
 ```bash
-# 单文件
 python train_mimic/scripts/train.py \
-    --motion_file data/datasets/twist2_full/train.npz
-
-# shard 目录
-python train_mimic/scripts/train.py \
-    --motion_file data/datasets/twist2_full/train_shards
+    --motion_file data/datasets/twist2_full/train
 
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/twist2_full/val.npz \
+    --motion_file data/datasets/twist2_full/val \
     --num_envs 1
 ```

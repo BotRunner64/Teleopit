@@ -10,7 +10,7 @@ Usage:
     # Benchmark only (no video)
     python train_mimic/scripts/benchmark.py \
         --checkpoint logs/rsl_rl/g1_tracking/.../model_30000.pt \
-        --motion_file data/datasets/twist2_full/val.npz \
+        --motion_file data/datasets/twist2_full/val \
         --num_envs 1
 
     # Single video (one continuous clip)
@@ -142,7 +142,7 @@ def _stats(values: list[float]) -> dict[str, float]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark G1 tracking policy.")
     parser.add_argument("--checkpoint", type=str, required=True)
-    parser.add_argument("--motion_file", type=str, required=True)
+    parser.add_argument("--motion_file", type=str, required=True, help="Path to motion shard directory")
     parser.add_argument("--num_envs", type=int, default=1)
     parser.add_argument("--num_eval_steps", type=int, default=2000,
                         help="Number of rollout steps for evaluation (default: 2000)")
@@ -169,6 +169,29 @@ def parse_args() -> argparse.Namespace:
         help="Optional .npz path to dump per-step benchmark trace for comparison",
     )
     return parser.parse_args()
+
+
+def _load_motion_dir_video_metadata(motion_dir: str) -> tuple[float, int]:
+    shard_dir = Path(motion_dir)
+    shard_files = sorted(shard_dir.glob("*.npz"))
+    if not shard_files:
+        raise FileNotFoundError(f"no shard NPZ files found in {motion_dir}")
+
+    clip_fps: float | None = None
+    max_clip_frames = 0
+    for shard_path in shard_files:
+        motion_data = np.load(shard_path, allow_pickle=True)
+        cur_fps = float(motion_data["fps"])
+        if clip_fps is None:
+            clip_fps = cur_fps
+        elif clip_fps != cur_fps:
+            raise ValueError(
+                f"inconsistent fps across shards: {shard_path} has {cur_fps}, expected {clip_fps}"
+            )
+        max_clip_frames = max(max_clip_frames, int(np.asarray(motion_data["clip_lengths"]).max()))
+    if clip_fps is None:
+        raise ValueError(f"failed reading shard metadata from {motion_dir}")
+    return clip_fps, max_clip_frames
 
 
 def _tensor_to_numpy(value: object, torch_module: object) -> np.ndarray:
@@ -288,12 +311,7 @@ def main() -> int:
 
     # Auto-resolve video_length from motion file if not specified.
     if args.video and args.video_length is None:
-        motion_data = np.load(args.motion_file)
-        clip_fps = float(motion_data["fps"])
-        if "clip_lengths" in motion_data:
-            max_clip_frames = int(motion_data["clip_lengths"].max())
-        else:
-            max_clip_frames = int(motion_data["joint_pos"].shape[0])
+        clip_fps, max_clip_frames = _load_motion_dir_video_metadata(args.motion_file)
         step_dt = env.unwrapped.step_dt
         args.video_length = int(max_clip_frames / clip_fps / step_dt)
         print(f"[INFO] Auto video_length={args.video_length} steps "

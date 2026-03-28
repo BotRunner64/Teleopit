@@ -11,11 +11,8 @@
   <a href="#quick-start">Quick Start</a> •
   <a href="docs/pico4.md">Pico VR 部署</a> •
   <a href="docs/sim2real.md">真机部署</a> •
-  <a href="docs/training.md">训练</a>
-</p>
-
-<p align="center">
-  <img src="assets/demo.gif" width="360" alt="Teleopit Demo">
+  <a href="docs/training.md">训练</a> •
+  <a href="docs/assets.md">资源说明</a>
 </p>
 
 ## 安装
@@ -35,17 +32,22 @@ pip install modelscope
 python scripts/download_assets.py
 ```
 
+只下载推理必需的部分：
+
+```bash
+python scripts/download_assets.py --only gmr ckpt bvh
+```
 
 下载内容说明：
 
 | 资源 | 大小 | 用途 |
 |------|------|------|
-| `checkpoints/track.onnx` | 4M | ONNX 推理模型 |
-| `checkpoints/track.pt` | 27M | PyTorch checkpoint（resume 训练用） |
-| `data/train/shard_*.npz` | ~25G | 训练集 |
-| `data/val/shard_*.npz` | ~1.4G | 验证集 |
+| `track.onnx` | 4M | ONNX 推理模型 |
+| `track.pt` | 27M | PyTorch checkpoint（resume 训练用） |
+| `data/datasets/seed/train/shard_*.npz` | ~25G | 训练集 |
+| `data/datasets/seed/val/shard_*.npz` | ~1.4G | 验证集 |
 | `data/sample_bvh/*.bvh` | 5M | 示例动作文件 |
-| `gmr_assets/` | ~1.2G | GMR retargeting 机器人模型 |
+| `teleopit/retargeting/gmr/assets/` | ~1.2G | GMR retargeting 机器人模型 |
 
 ## Quick Start
 
@@ -92,6 +94,7 @@ python train_mimic/scripts/save_onnx.py \
 - [推理与运行](docs/inference.md)：离线/在线推理、viewer、录制
 - [训练](docs/training.md)：训练、评估、导出 ONNX
 - [数据集](docs/dataset.md)：数据下载与自定义构建
+- [资源管理](docs/assets.md)：外部资源下载与 ModelScope 上传
 - [配置说明](docs/configuration.md)：Hydra 配置入口
 - [架构](docs/architecture.md)：系统边界与技术规格
 

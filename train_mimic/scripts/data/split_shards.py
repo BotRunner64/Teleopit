@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Split a merged NPZ into multiple shard NPZ files.
+"""Repartition a shard directory into smaller shard NPZ files.
 
 Each shard is a self-contained merged NPZ (with clip_starts, clip_lengths,
 clip_fps, clip_weights, etc.) that can be independently loaded.  Splits are
@@ -7,8 +7,8 @@ made at clip boundaries — no clip is ever truncated across shards.
 
 Usage:
     python train_mimic/scripts/data/split_shards.py \
-        --input data/datasets/seed_v1/train.npz \
-        --output data/datasets/seed_v1/train_shards \
+        --input data/datasets/seed_v1/train \
+        --output data/datasets/seed_v1/train_small_shards \
         --max_size_gb 2
 """
 
@@ -39,14 +39,71 @@ def _estimate_frames_per_gb(data: dict) -> float:
     return 1e9 / max(one_frame_bytes, 1)
 
 
+def _load_shard_dir(input_dir: Path) -> dict:
+    shard_files = sorted(input_dir.glob("*.npz"))
+    if not shard_files:
+        raise FileNotFoundError(f"no shard NPZ files found in {input_dir}")
+
+    arrays: dict[str, list[np.ndarray]] = {k: [] for k in MOTION_ARRAY_KEYS}
+    clip_lengths: list[np.ndarray] = []
+    clip_fps: list[np.ndarray] = []
+    clip_weights: list[np.ndarray] = []
+    clip_sample_starts: list[np.ndarray] = []
+    clip_sample_ends: list[np.ndarray] = []
+    window_steps: np.ndarray | None = None
+    fps: int | None = None
+    body_names: np.ndarray | None = None
+
+    for shard_path in shard_files:
+        data = np.load(shard_path, allow_pickle=True)
+        for key in MOTION_ARRAY_KEYS:
+            arrays[key].append(np.asarray(data[key]))
+        if fps is None:
+            fps = int(data["fps"])
+            body_names = np.asarray(data["body_names"])
+        else:
+            if int(data["fps"]) != fps:
+                raise ValueError(
+                    f"inconsistent fps across shards: {shard_path} has {int(data['fps'])}, expected {fps}"
+                )
+            if not np.array_equal(np.asarray(data["body_names"]), body_names):
+                raise ValueError(f"inconsistent body_names across shards: {shard_path}")
+        clip_lengths.append(np.asarray(data["clip_lengths"]))
+        clip_fps.append(np.asarray(data["clip_fps"]))
+        clip_weights.append(np.asarray(data["clip_weights"]))
+        if "clip_sample_starts" in data:
+            clip_sample_starts.append(np.asarray(data["clip_sample_starts"]))
+        if "clip_sample_ends" in data:
+            clip_sample_ends.append(np.asarray(data["clip_sample_ends"]))
+        if "window_steps" in data and window_steps is None:
+            window_steps = np.asarray(data["window_steps"])
+
+    merged = {key: np.concatenate(values, axis=0) for key, values in arrays.items()}
+    merged["fps"] = fps
+    merged["body_names"] = body_names
+    merged["clip_lengths"] = np.concatenate(clip_lengths)
+    merged["clip_fps"] = np.concatenate(clip_fps)
+    merged["clip_weights"] = np.concatenate(clip_weights)
+    merged["clip_starts"] = np.zeros(len(merged["clip_lengths"]), dtype=np.int64)
+    if len(merged["clip_lengths"]) > 1:
+        merged["clip_starts"][1:] = np.cumsum(merged["clip_lengths"][:-1])
+    if clip_sample_starts and sum(len(v) for v in clip_sample_starts) == len(merged["clip_lengths"]):
+        merged["clip_sample_starts"] = np.concatenate(clip_sample_starts)
+    if clip_sample_ends and sum(len(v) for v in clip_sample_ends) == len(merged["clip_lengths"]):
+        merged["clip_sample_ends"] = np.concatenate(clip_sample_ends)
+    if window_steps is not None:
+        merged["window_steps"] = window_steps
+    return merged
+
+
 def split_shards(
     input_path: Path,
     output_dir: Path,
     max_size_gb: float = 2.0,
 ) -> list[Path]:
-    """Split a merged NPZ into shards of approximately *max_size_gb* each."""
+    """Split a shard directory into smaller shards of approximately *max_size_gb* each."""
     print(f"Loading {input_path} ...")
-    data = np.load(input_path, allow_pickle=True)
+    data = _load_shard_dir(input_path)
 
     clip_starts = np.asarray(data["clip_starts"])
     clip_lengths = np.asarray(data["clip_lengths"])
@@ -138,8 +195,8 @@ def split_shards(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Split merged NPZ into shards")
-    parser.add_argument("--input", required=True, type=Path, help="Input merged NPZ")
+    parser = argparse.ArgumentParser(description="Repartition a shard directory into smaller shards")
+    parser.add_argument("--input", required=True, type=Path, help="Input shard directory")
     parser.add_argument("--output", required=True, type=Path, help="Output shard directory")
     parser.add_argument(
         "--max_size_gb",
@@ -149,8 +206,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not args.input.is_file():
-        print(f"Error: {args.input} not found", file=sys.stderr)
+    if not args.input.is_dir():
+        print(f"Error: shard directory not found: {args.input}", file=sys.stderr)
         sys.exit(1)
 
     split_shards(args.input, args.output, args.max_size_gb)

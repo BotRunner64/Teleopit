@@ -51,8 +51,7 @@ python train_mimic/scripts/data/check_motion_npz_fk.py \
 ```bash
 python train_mimic/scripts/convert_pkl_to_npz.py \
     --input data/twist2_retarget_pkl/<source> \
-    --output data/twist2_retarget_npz/<source> \
-    --merge
+    --output data/twist2_retarget_npz/<source>
 ```
 
 然后做一个短训练 smoke test：
@@ -61,7 +60,7 @@ python train_mimic/scripts/convert_pkl_to_npz.py \
 python train_mimic/scripts/train.py \
     --num_envs 64 \
     --max_iterations 100 \
-    --motion_file data/twist2_retarget_npz/<source>/merged.npz
+    --motion_file data/datasets/<dataset>/train
 ```
 
 预期现象：
@@ -191,7 +190,7 @@ actual_video_length = min(video_length, num_eval_steps)
 ```bash
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/{run_name}/model_30000.pt \
-    --motion_file data/twist2_retarget_npz/OMOMO_g1_GMR/merged.npz \
+    --motion_file data/datasets/<dataset>/val \
     --num_envs 1 \
     --num_eval_steps 2000 \
     --warmup_steps 100 \

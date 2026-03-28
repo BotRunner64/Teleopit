@@ -246,8 +246,8 @@ def test_build_dataset_from_review_resamples_mixed_fps_and_preserves_weights(
 
     build_dataset_from_review.main()
 
-    train = np.load(output_dir / "train.npz", allow_pickle=True)
-    val = np.load(output_dir / "val.npz", allow_pickle=True)
+    train = np.load(output_dir / "train" / "shard_000.npz", allow_pickle=True)
+    val = np.load(output_dir / "val" / "shard_000.npz", allow_pickle=True)
     assert int(train["fps"]) == 30
     assert int(val["fps"]) == 30
     assert train["clip_weights"].tolist() == [2.5]

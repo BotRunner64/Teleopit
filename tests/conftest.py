@@ -52,8 +52,8 @@ def find_g1_xml_path() -> str | None:
     root = Path(__file__).parent.parent
     candidates = [
         root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_mjlab.xml",
-        root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml",
         root / "GMR" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml",
+        root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml",
     ]
     for path in candidates:
         if path.exists():
