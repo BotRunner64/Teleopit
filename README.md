@@ -25,9 +25,7 @@ pip install -e '.[sim2real]'  # 真机部署
 
 ## 下载模型和数据
 
-模型、数据集等大文件托管在 ModelScope（[BingqianWu/Teleopit-assets](https://www.modelscope.cn/models/BingqianWu/Teleopit-assets)），不在 Git 仓库中。
-
-一键下载所有资源：
+一键下载所有资源（模型、数据、GMR retargeting assets）：
 
 ```bash
 pip install modelscope
@@ -96,7 +94,7 @@ python train_mimic/scripts/save_onnx.py \
 - [推理与运行](docs/inference.md)：离线/在线推理、viewer、录制
 - [训练](docs/training.md)：训练、评估、导出 ONNX
 - [数据集](docs/dataset.md)：数据下载与自定义构建
-- [资源管理](docs/assets.md)：外部资源下载、ModelScope 上传、仓库瘦身
+- [资源管理](docs/assets.md)：外部资源下载与 ModelScope 上传
 - [配置说明](docs/configuration.md)：Hydra 配置入口
 - [架构](docs/architecture.md)：系统边界与技术规格
 
