@@ -255,7 +255,9 @@ def test_convert_source_to_npz_clips_rejects_dataset_root_for_npz_source(tmp_pat
     clips_dir = dataset_root / "clips" / "src"
     clips_dir.mkdir(parents=True)
     _write_npz_from_pkl(clips_dir / "clip_a.npz")
-    _write_npz_from_pkl(dataset_root / "train.npz")
+    train_dir = dataset_root / "train"
+    train_dir.mkdir(parents=True)
+    _write_npz_from_pkl(train_dir / "shard_000.npz")
     (dataset_root / "build_info.json").write_text("{}", encoding="utf-8")
 
     source = DatasetSourceSpec(name="npz_src", type="npz", input=str(dataset_root))
@@ -263,7 +265,7 @@ def test_convert_source_to_npz_clips_rejects_dataset_root_for_npz_source(tmp_pat
         convert_source_to_npz_clips(source, tmp_path / "dataset" / "clips" / "npz_src", jobs=1)
 
 
-def test_build_dataset_from_spec_writes_single_directory_outputs(tmp_path: Path) -> None:
+def test_build_dataset_from_spec_writes_shard_directories(tmp_path: Path) -> None:
     npz_input = tmp_path / "npz_source"
     _write_npz_from_pkl(npz_input / "clip_a.npz")
     _write_npz_from_pkl(npz_input / "clip_b.npz")
@@ -284,13 +286,13 @@ def test_build_dataset_from_spec_writes_single_directory_outputs(tmp_path: Path)
     assert report["build_dir"] == str(dataset_dir)
     assert (dataset_dir / "clips" / "npz_src" / "clip_a.npz").is_file()
     assert (dataset_dir / "clips" / "npz_src" / "clip_b.npz").is_file()
-    assert (dataset_dir / "train.npz").is_file()
-    assert (dataset_dir / "val.npz").is_file()
+    assert (dataset_dir / "train" / "shard_000.npz").is_file()
+    assert (dataset_dir / "val" / "shard_000.npz").is_file()
     assert (dataset_dir / "manifest_resolved.csv").is_file()
     assert (dataset_dir / "build_info.json").is_file()
     assert report["clip_counts"]["total"] == 2
 
-    train_data = np.load(dataset_dir / "train.npz", allow_pickle=True)
+    train_data = np.load(dataset_dir / "train" / "shard_000.npz", allow_pickle=True)
     assert "clip_starts" in train_data.files
     assert "clip_lengths" in train_data.files
 
@@ -537,31 +539,40 @@ def test_build_dataset_batch_manifest_skips_filtered_entries(
             clip_weights=np.ones(len(lengths), dtype=np.float64),
         )
 
-    def _batch_convert_split(clips, target_fps, output_path, jobs, split_name, preprocess):
+    def _batch_convert_split(clips, target_fps, output_dir, jobs, split_name, preprocess):
         _ = clips, target_fps, jobs, preprocess
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        shard_path = output_dir / "shard_000.npz"
         if split_name == "train":
-            _write_merged(output_path, [22])
-            return {
-                "output": str(output_path),
+            _write_merged(shard_path, [22])
+            return ({
+                "output": str(output_dir),
+                "shards": 1,
                 "clips": 1,
                 "num_clips": 1,
                 "frames": 22,
                 "fps": 30,
                 "duration_s": 22.0 / 30.0,
+            }, [{
+                "path": shard_path,
+                "clip_lengths": [22],
                 "kept_file_paths": [str(keep_train)],
-            }
-        _write_merged(output_path, [24])
-        return {
-            "output": str(output_path),
+            }])
+        _write_merged(shard_path, [24])
+        return ({
+            "output": str(output_dir),
+            "shards": 1,
             "clips": 1,
             "num_clips": 1,
             "frames": 24,
             "fps": 30,
             "duration_s": 24.0 / 30.0,
+        }, [{
+            "path": shard_path,
+            "clip_lengths": [24],
             "kept_file_paths": [str(keep_val)],
-        }
+        }])
 
     monkeypatch.setattr(dataset_builder, "_collect_source_files", _collect)
     monkeypatch.setattr(dataset_builder, "hash_split", _hash_split)

@@ -66,6 +66,8 @@ python train_mimic/scripts/train.py \
     --max_iterations 30000
 ```
 
+训练、播放和 benchmark 现在都只接受 shard 目录；单文件 `train.npz` / `val.npz` 已废弃。
+
 导出 ONNX：
 
 ```bash

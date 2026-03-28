@@ -105,7 +105,7 @@ def test_compute_npz_fk_consistency_detects_corrupted_body_orientation(tmp_path:
     assert stats.quat_mean > 0.05
 
 
-def test_convert_directory_with_merge_supports_npz_output_file(
+def test_convert_directory_writes_npz_files_to_output_directory(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -114,7 +114,7 @@ def test_convert_directory_with_merge_supports_npz_output_file(
     with (input_dir / "clip.pkl").open("wb") as f:
         pickle.dump(_synthetic_motion_payload(), f)
 
-    output_file = tmp_path / "merged.npz"
+    output_dir = tmp_path / "converted"
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -122,15 +122,13 @@ def test_convert_directory_with_merge_supports_npz_output_file(
             "--input",
             str(input_dir),
             "--output",
-            str(output_file),
-            "--merge",
+            str(output_dir),
         ],
     )
 
     convert_main()
 
-    assert output_file.is_file()
-    assert not output_file.is_dir()
+    assert (output_dir / "clip.npz").is_file()
 
 
 def test_convert_directory_without_merge_rejects_npz_output_file(

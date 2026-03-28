@@ -55,17 +55,17 @@ class ClipPlayer:
         self._pelvis_quat: np.ndarray | None = None  # (T, 4) wxyz
         self._fps: int = 30
         self._num_frames: int = 0
-        # Cache for merged NPZ: avoid re-reading multi-GB files on every clip switch
+        # Cache for shard NPZ: avoid re-reading large shard files on every clip switch
         self._cached_npz_path: str | None = None
         self._cached_npz_data: dict[str, np.ndarray] | None = None
 
     def _get_npz_data(self, npz_path: Path) -> dict[str, np.ndarray]:
-        """Return NPZ data, using cache for merged files."""
+        """Return NPZ data, using cache for shard files."""
         path_str = str(npz_path)
         if self._cached_npz_path == path_str and self._cached_npz_data is not None:
             return self._cached_npz_data
         d = dict(np.load(path_str, allow_pickle=True))
-        # Only cache merged NPZ files (those with clip_starts)
+        # Only cache shard NPZ files (those with clip_starts)
         if "clip_starts" in d:
             self._cached_npz_path = path_str
             self._cached_npz_data = d
@@ -78,8 +78,8 @@ class ClipPlayer:
         """Load NPZ clip data.
 
         Args:
-            npz_path: Path to NPZ file (standalone clip or merged dataset).
-            clip_index: If >= 0, extract this clip from a merged NPZ using
+            npz_path: Path to NPZ file (standalone clip or shard file).
+            clip_index: If >= 0, extract this clip from a shard NPZ using
                         clip_starts/clip_lengths. If -1, load the entire file
                         as a single clip.
         """

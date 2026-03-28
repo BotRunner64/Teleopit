@@ -125,8 +125,8 @@ def _validate_legacy_adaptive_config(*, adaptive_kernel_size: int, adaptive_lamb
 def _load_shard_dir(shard_dir: Path) -> dict[str, Any]:
     """Load and merge all shard NPZ files from a directory.
 
-    Each shard is a self-contained merged NPZ with clip metadata.  This
-    function concatenates motion arrays across shards and rebuilds the
+    Each shard must be a self-contained merged NPZ with clip metadata.
+    This function concatenates motion arrays across shards and rebuilds the
     clip-level metadata (``clip_starts`` offsets are adjusted).
     """
     shard_files = sorted(shard_dir.glob("*.npz"))
@@ -171,25 +171,16 @@ def _load_shard_dir(shard_dir: Path) -> dict[str, Any]:
                     f"Inconsistent body_names across shards: {sf} differs from first shard"
                 )
 
-        # --- clip metadata (with fallback for legacy single-clip NPZ) ---
-        n_frames = d["joint_pos"].shape[0]
-        if "clip_lengths" in d:
-            shard_clip_lengths = np.asarray(d["clip_lengths"])
-        else:
-            shard_clip_lengths = np.array([n_frames], dtype=np.int64)
-
+        if "clip_lengths" not in d or "clip_fps" not in d or "clip_weights" not in d:
+            raise ValueError(
+                f"Shard {sf} is missing required clip metadata. "
+                "Expected clip_lengths, clip_fps, and clip_weights."
+            )
+        shard_clip_lengths = np.asarray(d["clip_lengths"])
         n_clips = len(shard_clip_lengths)
         all_clip_lengths.append(shard_clip_lengths)
-
-        if "clip_fps" in d:
-            all_clip_fps.append(np.asarray(d["clip_fps"]))
-        else:
-            all_clip_fps.append(np.full(n_clips, int(fps), dtype=np.int64))
-
-        if "clip_weights" in d:
-            all_clip_weights.append(np.asarray(d["clip_weights"]))
-        else:
-            all_clip_weights.append(np.ones(n_clips, dtype=np.float64))
+        all_clip_fps.append(np.asarray(d["clip_fps"]))
+        all_clip_weights.append(np.asarray(d["clip_weights"]))
 
         if "clip_sample_starts" in d:
             all_clip_sample_starts.append(np.asarray(d["clip_sample_starts"]))
@@ -230,10 +221,9 @@ def _load_shard_dir(shard_dir: Path) -> dict[str, Any]:
 class MotionLib:
     """Clip-aware motion library.
 
-    Loads a merged NPZ (single file) or a directory of shard NPZ files.
-    Each shard/file contains flat motion arrays plus per-clip metadata
-    (``clip_starts``, ``clip_lengths``, ``clip_fps``, ``clip_weights``).  Falls
-    back to single-clip mode when the metadata keys are absent (legacy format).
+    Loads a directory of shard NPZ files. Each shard contains flat motion arrays
+    plus per-clip metadata (``clip_starts``, ``clip_lengths``, ``clip_fps``,
+    ``clip_weights``).
 
     Motion data is stored as GPU tensors for fast gather+lerp interpolation.
     All indexing, lerp, and slerp run entirely on device with zero CPU
@@ -252,10 +242,11 @@ class MotionLib:
         self.window_steps = parse_window_steps(window_steps)
 
         motion_path = Path(motion_file)
-        if motion_path.is_dir():
-            data = _load_shard_dir(motion_path)
-        else:
-            data = np.load(motion_file, allow_pickle=True)
+        if not motion_path.is_dir():
+            raise FileNotFoundError(
+                f"motion_file must be a shard directory, got: {motion_file}"
+            )
+        data = _load_shard_dir(motion_path)
         body_idx_np = body_indexes.cpu().numpy()
 
         self._joint_pos = np.asarray(data["joint_pos"], dtype=np.float32)  # (T, 29)
@@ -288,28 +279,18 @@ class MotionLib:
         self._body_ang_vel_w_t = torch.from_numpy(self._body_ang_vel_w).to(device)
 
         # --- clip-aware metadata (small — lives on GPU for sampling) ---
-        if "clip_starts" in data:
-            self.clip_starts = torch.tensor(data["clip_starts"], dtype=torch.long, device=device)
-            self.clip_lengths = torch.tensor(data["clip_lengths"], dtype=torch.long, device=device)
-            self.clip_weights = torch.tensor(
-                data["clip_weights"], dtype=torch.float32, device=device
+        self.clip_starts = torch.tensor(data["clip_starts"], dtype=torch.long, device=device)
+        self.clip_lengths = torch.tensor(data["clip_lengths"], dtype=torch.long, device=device)
+        self.clip_weights = torch.tensor(
+            data["clip_weights"], dtype=torch.float32, device=device
+        )
+        fps_arr = np.asarray(data["clip_fps"])
+        if fps_arr.ndim == 0:
+            self.clip_fps = torch.full(
+                (len(self.clip_starts),), float(fps_arr), dtype=torch.float32, device=device
             )
-            fps_arr = np.asarray(data["clip_fps"])
-            if fps_arr.ndim == 0:
-                self.clip_fps = torch.full(
-                    (len(self.clip_starts),), float(fps_arr), dtype=torch.float32, device=device
-                )
-            else:
-                self.clip_fps = torch.tensor(fps_arr, dtype=torch.float32, device=device)
         else:
-            # Legacy single-clip fallback
-            fps_scalar = float(data["fps"])
-            self.clip_starts = torch.tensor([0], dtype=torch.long, device=device)
-            self.clip_lengths = torch.tensor(
-                [self.time_step_total], dtype=torch.long, device=device
-            )
-            self.clip_weights = torch.tensor([1.0], dtype=torch.float32, device=device)
-            self.clip_fps = torch.tensor([fps_scalar], dtype=torch.float32, device=device)
+            self.clip_fps = torch.tensor(fps_arr, dtype=torch.float32, device=device)
 
         self.num_clips = len(self.clip_starts)
         self.clip_dt = 1.0 / self.clip_fps
@@ -373,7 +354,7 @@ class MotionLib:
         if total <= 0:
             raise ValueError(
                 "All clip weights are zero — cannot sample. "
-                "Check that the merged NPZ was built with positive weights."
+                "Check that the shard dataset was built with positive weights."
             )
         probs = self.clip_weights / total
         return torch.multinomial(probs, n, replacement=True)

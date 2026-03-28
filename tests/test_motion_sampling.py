@@ -39,9 +39,14 @@ def _clip_dict(num_frames: int = 6, fps: int = 1) -> dict[str, object]:
     }
 
 
+def _write_shard_dir(path: Path, clip_dicts: list[dict[str, object]]) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    merge_clip_dicts(clip_dicts, path / "shard_000.npz")
+    return path
+
+
 def test_motion_lib_sample_times_respect_window_steps(tmp_path: Path) -> None:
-    motion_path = tmp_path / "motion.npz"
-    merge_clip_dicts([_clip_dict()], motion_path)
+    motion_path = _write_shard_dir(tmp_path / "motion", [_clip_dict()])
 
     motion = MotionLib(
         str(motion_path),
@@ -57,8 +62,7 @@ def test_motion_lib_sample_times_respect_window_steps(tmp_path: Path) -> None:
 
 
 def test_motion_lib_default_window_does_not_sample_wraparound_tail(tmp_path: Path) -> None:
-    motion_path = tmp_path / "motion_default.npz"
-    merge_clip_dicts([_clip_dict()], motion_path)
+    motion_path = _write_shard_dir(tmp_path / "motion_default", [_clip_dict()])
 
     motion = MotionLib(
         str(motion_path),
@@ -74,8 +78,7 @@ def test_motion_lib_default_window_does_not_sample_wraparound_tail(tmp_path: Pat
 
 
 def test_motion_lib_get_window_frames_returns_requested_offsets(tmp_path: Path) -> None:
-    motion_path = tmp_path / "motion.npz"
-    merge_clip_dicts([_clip_dict()], motion_path)
+    motion_path = _write_shard_dir(tmp_path / "motion", [_clip_dict()])
 
     motion = MotionLib(
         str(motion_path),
@@ -107,8 +110,7 @@ def test_motion_lib_get_window_frames_returns_requested_offsets(tmp_path: Path) 
 
 
 def test_motion_lib_window_start_and_end_times_follow_valid_center_range(tmp_path: Path) -> None:
-    motion_path = tmp_path / "motion_windowed.npz"
-    merge_clip_dicts([_clip_dict()], motion_path)
+    motion_path = _write_shard_dir(tmp_path / "motion_windowed", [_clip_dict()])
 
     motion = MotionLib(
         str(motion_path),

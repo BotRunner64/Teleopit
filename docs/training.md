@@ -26,7 +26,7 @@ smoke test：
 python train_mimic/scripts/train.py \
     --num_envs 64 \
     --max_iterations 100 \
-    --motion_file data/datasets/twist2_full/train.npz
+    --motion_file data/datasets/twist2_full/train
 ```
 
 完整训练：
@@ -35,7 +35,7 @@ python train_mimic/scripts/train.py \
 python train_mimic/scripts/train.py \
     --num_envs 4096 \
     --max_iterations 30000 \
-    --motion_file data/datasets/twist2_full/train.npz
+    --motion_file data/datasets/twist2_full/train
 ```
 
 单机多卡：
@@ -45,14 +45,14 @@ python train_mimic/scripts/train.py \
     --gpu_ids 0 1 2 3 \
     --num_envs 1024 \
     --max_iterations 30000 \
-    --motion_file data/datasets/twist2_full/train.npz
+    --motion_file data/datasets/twist2_full/train
 ```
 
 说明：
 
 - `--num_envs` 在多卡模式下表示每张卡的环境数
 - 默认 logger 是 tensorboard；传 `--wandb_project <name>` 才启用 wandb
-- `--motion_file` 接受单个 merged NPZ 或 shard 目录（内含多个 shard NPZ）
+- `--motion_file` 只接受 shard 目录（内含一个或多个 `shard_*.npz`）
 - `--max_iterations` 表示追加训练轮数；resume `model_12000.pt` 且传 `--max_iterations 18000` 会训练到 `model_30000.pt`
 - 默认实验名是 `g1_general_tracking`
 
@@ -77,7 +77,7 @@ playback：
 ```bash
 python train_mimic/scripts/play.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/twist2_full/val.npz
+    --motion_file data/datasets/twist2_full/val
 ```
 
 benchmark：
@@ -85,7 +85,7 @@ benchmark：
 ```bash
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/twist2_full/val.npz \
+    --motion_file data/datasets/twist2_full/val \
     --num_envs 1
 ```
 
@@ -94,7 +94,7 @@ benchmark 录视频：
 ```bash
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/twist2_full/val.npz \
+    --motion_file data/datasets/twist2_full/val \
     --num_envs 1 \
     --video \
     --video_length 600

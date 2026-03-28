@@ -171,14 +171,15 @@ The single supported training task is `General-Tracking-G1` (experiment name: `g
 
 ### Dataset Pipeline
 - Dataset build spec supports a `preprocess` section for root-xy normalization, ground alignment, and basic clip filtering
-- Dataset build spec supports `window.reference_steps`; merged `train.npz` / `val.npz` now store `window_steps`, `clip_sample_starts`, and `clip_sample_ends`
+- Final dataset outputs are shard-only: `data/datasets/<dataset>/train/shard_*.npz` and `data/datasets/<dataset>/val/shard_*.npz`
+- Each shard stores clip-aware metadata (`clip_starts`, `clip_lengths`, `clip_fps`, `clip_weights`); `MotionLib` loads only shard directories
 - `MotionLib` samples only valid center frames for the configured `window_steps`; default is `window_steps=[0]`
 
 Quick reference:
 
 ```bash
 python train_mimic/scripts/data/build_dataset.py --spec train_mimic/configs/datasets/twist2_full.yaml
-python train_mimic/scripts/train.py --motion_file data/datasets/twist2_full/train.npz
+python train_mimic/scripts/train.py --motion_file data/datasets/twist2_full/train
 python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt --output policy.onnx --history_length 10
 ```
 

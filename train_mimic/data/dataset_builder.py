@@ -53,11 +53,15 @@ _SOURCE_SUFFIXES = {
     "seed_csv": ".csv",
 }
 _DATASET_ROOT_MARKERS = {
+    "train",
+    "val",
     "train.npz",
     "val.npz",
     "manifest_resolved.csv",
     "build_info.json",
 }
+
+_SPLIT_NAMES = ("train", "val")
 
 _PROCESS_FK_EXTRACTOR: MotionFkExtractor | None = None
 _PROCESS_BVH_MODEL_CACHE: dict[str, mujoco.MjModel] = {}
@@ -104,7 +108,7 @@ class DatasetClipRow:
     resolved_split: str
     resolved_npz_path: str
     weight: float = 1.0
-    clip_index: int = -1  # index into merged NPZ clip_starts/clip_lengths; -1 = standalone clip
+    clip_index: int = -1  # index into shard NPZ clip_starts/clip_lengths; -1 = standalone clip
 
 
 @dataclass(frozen=True)
@@ -294,6 +298,16 @@ def resolve_dataset_paths(spec: DatasetSpec, *, output_root: str | Path | None =
     return DatasetPaths(dataset_dir=dataset_dir, clips_root=clips_root)
 
 
+def split_output_dir(dataset_dir: Path, split: str) -> Path:
+    if split not in _SPLIT_NAMES:
+        raise ValueError(f"invalid split {split!r}, expected one of {_SPLIT_NAMES}")
+    return dataset_dir / split
+
+
+def shard_output_path(split_dir: Path, shard_index: int) -> Path:
+    return split_dir / f"shard_{shard_index:03d}.npz"
+
+
 def resolve_source_input_path(source: DatasetSourceSpec) -> Path:
     candidate = Path(source.input).expanduser()
     input_path = candidate.resolve() if candidate.is_absolute() else (PROJECT_ROOT / candidate).resolve()
@@ -407,7 +421,6 @@ def _collect_source_files(source: DatasetSourceSpec) -> tuple[list[SourceInputFi
         path for path in input_path.rglob("*")
         if path.is_file()
         and path.suffix.lower() == suffix
-        and not (source.type == "npz" and path.name == "merged.npz")
     )
     if not files:
         raise ValueError(f"no {suffix} files found for source {source.name}: {input_path}")
@@ -468,7 +481,7 @@ def build_source_conversion_tasks(
 
 
 def _source_has_cached_npz(out_dir: Path) -> bool:
-    return out_dir.is_dir() and any(path.name != "merged.npz" for path in out_dir.rglob("*.npz"))
+    return out_dir.is_dir() and any(out_dir.rglob("*.npz"))
 
 
 def _pending_tasks(tasks: list[ConversionTask]) -> list[ConversionTask]:
@@ -648,7 +661,7 @@ def convert_source_to_npz_clips(
         output_dir.mkdir(parents=True, exist_ok=True)
         run_conversion_tasks(pending or tasks, jobs=jobs)
 
-    npz_files = sorted(path for path in output_dir.rglob("*.npz") if path.name != "merged.npz")
+    npz_files = sorted(output_dir.rglob("*.npz"))
     if not npz_files:
         raise ValueError(f"no converted npz clips found for source {source.name}: {output_dir}")
     return {
@@ -694,7 +707,7 @@ def collect_clip_rows(spec: DatasetSpec, *, paths: DatasetPaths) -> list[Dataset
         source_dir = paths.clips_root / source.name
         if not source_dir.is_dir():
             raise FileNotFoundError(f"expected converted npz dir for {source.name}: {source_dir}")
-        npz_files = sorted(path for path in source_dir.rglob("*.npz") if path.name != "merged.npz")
+        npz_files = sorted(source_dir.rglob("*.npz"))
         if not npz_files:
             raise ValueError(f"no converted npz clips found for source {source.name}: {source_dir}")
         for npz_path in npz_files:
@@ -928,6 +941,7 @@ def _batch_convert_chunk(
             "frames": 0,
             "fps": target_fps,
             "duration_s": 0.0,
+            "clip_lengths": [],
             "kept_file_paths": [],
         }
 
@@ -961,69 +975,38 @@ def _batch_convert_chunk(
         "frames": total_frames,
         "fps": target_fps,
         "duration_s": total_frames / max(target_fps, 1),
+        "clip_lengths": clip_lengths,
         "kept_file_paths": kept_file_paths,
     }
 
 
-def _merge_chunk_files(
-    chunk_paths: list[Path],
-    output_path: Path,
+def _shard_stats(
+    *,
+    output_dir: Path,
+    shard_infos: list[dict[str, Any]],
+    fps: int,
 ) -> dict[str, Any]:
-    """Merge pre-merged chunk NPZ files into a single output."""
-    acc: dict[str, list[np.ndarray]] = {k: [] for k in _ARRAY_KEYS}
-    all_clip_lengths: list[np.ndarray] = []
-    all_clip_fps: list[np.ndarray] = []
-    all_clip_weights: list[np.ndarray] = []
-    fps: int | None = None
-    body_names: np.ndarray | None = None
-
-    for p in chunk_paths:
-        d = np.load(p, allow_pickle=True)
-        if fps is None:
-            fps = int(d["fps"])
-            body_names = d["body_names"]
-        for key in acc:
-            acc[key].append(d[key])
-        all_clip_lengths.append(d["clip_lengths"])
-        all_clip_fps.append(d["clip_fps"])
-        all_clip_weights.append(d["clip_weights"])
-
-    clip_lengths = np.concatenate(all_clip_lengths)
-    clip_starts = np.zeros(len(clip_lengths), dtype=np.int64)
-    if len(clip_lengths) > 1:
-        clip_starts[1:] = np.cumsum(clip_lengths[:-1])
-
-    merged = {k: np.concatenate(v, axis=0) for k, v in acc.items()}
-    merged["fps"] = fps
-    merged["body_names"] = body_names
-    merged["clip_starts"] = clip_starts
-    merged["clip_lengths"] = clip_lengths
-    merged["clip_fps"] = np.concatenate(all_clip_fps)
-    merged["clip_weights"] = np.concatenate(all_clip_weights)
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(output_path, **merged)
-
-    total_frames = int(merged["joint_pos"].shape[0])
-    num_clips = len(clip_lengths)
+    total_clips = sum(len(info["clip_lengths"]) for info in shard_infos)
+    total_frames = sum(sum(int(length) for length in info["clip_lengths"]) for info in shard_infos)
     return {
-        "output": str(output_path),
-        "clips": num_clips,
-        "num_clips": num_clips,
+        "output": str(output_dir),
+        "shards": len(shard_infos),
+        "clips": total_clips,
+        "num_clips": total_clips,
         "frames": total_frames,
         "fps": fps,
-        "duration_s": float(total_frames / max(fps or 1, 1)),
+        "duration_s": float(total_frames / max(fps, 1)),
     }
 
 
 def _batch_convert_split(
     clips: list[tuple[str, float]],
     target_fps: int,
-    output_path: Path,
+    output_dir: Path,
     jobs: int,
     split_name: str,
     preprocess: DatasetPreprocessSpec,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Convert clips for one split using parallel chunk workers."""
     if not clips:
         raise ValueError(f"no clips for split {split_name}")
@@ -1031,14 +1014,21 @@ def _batch_convert_split(
     file_paths = [c[0] for c in clips]
     weights = [c[1] for c in clips]
     num_workers = min(jobs, len(clips))
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     if num_workers <= 1:
+        shard_path = shard_output_path(output_dir, 0)
         stats = _batch_convert_chunk(
-            file_paths, weights, target_fps, str(output_path), split_name, preprocess,
+            file_paths, weights, target_fps, str(shard_path), split_name, preprocess,
         )
         if int(stats["clips"]) <= 0:
             raise ValueError(f"no valid clips remain for split {split_name} after preprocessing")
-        return stats
+        shard_infos = [{
+            "path": shard_path,
+            "clip_lengths": list(stats.pop("clip_lengths", [])),
+            "kept_file_paths": list(stats.pop("kept_file_paths", [])),
+        }]
+        return _shard_stats(output_dir=output_dir, shard_infos=shard_infos, fps=target_fps), shard_infos
 
     # Split into chunks, one per worker
     chunk_size = (len(clips) + num_workers - 1) // num_workers
@@ -1048,7 +1038,7 @@ def _batch_convert_split(
         end = min(start + chunk_size, len(clips))
         if start >= len(clips):
             break
-        chunk_out = str(output_path.parent / f".{split_name}_chunk_{i}.npz")
+        chunk_out = str(output_dir / f".{split_name}_chunk_{i}.npz")
         chunk_args.append((
             file_paths[start:end],
             weights[start:end],
@@ -1076,39 +1066,51 @@ def _batch_convert_split(
                 raise
     except (PermissionError, OSError):
         print(f"[WARN] process pool unavailable; falling back to serial for {split_name}")
-        return _batch_convert_chunk(
+        shard_path = shard_output_path(output_dir, 0)
+        stats = _batch_convert_chunk(
             file_paths,
             weights,
             target_fps,
-            str(output_path),
+            str(shard_path),
             split_name,
             preprocess,
         )
+        if int(stats["clips"]) <= 0:
+            raise ValueError(f"no valid clips remain for split {split_name} after preprocessing")
+        shard_infos = [{
+            "path": shard_path,
+            "clip_lengths": list(stats.pop("clip_lengths", [])),
+            "kept_file_paths": list(stats.pop("kept_file_paths", [])),
+        }]
+        return _shard_stats(output_dir=output_dir, shard_infos=shard_infos, fps=target_fps), shard_infos
 
-    # Merge chunk files into final output
-    chunk_paths = [
-        Path(args[3])
-        for args in chunk_args
-        if int(chunk_results.get(args[3], {}).get("clips", 0)) > 0
-    ]
-    if not chunk_paths:
-        raise ValueError(f"no valid clips remain for split {split_name} after preprocessing")
-    kept_file_paths: list[str] = []
+    shard_infos: list[dict[str, Any]] = []
+    shard_index = 0
     for args in chunk_args:
+        tmp_path = Path(args[3])
         chunk_stat = chunk_results.get(args[3], {})
-        if int(chunk_stat.get("clips", 0)) > 0:
-            kept_file_paths.extend(list(chunk_stat.get("kept_file_paths", [])))
-    print(f"[MERGE] {split_name}: merging {len(chunk_paths)} chunks ...", flush=True)
-    stats = _merge_chunk_files(chunk_paths, output_path)
-    stats["kept_file_paths"] = kept_file_paths
-    for p in [Path(args[3]) for args in chunk_args]:
-        p.unlink(missing_ok=True)
+        if int(chunk_stat.get("clips", 0)) <= 0:
+            tmp_path.unlink(missing_ok=True)
+            continue
+        final_path = shard_output_path(output_dir, shard_index)
+        shard_index += 1
+        tmp_path.replace(final_path)
+        shard_infos.append({
+            "path": final_path,
+            "clip_lengths": list(chunk_stat.get("clip_lengths", [])),
+            "kept_file_paths": list(chunk_stat.get("kept_file_paths", [])),
+        })
+
+    if not shard_infos:
+        raise ValueError(f"no valid clips remain for split {split_name} after preprocessing")
+
+    stats = _shard_stats(output_dir=output_dir, shard_infos=shard_infos, fps=target_fps)
     print(
-        f"[MERGE] {split_name}: {stats['clips']} clips, "
-        f"{stats['frames']} frames ({stats['duration_s']:.1f}s)",
+        f"[SHARDS] {split_name}: {stats['shards']} shards, "
+        f"{stats['clips']} clips, {stats['frames']} frames ({stats['duration_s']:.1f}s)",
         flush=True,
     )
-    return stats
+    return stats, shard_infos
 
 
 def _build_dataset_batch(
@@ -1163,94 +1165,72 @@ def _build_dataset_batch(
 
     # 2. Process each split with parallel chunk workers
     paths.dataset_dir.mkdir(parents=True, exist_ok=True)
-    train_out = paths.dataset_dir / "train.npz"
-    val_out = paths.dataset_dir / "val.npz"
+    train_dir = split_output_dir(paths.dataset_dir, "train")
+    val_dir = split_output_dir(paths.dataset_dir, "val")
 
-    train_stats = _batch_convert_split(
+    train_stats, train_shards = _batch_convert_split(
         [(e[0], e[3]) for e in train_entries],
         spec.target_fps,
-        train_out,
+        train_dir,
         jobs,
         "train",
         spec.preprocess,
     )
-    val_stats = _batch_convert_split(
+    val_stats, val_shards = _batch_convert_split(
         [(e[0], e[3]) for e in val_entries],
         spec.target_fps,
-        val_out,
+        val_dir,
         jobs,
         "val",
         spec.preprocess,
     )
 
-    train_kept_paths = list(train_stats.pop("kept_file_paths", []))
-    val_kept_paths = list(val_stats.pop("kept_file_paths", []))
-
-    # 3. Read back per-clip frame counts from merged NPZ files
-    train_clip_lengths = np.load(train_out, allow_pickle=True)["clip_lengths"]
-    val_clip_lengths = np.load(val_out, allow_pickle=True)["clip_lengths"]
-
-    if len(train_kept_paths) != len(train_clip_lengths):
-        raise ValueError(
-            f"train kept path count mismatch: {len(train_kept_paths)} vs {len(train_clip_lengths)}"
-        )
-    if len(val_kept_paths) != len(val_clip_lengths):
-        raise ValueError(
-            f"val kept path count mismatch: {len(val_kept_paths)} vs {len(val_clip_lengths)}"
-        )
-
     def _consume_entries_by_path(
         entries: list[tuple[str, str, str, float, str]],
-        kept_paths: list[str],
-    ) -> list[tuple[str, str, str, float, str]]:
+    ) -> dict[str, list[tuple[str, str, str, float, str]]]:
         buckets: dict[str, list[tuple[str, str, str, float, str]]] = {}
         for entry in entries:
             buckets.setdefault(entry[0], []).append(entry)
-        kept_entries: list[tuple[str, str, str, float, str]] = []
-        for kept_path in kept_paths:
-            candidates = buckets.get(kept_path)
-            if not candidates:
-                raise ValueError(f"kept path not found in split entries: {kept_path}")
-            kept_entries.append(candidates.pop(0))
-        return kept_entries
+        return buckets
 
-    train_kept_entries = _consume_entries_by_path(train_entries, train_kept_paths)
-    val_kept_entries = _consume_entries_by_path(val_entries, val_kept_paths)
+    def _build_rows_for_shards(
+        entries: list[tuple[str, str, str, float, str]],
+        shard_infos: list[dict[str, Any]],
+    ) -> list[DatasetClipRow]:
+        entry_buckets = _consume_entries_by_path(entries)
+        built_rows: list[DatasetClipRow] = []
+        for shard in shard_infos:
+            shard_path = Path(shard["path"])
+            kept_paths = list(shard["kept_file_paths"])
+            clip_lengths = list(shard["clip_lengths"])
+            if len(kept_paths) != len(clip_lengths):
+                raise ValueError(
+                    f"kept path count mismatch for {shard_path}: {len(kept_paths)} vs {len(clip_lengths)}"
+                )
+            for clip_index, (kept_path, num_frames) in enumerate(zip(kept_paths, clip_lengths)):
+                candidates = entry_buckets.get(kept_path)
+                if not candidates:
+                    raise ValueError(f"kept path not found in split entries: {kept_path}")
+                path, clip_id, source, weight, split = candidates.pop(0)
+                built_rows.append(DatasetClipRow(
+                    clip_id=clip_id,
+                    source=source,
+                    file_rel=_display_path(Path(path)),
+                    num_frames=int(num_frames),
+                    fps=spec.target_fps,
+                    resolved_split=split,
+                    resolved_npz_path=str(shard_path),
+                    weight=weight,
+                    clip_index=clip_index,
+                ))
+        return built_rows
 
-    # 4. Write manifest with correct num_frames and clip_index for kept clips only
+    # 3. Write manifest with correct num_frames and clip_index for kept clips only
     rows: list[DatasetClipRow] = []
-    for clip_index, (entry, num_frames) in enumerate(zip(
-        train_kept_entries,
-        train_clip_lengths,
-    )):
-        path, clip_id, source, weight, split = entry
-        rows.append(DatasetClipRow(
-            clip_id=clip_id,
-            source=source,
-            file_rel=_display_path(Path(path)),
-            num_frames=int(num_frames),
-            fps=spec.target_fps,
-            resolved_split=split,
-            resolved_npz_path=str(train_out),
-            weight=weight,
-            clip_index=clip_index,
-        ))
-    for clip_index, (entry, num_frames) in enumerate(zip(
-        val_kept_entries,
-        val_clip_lengths,
-    )):
-        path, clip_id, source, weight, split = entry
-        rows.append(DatasetClipRow(
-            clip_id=clip_id,
-            source=source,
-            file_rel=_display_path(Path(path)),
-            num_frames=int(num_frames),
-            fps=spec.target_fps,
-            resolved_split=split,
-            resolved_npz_path=str(val_out),
-            weight=weight,
-            clip_index=clip_index,
-        ))
+    train_rows = _build_rows_for_shards(train_entries, train_shards)
+    val_rows = _build_rows_for_shards(val_entries, val_shards)
+    rows.extend(train_rows)
+    rows.extend(val_rows)
     manifest_path = write_manifest_resolved(rows, paths.dataset_dir)
 
     # 5. Build report
@@ -1275,8 +1255,8 @@ def _build_dataset_batch(
         },
         "clip_counts": {
             "total": len(rows),
-            "train": len(train_kept_entries),
-            "val": len(val_kept_entries),
+            "train": len(train_rows),
+            "val": len(val_rows),
         },
         "input_clip_counts": {
             "total": len(clip_entries),
@@ -1320,11 +1300,15 @@ def build_dataset_from_spec(
     if not skip_fk_check:
         fk_checks = run_sample_fk_checks(rows)
 
+    train_rows = [row for row in rows if row.resolved_split == "train"]
+    val_rows = [row for row in rows if row.resolved_split == "val"]
     train_files, train_weights = _rows_for_split(rows, "train")
     val_files, val_weights = _rows_for_split(rows, "val")
     paths.dataset_dir.mkdir(parents=True, exist_ok=True)
-    train_out = paths.dataset_dir / "train.npz"
-    val_out = paths.dataset_dir / "val.npz"
+    train_dir = split_output_dir(paths.dataset_dir, "train")
+    val_dir = split_output_dir(paths.dataset_dir, "val")
+    train_out = shard_output_path(train_dir, 0)
+    val_out = shard_output_path(val_dir, 0)
 
     train_stats = merge_npz_files(
         train_files,
@@ -1339,7 +1323,53 @@ def build_dataset_from_spec(
         weights=val_weights,
     )
 
-    manifest_path = write_manifest_resolved(rows, paths.dataset_dir)
+    train_stats["output"] = str(train_dir)
+    train_stats["shards"] = 1
+    val_stats["output"] = str(val_dir)
+    val_stats["shards"] = 1
+
+    train_clip_lengths = np.load(train_out, allow_pickle=True)["clip_lengths"]
+    val_clip_lengths = np.load(val_out, allow_pickle=True)["clip_lengths"]
+    if len(train_rows) != len(train_clip_lengths):
+        raise ValueError(
+            f"train row count mismatch: {len(train_rows)} vs {len(train_clip_lengths)}"
+        )
+    if len(val_rows) != len(val_clip_lengths):
+        raise ValueError(
+            f"val row count mismatch: {len(val_rows)} vs {len(val_clip_lengths)}"
+        )
+
+    updated_rows: list[DatasetClipRow] = []
+    for clip_index, (row, num_frames) in enumerate(zip(train_rows, train_clip_lengths)):
+        updated_rows.append(
+            DatasetClipRow(
+                clip_id=row.clip_id,
+                source=row.source,
+                file_rel=row.file_rel,
+                num_frames=int(num_frames),
+                fps=spec.target_fps,
+                resolved_split=row.resolved_split,
+                resolved_npz_path=str(train_out),
+                weight=row.weight,
+                clip_index=clip_index,
+            )
+        )
+    for clip_index, (row, num_frames) in enumerate(zip(val_rows, val_clip_lengths)):
+        updated_rows.append(
+            DatasetClipRow(
+                clip_id=row.clip_id,
+                source=row.source,
+                file_rel=row.file_rel,
+                num_frames=int(num_frames),
+                fps=spec.target_fps,
+                resolved_split=row.resolved_split,
+                resolved_npz_path=str(val_out),
+                weight=row.weight,
+                clip_index=clip_index,
+            )
+        )
+
+    manifest_path = write_manifest_resolved(updated_rows, paths.dataset_dir)
     report: dict[str, Any] = {
         "dataset": spec.name,
         "built_at_utc": utc_now_iso(),
@@ -1360,9 +1390,9 @@ def build_dataset_from_spec(
             "val": val_stats,
         },
         "clip_counts": {
-            "total": len(rows),
-            "train": len(train_files),
-            "val": len(val_files),
+            "total": len(updated_rows),
+            "train": len(train_rows),
+            "val": len(val_rows),
         },
         "fk_checks": [item.to_dict() for item in fk_checks],
     }
