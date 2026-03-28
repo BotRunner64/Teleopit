@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from train_mimic.tasks.tracking.mdp.commands import (
+    _cap_failure_rates,
     _compute_clip_counts,
     _compute_clip_failure_rate,
     _normalize_sampling_probabilities,
@@ -132,3 +133,152 @@ def test_accumulation_sums_across_resamples() -> None:
 
     assert torch.allclose(accum_exposure, torch.tensor([2.0, 2.0, 2.0]))
     assert torch.allclose(accum_failure, torch.tensor([1.0, 1.0, 1.0]))
+
+
+# ---------------------------------------------------------------------------
+# adaptive_bin: _cap_failure_rates
+# ---------------------------------------------------------------------------
+
+
+def test_cap_failure_rates_clamps_outliers() -> None:
+    rates = torch.tensor([0.1, 0.9, 0.2])
+    # mean = 0.4, beta=2.0 -> cap = 0.8
+    capped = _cap_failure_rates(rates, beta=2.0)
+    expected = torch.tensor([0.1, 0.8, 0.2])
+    assert torch.allclose(capped, expected)
+
+
+def test_cap_failure_rates_all_zero() -> None:
+    rates = torch.zeros(5)
+    capped = _cap_failure_rates(rates, beta=5.0)
+    assert torch.allclose(capped, torch.zeros(5))
+
+
+def test_cap_failure_rates_uniform() -> None:
+    """When all rates are equal, capping changes nothing."""
+    rates = torch.tensor([0.3, 0.3, 0.3])
+    capped = _cap_failure_rates(rates, beta=2.0)
+    assert torch.allclose(capped, rates)
+
+
+# ---------------------------------------------------------------------------
+# adaptive_bin: build_time_bins (via MotionLib mock)
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_motion_lib(
+    clip_sample_start_s: list[float],
+    clip_sample_end_s: list[float],
+    clip_weights: list[float],
+):
+    """Create a lightweight mock with just the fields build_time_bins needs."""
+    import math as _math
+    from types import SimpleNamespace
+
+    from train_mimic.tasks.tracking.mdp.commands import MotionLib
+
+    num_clips = len(clip_weights)
+    device = "cpu"
+
+    mock = SimpleNamespace()
+    mock.num_clips = num_clips
+    mock._device = device
+    mock.clip_weights = torch.tensor(clip_weights, dtype=torch.float32, device=device)
+    mock.clip_sample_start_s = torch.tensor(
+        clip_sample_start_s, dtype=torch.float32, device=device
+    )
+    mock.clip_sample_end_s = torch.tensor(
+        clip_sample_end_s, dtype=torch.float32, device=device
+    )
+    # Bind the real method
+    mock.build_time_bins = MotionLib.build_time_bins.__get__(mock, type(mock))
+    return mock
+
+
+def test_build_time_bins_single_clip() -> None:
+    ml = _make_mock_motion_lib(
+        clip_sample_start_s=[0.0],
+        clip_sample_end_s=[12.0],
+        clip_weights=[1.0],
+    )
+    result = ml.build_time_bins(bin_duration_s=5.0)
+
+    assert result["num_bins"] == 3  # [0,5), [5,10), [10,12)
+    assert torch.equal(result["bin_clip_id"], torch.tensor([0, 0, 0]))
+    assert torch.allclose(result["bin_start_s"], torch.tensor([0.0, 5.0, 10.0]))
+    assert torch.allclose(result["bin_end_s"], torch.tensor([5.0, 10.0, 12.0]))
+    assert torch.allclose(result["bin_duration"], torch.tensor([5.0, 5.0, 2.0]))
+    assert result["clip_bin_offset"][0].item() == 0
+
+
+def test_build_time_bins_multiple_clips() -> None:
+    ml = _make_mock_motion_lib(
+        clip_sample_start_s=[0.0, 0.0, 0.0],
+        clip_sample_end_s=[3.0, 7.0, 10.0],
+        clip_weights=[1.0, 1.0, 1.0],
+    )
+    result = ml.build_time_bins(bin_duration_s=5.0)
+
+    # clip 0: 3s -> 1 bin; clip 1: 7s -> 2 bins; clip 2: 10s -> 2 bins
+    assert result["num_bins"] == 5
+    expected_clip_ids = torch.tensor([0, 1, 1, 2, 2])
+    assert torch.equal(result["bin_clip_id"], expected_clip_ids)
+
+
+def test_build_time_bins_skips_zero_weight() -> None:
+    ml = _make_mock_motion_lib(
+        clip_sample_start_s=[0.0, 0.0],
+        clip_sample_end_s=[10.0, 10.0],
+        clip_weights=[1.0, 0.0],
+    )
+    result = ml.build_time_bins(bin_duration_s=5.0)
+
+    assert result["num_bins"] == 2  # only clip 0
+    assert torch.equal(result["bin_clip_id"], torch.tensor([0, 0]))
+    assert result["clip_bin_offset"][1].item() == -1
+
+
+def test_build_time_bins_short_clip() -> None:
+    """A clip shorter than bin_duration produces exactly 1 bin."""
+    ml = _make_mock_motion_lib(
+        clip_sample_start_s=[0.0],
+        clip_sample_end_s=[2.0],
+        clip_weights=[1.0],
+    )
+    result = ml.build_time_bins(bin_duration_s=5.0)
+
+    assert result["num_bins"] == 1
+    assert torch.allclose(result["bin_duration"], torch.tensor([2.0]))
+
+
+# ---------------------------------------------------------------------------
+# adaptive_bin: probability formula
+# ---------------------------------------------------------------------------
+
+
+def test_adaptive_bin_probability_formula() -> None:
+    """Verify the full capped + blended probability computation."""
+    rates = torch.tensor([0.1, 0.9, 0.2, 0.0])
+    beta = 2.0
+    alpha = 0.8
+    N = len(rates)
+
+    # Step 1: cap
+    capped = _cap_failure_rates(rates, beta)
+    # mean=0.3, cap=0.6 -> [0.1, 0.6, 0.2, 0.0]
+    expected_capped = torch.tensor([0.1, 0.6, 0.2, 0.0])
+    assert torch.allclose(capped, expected_capped)
+
+    # Step 2: normalize to p_hat
+    capped_sum = capped.sum()
+    p_hat = capped / capped_sum  # [0.1/0.9, 0.6/0.9, 0.2/0.9, 0]
+
+    # Step 3: blend
+    p_final = alpha * p_hat + (1.0 - alpha) / N
+    p_final = p_final / p_final.sum()
+
+    # Verify it's a valid distribution
+    assert torch.allclose(p_final.sum(), torch.tensor(1.0))
+    assert (p_final > 0).all(), "All bins should have positive probability"
+    # Bin 1 (highest failure) should have highest probability
+    assert p_final[1] == p_final.max()
