@@ -51,8 +51,6 @@ python scripts/download_assets.py --only gmr ckpt bvh
 | `data/sample_bvh/*.bvh` | 5M | 示例动作文件 |
 | `teleopit/retargeting/gmr/assets/` | ~1.2G | GMR retargeting 机器人模型 |
 
-演示视频和 GIF 不再随仓库分发，请在 Releases 页面获取。
-
 ## Quick Start
 
 离线 sim2sim：
@@ -71,8 +69,6 @@ python train_mimic/scripts/train.py \
     --num_envs 4096 \
     --max_iterations 30000
 ```
-
-`--motion_file` 只接受 shard 目录，不再支持单文件 `train.npz` / `val.npz`。
 
 导出 ONNX：
 
