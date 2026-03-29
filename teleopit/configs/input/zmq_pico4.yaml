@@ -1,0 +1,8 @@
+provider: zmq_pico4
+human_format: xrobot
+robot_name: unitree_g1
+human_height: 1.75
+zmq_host: "192.168.1.100"   # IP of the upper machine (PC with Pico4)
+zmq_port: 5555
+zmq_topic: "pico4"
+zmq_timeout: 30.0            # seconds to wait for first ZMQ frame

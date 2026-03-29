@@ -196,15 +196,17 @@ def _prepare_input_cfg(input_cfg: Any, project_root: Path, *, sim2real: bool) ->
             required=True,
             missing_message="input.reference_bvh must be set for udp_bvh provider",
         )
+    elif provider_kind == "zmq_pico4":
+        pass  # no path normalization needed
     elif provider_kind != "pico4":
         raise ValueError(
             f"Unsupported input.provider='{provider_kind}'. "
-            "Supported providers are bvh, vr_stub, udp_bvh, pico4."
+            "Supported providers are bvh, vr_stub, udp_bvh, pico4, zmq_pico4."
         )
 
-    if sim2real and provider_kind not in ("udp_bvh", "pico4"):
+    if sim2real and provider_kind not in ("udp_bvh", "pico4", "zmq_pico4"):
         raise ValueError(
-            f"Sim2real only supports udp_bvh or pico4 input providers; got '{provider_kind}'."
+            f"Sim2real only supports udp_bvh, pico4, or zmq_pico4 input providers; got '{provider_kind}'."
         )
     return provider_kind
 
@@ -218,6 +220,17 @@ def _build_input_provider(
     pico4_input_cls: type[Any],
     udp_bvh_input_cls: type[Any],
 ) -> Any:
+    if provider_kind == "zmq_pico4":
+        from teleopit.inputs.zmq_provider import ZMQInputProvider
+
+        return ZMQInputProvider(
+            host=str(cfg_get(input_cfg, "zmq_host", "192.168.1.100")),
+            port=int(cfg_get(input_cfg, "zmq_port", 5555)),
+            topic=str(cfg_get(input_cfg, "zmq_topic", "pico4")),
+            human_format=str(cfg_get(input_cfg, "human_format", "xrobot")),
+            timeout=float(cfg_get(input_cfg, "zmq_timeout", 30.0)),
+        )
+
     if provider_kind == "pico4":
         return pico4_input_cls(
             human_format=str(cfg_get(input_cfg, "human_format", "xrobot")),
@@ -247,7 +260,7 @@ def _resolve_human_format(input_cfg: Any, input_provider: Any) -> str:
     if hasattr(input_provider, "human_format"):
         provider_format = input_provider.human_format
         provider_kind = str(cfg_get(input_cfg, "provider", "bvh")).lower()
-        if provider_kind == "pico4":
+        if provider_kind in ("pico4", "zmq_pico4"):
             return str(provider_format)
         return f"bvh_{provider_format}"
 
@@ -255,7 +268,7 @@ def _resolve_human_format(input_cfg: Any, input_provider: Any) -> str:
     if human_format and str(human_format) != "null":
         return str(human_format)
 
-    if str(cfg_get(input_cfg, "provider", "bvh")).lower() == "pico4":
+    if str(cfg_get(input_cfg, "provider", "bvh")).lower() in ("pico4", "zmq_pico4"):
         return str(cfg_get(input_cfg, "human_format", "xrobot"))
     return f"bvh_{cfg_get(input_cfg, 'bvh_format', 'lafan1')}"
 

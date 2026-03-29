@@ -50,6 +50,13 @@ train = [
 ]
 pico4 = [
     # xrobotoolkit_sdk is a proprietary Pico4 SDK — install manually from vendor package
+    "pyzmq>=25.0",
+    "msgpack>=1.0",
+    "teleopit[sim2real]",
+]
+onboard = [
+    "pyzmq>=25.0",
+    "msgpack>=1.0",
     "teleopit[sim2real]",
 ]
 

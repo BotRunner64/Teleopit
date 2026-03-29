@@ -3,3 +3,10 @@ from teleopit.inputs.pico4_provider import Pico4InputProvider
 from teleopit.inputs.udp_bvh_provider import UDPBVHInputProvider
 
 __all__ = ["BVHInputProvider", "Pico4InputProvider", "UDPBVHInputProvider"]
+
+try:
+    from teleopit.inputs.zmq_provider import ZMQInputProvider
+
+    __all__.append("ZMQInputProvider")
+except ImportError:
+    pass
