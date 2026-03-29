@@ -666,6 +666,9 @@ class MotionCommand(CommandTerm):
             self._env_bin_ids = torch.zeros(
                 self.num_envs, dtype=torch.long, device=self.device
             )
+            self._env_spawn_bin_ids = torch.zeros(
+                self.num_envs, dtype=torch.long, device=self.device
+            )
             # Override bin_count so metrics (entropy, top1) use time bins
             self.bin_count = self.num_time_bins
             _LOG.info(
@@ -989,8 +992,8 @@ class MotionCommand(CommandTerm):
 
     def _adaptive_bin_sampling(self, env_ids: torch.Tensor):
         """SONIC-inspired bin-based adaptive sampling."""
-        # 1. Accumulate failure statistics per time bin
-        current_bin_ids = self._env_bin_ids[env_ids]
+        # 1. Accumulate failure statistics per time bin (use spawn bin, not current)
+        current_bin_ids = self._env_spawn_bin_ids[env_ids]
         episode_failed = self._env.termination_manager.terminated[env_ids]
         exposure = torch.bincount(
             current_bin_ids, minlength=self.num_time_bins
@@ -1010,7 +1013,18 @@ class MotionCommand(CommandTerm):
             p_hat = torch.ones_like(capped) / self.num_time_bins
 
         alpha = self.cfg.adaptive_bin_alpha
+        # Entropy-based alpha decay: reduce adaptive weight when entropy is low
+        if self.cfg.adaptive_bin_entropy_floor > 0:
+            prev_entropy = -(p_hat * (p_hat + 1e-12).log()).sum()
+            prev_entropy_norm = prev_entropy / math.log(self.num_time_bins) if self.num_time_bins > 1 else 1.0
+            if prev_entropy_norm < self.cfg.adaptive_bin_entropy_floor:
+                alpha = alpha * (prev_entropy_norm / self.cfg.adaptive_bin_entropy_floor)
+
         p_final = alpha * p_hat + (1.0 - alpha) / self.num_time_bins
+        # Apply minimum probability floor per bin
+        if self.cfg.adaptive_bin_min_prob > 0:
+            floor = self.cfg.adaptive_bin_min_prob / self.num_time_bins
+            p_final = torch.clamp(p_final, min=floor)
         # Normalize for numerical safety
         p_final = p_final / p_final.sum()
 
@@ -1026,6 +1040,7 @@ class MotionCommand(CommandTerm):
         self.motion_ids[env_ids] = sampled_clip_ids
         self.motion_times[env_ids] = sampled_times
         self._env_bin_ids[env_ids] = sampled_bins
+        self._env_spawn_bin_ids[env_ids] = sampled_bins
 
         # 4. Update metrics
         entropy = -(p_final * (p_final + 1e-12).log()).sum()
@@ -1036,6 +1051,24 @@ class MotionCommand(CommandTerm):
         self.metrics["sampling_entropy"][:] = entropy_norm
         self.metrics["sampling_top1_prob"][:] = top1_prob
         self.metrics["sampling_top1_bin"][:] = top1_bin.float() / self.num_time_bins
+
+    # ------------------------------------------------------------------
+    # Checkpoint persistence for adaptive_bin state
+    # ------------------------------------------------------------------
+
+    def adaptive_bin_state_dict(self) -> dict[str, torch.Tensor]:
+        """Return adaptive_bin state for checkpoint serialization."""
+        if self.cfg.sampling_mode != "adaptive_bin":
+            return {}
+        return {"tb_failed_rate": self.tb_failed_rate.clone()}
+
+    def load_adaptive_bin_state_dict(self, state: dict[str, torch.Tensor]) -> None:
+        """Restore adaptive_bin state from a checkpoint."""
+        if self.cfg.sampling_mode != "adaptive_bin" or not state:
+            return
+        saved = state.get("tb_failed_rate")
+        if saved is not None and saved.shape == self.tb_failed_rate.shape:
+            self.tb_failed_rate.copy_(saved.to(self.device))
 
     def _resample_command(self, env_ids: torch.Tensor):
         if self.cfg.sampling_mode == "start":
@@ -1315,7 +1348,9 @@ class MotionCommandCfg(CommandTermCfg):
     adaptive_bin_duration_s: float = 5.0
     adaptive_bin_beta: float = 5.0
     adaptive_bin_alpha: float = 0.8
-    adaptive_bin_alpha_ema: float = 0.001
+    adaptive_bin_alpha_ema: float = 0.01
+    adaptive_bin_min_prob: float = 0.5
+    adaptive_bin_entropy_floor: float = 0.0
     window_steps: tuple[int, ...] = (0,)
     feet_body_names: tuple[str, ...] = ()
     feet_standing_z_threshold: float = 0.18

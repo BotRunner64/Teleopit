@@ -85,6 +85,28 @@ class MotionTrackingOnPolicyRunner(MjlabOnPolicyRunner):
         super().__init__(env, train_cfg, log_dir, device)
         self.registry_name = registry_name
 
+    def save(self, path: str, infos=None) -> None:
+        infos = infos or {}
+        cmd = cast(MotionCommand, self.env.unwrapped.command_manager.get_term("motion"))
+        ab_state = cmd.adaptive_bin_state_dict()
+        if ab_state:
+            infos["adaptive_bin_state"] = ab_state
+        super().save(path, infos)
+
+    def load(
+        self,
+        path: str,
+        load_cfg: dict | None = None,
+        strict: bool = True,
+        map_location: str | None = None,
+    ) -> dict:
+        infos = super().load(path, load_cfg, strict, map_location)
+        ab_state = (infos or {}).get("adaptive_bin_state")
+        if ab_state:
+            cmd = cast(MotionCommand, self.env.unwrapped.command_manager.get_term("motion"))
+            cmd.load_adaptive_bin_state_dict(ab_state)
+        return infos
+
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         """Run the learning loop using 1-based iteration numbering."""
         if init_at_random_ep_len:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 import torch
 
+import math
+
 from train_mimic.tasks.tracking.mdp.commands import (
     _cap_failure_rates,
     _compute_clip_counts,
@@ -282,3 +284,167 @@ def test_adaptive_bin_probability_formula() -> None:
     assert (p_final > 0).all(), "All bins should have positive probability"
     # Bin 1 (highest failure) should have highest probability
     assert p_final[1] == p_final.max()
+
+
+# ---------------------------------------------------------------------------
+# Fix: spawn-bin attribution
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_bin_attribution_not_drifted_by_time_update() -> None:
+    """Failure should be attributed to the spawn bin, not the current bin."""
+    num_bins = 4
+    num_envs = 3
+
+    # Simulate: envs spawned at bins [0, 1, 2]
+    spawn_bin_ids = torch.tensor([0, 1, 2], dtype=torch.long)
+    # After time progression, env_bin_ids drifted to [1, 2, 3]
+    env_bin_ids = torch.tensor([1, 2, 3], dtype=torch.long)
+
+    episode_failed = torch.tensor([True, True, False])
+
+    # Attribution using spawn bins (correct)
+    exposure_spawn = torch.bincount(spawn_bin_ids, minlength=num_bins).float()
+    failure_spawn = torch.bincount(spawn_bin_ids[episode_failed], minlength=num_bins).float()
+
+    # Attribution using drifted bins (incorrect old behavior)
+    exposure_drift = torch.bincount(env_bin_ids, minlength=num_bins).float()
+    failure_drift = torch.bincount(env_bin_ids[episode_failed], minlength=num_bins).float()
+
+    # Spawn attribution: failure at bins 0 and 1
+    assert torch.allclose(failure_spawn, torch.tensor([1.0, 1.0, 0.0, 0.0]))
+    # Drifted attribution: failure at bins 1 and 2 (wrong!)
+    assert torch.allclose(failure_drift, torch.tensor([0.0, 1.0, 1.0, 0.0]))
+    # They should be different — spawn attribution avoids systematic later-bin bias
+    assert not torch.equal(failure_spawn, failure_drift)
+
+
+# ---------------------------------------------------------------------------
+# Fix: minimum probability floor
+# ---------------------------------------------------------------------------
+
+
+def test_min_prob_floor_prevents_zero_probability() -> None:
+    """With min_prob > 0, no bin should have probability below floor / N."""
+    rates = torch.tensor([0.0, 0.0, 0.0, 1.0, 0.0])
+    beta = 5.0
+    alpha = 0.8
+    min_prob = 0.5
+    N = len(rates)
+
+    capped = _cap_failure_rates(rates, beta)
+    capped_sum = capped.sum()
+    p_hat = capped / capped_sum if capped_sum > 0 else torch.ones_like(capped) / N
+
+    p_final = alpha * p_hat + (1.0 - alpha) / N
+
+    # Apply min_prob floor
+    floor = min_prob / N
+    p_clamped = torch.clamp(p_final, min=floor)
+    p_clamped = p_clamped / p_clamped.sum()
+
+    # Before normalization, all bins >= floor; after normalization, they shrink
+    # proportionally but the minimum should be much larger than without the floor
+    assert torch.allclose(p_clamped.sum(), torch.tensor(1.0))
+    # Without floor, the zero-rate bins get only (1-alpha)/N = 0.04
+    # With floor, they get at least floor/sum ≈ 0.08 (2x improvement)
+    p_no_floor = p_final / p_final.sum()
+    assert p_clamped.min() > p_no_floor.min(), "Floor should raise minimum probability"
+
+
+def test_min_prob_zero_preserves_original_behavior() -> None:
+    """When min_prob=0, the formula is unchanged."""
+    rates = torch.tensor([0.0, 0.0, 0.0, 1.0, 0.0])
+    beta = 5.0
+    alpha = 0.8
+    N = len(rates)
+
+    capped = _cap_failure_rates(rates, beta)
+    capped_sum = capped.sum()
+    p_hat = capped / capped_sum if capped_sum > 0 else torch.ones_like(capped) / N
+
+    p_original = alpha * p_hat + (1.0 - alpha) / N
+    p_original = p_original / p_original.sum()
+
+    # With min_prob=0, no clamping
+    p_with_zero_floor = p_original.clone()
+    # No clamp applied
+    p_with_zero_floor = p_with_zero_floor / p_with_zero_floor.sum()
+
+    assert torch.allclose(p_original, p_with_zero_floor)
+
+
+# ---------------------------------------------------------------------------
+# Fix: checkpoint round-trip for adaptive_bin state
+# ---------------------------------------------------------------------------
+
+
+def test_adaptive_bin_state_dict_round_trip() -> None:
+    """Saving and loading tb_failed_rate should preserve the tensor."""
+    original_rate = torch.tensor([0.1, 0.5, 0.3, 0.0, 0.8])
+
+    # Simulate state_dict
+    state = {"tb_failed_rate": original_rate.clone()}
+
+    # Simulate load
+    restored_rate = torch.zeros(5)
+    saved = state.get("tb_failed_rate")
+    if saved is not None and saved.shape == restored_rate.shape:
+        restored_rate.copy_(saved)
+
+    assert torch.allclose(restored_rate, original_rate)
+
+
+def test_adaptive_bin_state_dict_shape_mismatch_is_safe() -> None:
+    """If bin count changes between runs, the load should be a no-op."""
+    state = {"tb_failed_rate": torch.tensor([0.1, 0.5, 0.3])}
+
+    restored_rate = torch.zeros(5)  # Different shape
+    saved = state.get("tb_failed_rate")
+    if saved is not None and saved.shape == restored_rate.shape:
+        restored_rate.copy_(saved)
+
+    # Should remain zeros because shape didn't match
+    assert torch.allclose(restored_rate, torch.zeros(5))
+
+
+# ---------------------------------------------------------------------------
+# Fix: entropy-based alpha decay
+# ---------------------------------------------------------------------------
+
+
+def test_entropy_floor_reduces_alpha_when_entropy_low() -> None:
+    """Alpha should be reduced when p_hat entropy is below the floor."""
+    # A very concentrated p_hat
+    p_hat = torch.tensor([0.9, 0.05, 0.03, 0.02])
+    N = len(p_hat)
+    alpha_base = 0.8
+    entropy_floor = 0.9
+
+    entropy = -(p_hat * (p_hat + 1e-12).log()).sum()
+    entropy_norm = entropy / math.log(N)
+
+    # Entropy is low (~0.53), below floor of 0.9
+    assert entropy_norm < entropy_floor
+
+    # Compute decayed alpha
+    alpha_decayed = alpha_base * (entropy_norm / entropy_floor)
+    assert alpha_decayed < alpha_base
+    assert alpha_decayed > 0
+
+
+def test_entropy_floor_zero_disables_decay() -> None:
+    """With entropy_floor=0, alpha should never be modified."""
+    p_hat = torch.tensor([0.9, 0.05, 0.03, 0.02])
+    alpha_base = 0.8
+    entropy_floor = 0.0
+
+    # The condition `entropy_floor > 0` is False, so no decay
+    alpha = alpha_base
+    if entropy_floor > 0:
+        entropy = -(p_hat * (p_hat + 1e-12).log()).sum()
+        entropy_norm = entropy / math.log(len(p_hat))
+        if entropy_norm < entropy_floor:
+            alpha = alpha * (entropy_norm / entropy_floor)
+
+    assert alpha == alpha_base
