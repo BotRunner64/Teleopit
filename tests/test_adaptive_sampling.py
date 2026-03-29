@@ -82,6 +82,62 @@ def test_ema_skips_update_when_no_data() -> None:
     assert torch.allclose(bin_failed_rate, expected)
 
 
+def test_ema_does_not_decay_unobserved_bins() -> None:
+    """Bins with zero exposure must keep their old rate, not decay toward 0.
+
+    This was the root cause of entropy collapse: the old code applied the EMA
+    to ALL bins, so unobserved bins got ``ema * 0 + (1-ema) * old``, steadily
+    decaying their failure rates and biasing p_hat toward observed bins.
+    """
+    bin_count = 5
+    ema = 0.01
+    tb_failed_rate = torch.tensor([0.5, 0.3, 0.8, 0.2, 0.6])
+
+    # Only bins 0 and 2 were sampled this step
+    accum_exposure = torch.tensor([10.0, 0.0, 5.0, 0.0, 0.0])
+    accum_failure = torch.tensor([4.0, 0.0, 3.0, 0.0, 0.0])
+
+    if accum_exposure.sum() > 0:
+        valid = accum_exposure > 0
+        observed_rate = accum_failure[valid] / accum_exposure[valid]
+        # Correct: only update observed bins
+        tb_failed_rate[valid] = (
+            ema * observed_rate + (1 - ema) * tb_failed_rate[valid]
+        )
+
+    # Bins 1, 3, 4 should be UNCHANGED (not decayed)
+    assert tb_failed_rate[1] == 0.3, f"Bin 1 decayed: {tb_failed_rate[1]}"
+    assert tb_failed_rate[3] == 0.2, f"Bin 3 decayed: {tb_failed_rate[3]}"
+    assert tb_failed_rate[4] == 0.6, f"Bin 4 decayed: {tb_failed_rate[4]}"
+    # Observed bins should be updated
+    # bin 0: ema*0.4 + (1-ema)*0.5 = 0.004 + 0.495 = 0.499
+    assert abs(tb_failed_rate[0] - 0.499) < 1e-5
+    # bin 2: ema*0.6 + (1-ema)*0.8 = 0.006 + 0.792 = 0.798
+    assert abs(tb_failed_rate[2] - 0.798) < 1e-5
+
+
+def test_old_ema_bug_would_decay_unobserved_bins() -> None:
+    """Demonstrate what the old (buggy) code did — for regression protection."""
+    bin_count = 5
+    ema = 0.01
+    tb_failed_rate = torch.tensor([0.5, 0.3, 0.8, 0.2, 0.6])
+
+    accum_exposure = torch.tensor([10.0, 0.0, 5.0, 0.0, 0.0])
+    accum_failure = torch.tensor([4.0, 0.0, 3.0, 0.0, 0.0])
+
+    # OLD buggy code: applies EMA to ALL bins
+    valid = accum_exposure > 0
+    global_rate = torch.zeros_like(tb_failed_rate)
+    global_rate[valid] = accum_failure[valid] / accum_exposure[valid]
+    tb_failed_rate_buggy = ema * global_rate + (1 - ema) * tb_failed_rate
+
+    # Unobserved bins were wrongly decayed:
+    # bin 1: 0.01*0 + 0.99*0.3 = 0.297 (not 0.3!)
+    assert tb_failed_rate_buggy[1] < 0.3, "Old code should have decayed bin 1"
+    assert tb_failed_rate_buggy[3] < 0.2, "Old code should have decayed bin 3"
+    assert tb_failed_rate_buggy[4] < 0.6, "Old code should have decayed bin 4"
+
+
 # ---------------------------------------------------------------------------
 # Fail-fast validation for invalid adaptive distributions
 # ---------------------------------------------------------------------------
@@ -399,13 +455,13 @@ def test_adaptive_bin_state_dict_shape_mismatch_is_safe() -> None:
     """If bin count changes between runs, the load should be a no-op."""
     state = {"tb_failed_rate": torch.tensor([0.1, 0.5, 0.3])}
 
-    restored_rate = torch.zeros(5)  # Different shape
+    restored_rate = torch.ones(5)  # Mirrors adaptive_bin cold-start initialization
     saved = state.get("tb_failed_rate")
     if saved is not None and saved.shape == restored_rate.shape:
         restored_rate.copy_(saved)
 
-    # Should remain zeros because shape didn't match
-    assert torch.allclose(restored_rate, torch.zeros(5))
+    # Should remain unchanged because shape didn't match
+    assert torch.allclose(restored_rate, torch.ones(5))
 
 
 # ---------------------------------------------------------------------------

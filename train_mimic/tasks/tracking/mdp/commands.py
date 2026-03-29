@@ -653,8 +653,12 @@ class MotionCommand(CommandTerm):
             self.tb_end_s: torch.Tensor = bin_data["bin_end_s"]
             self.tb_duration: torch.Tensor = bin_data["bin_duration"]
             self.tb_clip_bin_offset: torch.Tensor = bin_data["clip_bin_offset"]
+            # Number of bins per clip (for per-clip clamping in _time_to_bin_index)
+            self.tb_clip_num_bins = torch.bincount(
+                self.tb_clip_id, minlength=self.motion.num_clips
+            )
 
-            self.tb_failed_rate = torch.zeros(
+            self.tb_failed_rate = torch.ones(
                 self.num_time_bins, dtype=torch.float, device=self.device
             )
             self._tb_accum_exposure = torch.zeros(
@@ -981,14 +985,11 @@ class MotionCommand(CommandTerm):
         offsets = self.tb_clip_bin_offset[motion_ids]  # first bin of each clip
         local_time = motion_times - self.tb_start_s[offsets]
         bin_within_clip = (local_time / self.cfg.adaptive_bin_duration_s).long()
-        # Clamp to valid range: last bin of each clip
-        # Total bins per clip = number of consecutive bins with same clip_id
-        # Simple approach: clamp so offset + bin_within_clip stays < num_time_bins
-        # and the clip_id matches
+        # Per-clip clamp: prevent overflow into the next clip's bin range
+        max_bin_idx = self.tb_clip_num_bins[motion_ids] - 1
         bin_within_clip = torch.clamp(bin_within_clip, min=0)
-        result = offsets + bin_within_clip
-        result = torch.clamp(result, max=self.num_time_bins - 1)
-        return result
+        bin_within_clip = torch.minimum(bin_within_clip, max_bin_idx)
+        return offsets + bin_within_clip
 
     def _adaptive_bin_sampling(self, env_ids: torch.Tensor):
         """SONIC-inspired bin-based adaptive sampling."""
@@ -1216,23 +1217,24 @@ class MotionCommand(CommandTerm):
             # Only update EMA when new data exists (fixes decay-on-empty-step)
             if self._accum_exposure_count.sum() > 0:
                 valid = self._accum_exposure_count > 0
-                global_rate = torch.zeros_like(self.bin_failed_rate)
-                global_rate[valid] = (
+                observed_rate = (
                     self._accum_failure_count[valid]
                     / self._accum_exposure_count[valid]
                 )
-                self.bin_failed_rate = (
-                    self.cfg.adaptive_alpha * global_rate
-                    + (1 - self.cfg.adaptive_alpha) * self.bin_failed_rate
+                # Only update observed bins — unobserved bins keep their
+                # previous rate instead of decaying toward 0.
+                self.bin_failed_rate[valid] = (
+                    self.cfg.adaptive_alpha * observed_rate
+                    + (1 - self.cfg.adaptive_alpha) * self.bin_failed_rate[valid]
                 )
 
             self._accum_exposure_count.zero_()
             self._accum_failure_count.zero_()
 
         elif self.cfg.sampling_mode == "adaptive_bin":
-            # Keep bin ids in sync with current motion_times so that
-            # failures are attributed to the bin the agent is *in*, not the
-            # bin it was initially sampled from.
+            # Keep bin ids in sync with current motion_times for diagnostics.
+            # Note: failure attribution uses _env_spawn_bin_ids (set at spawn),
+            # not _env_bin_ids (which tracks the agent's current position).
             self._env_bin_ids = self._time_to_bin_index(
                 self.motion_ids, self.motion_times
             )
@@ -1243,13 +1245,14 @@ class MotionCommand(CommandTerm):
 
             if self._tb_accum_exposure.sum() > 0:
                 valid = self._tb_accum_exposure > 0
-                global_rate = torch.zeros_like(self.tb_failed_rate)
-                global_rate[valid] = (
+                observed_rate = (
                     self._tb_accum_failure[valid] / self._tb_accum_exposure[valid]
                 )
                 ema = self.cfg.adaptive_bin_alpha_ema
-                self.tb_failed_rate = (
-                    ema * global_rate + (1 - ema) * self.tb_failed_rate
+                # Only update bins that were actually observed — unobserved
+                # bins keep their previous rate instead of decaying toward 0.
+                self.tb_failed_rate[valid] = (
+                    ema * observed_rate + (1 - ema) * self.tb_failed_rate[valid]
                 )
 
             self._tb_accum_exposure.zero_()
@@ -1346,7 +1349,7 @@ class MotionCommandCfg(CommandTermCfg):
     sampling_mode: Literal["adaptive", "adaptive_bin", "uniform", "start"] = "uniform"
     # --- adaptive_bin mode params ---
     adaptive_bin_duration_s: float = 5.0
-    adaptive_bin_beta: float = 5.0
+    adaptive_bin_beta: float = 2.0
     adaptive_bin_alpha: float = 0.8
     adaptive_bin_alpha_ema: float = 0.01
     adaptive_bin_min_prob: float = 0.5
