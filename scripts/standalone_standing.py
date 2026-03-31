@@ -25,6 +25,7 @@ Flow:
 from __future__ import annotations
 
 import argparse
+import copy
 import logging
 import math
 import signal
@@ -454,7 +455,7 @@ class StandingController:
         logger.info("LowState received, robot connected")
 
     def _on_lowstate(self, msg) -> None:
-        self._lowstate = msg
+        self._lowstate = copy.deepcopy(msg)
 
     # ---- Robot state reading ----
 
