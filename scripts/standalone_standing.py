@@ -651,20 +651,15 @@ class StandingController:
         action = self._policy.compute_action(obs)
         target_dof_pos = self._policy.get_target_dof_pos(action)
 
-        # Diagnostic: log key values for first 5 steps
+        # Diagnostic: log obs and action
         self._step_count += 1
-        if self._step_count <= 5:
-            proj_grav = quat_rotate(quat_inv(quat), GRAVITY_UNIT_W)
+        if self._step_count <= 3:
             logger.info(
-                "DIAG step=%d | quat=%s | ang_vel=%s | proj_grav=%s | "
-                "qpos[:6]=%s | action[:6]=%s | target[:6]=%s",
+                "DIAG step=%d | obs[:10]=%s | obs[-10:]=%s | action[:6]=%s",
                 self._step_count,
-                np.array2string(quat, precision=4, separator=','),
-                np.array2string(ang_vel, precision=4, separator=','),
-                np.array2string(proj_grav, precision=4, separator=','),
-                np.array2string(qpos[:6], precision=4, separator=','),
-                np.array2string(action[:6], precision=4, separator=','),
-                np.array2string(target_dof_pos[:6], precision=4, separator=','),
+                np.array2string(obs[:10], precision=6, separator=','),
+                np.array2string(obs[-10:], precision=6, separator=','),
+                np.array2string(action[:6], precision=6, separator=','),
             )
 
         # Startup ramp
