@@ -686,6 +686,10 @@ class StandingController:
 
             # 5. Policy control loop at 50Hz
             dt = 1.0 / POLICY_HZ
+            loop_count = 0
+            overrun_count = 0
+            max_elapsed = 0.0
+            elapsed_sum = 0.0
             while not self._shutdown:
                 t0 = time.monotonic()
 
@@ -707,8 +711,19 @@ class StandingController:
                 target = self._standing_step()
                 self._send_positions(target)
 
-                # Rate control
+                # Rate control with timing diagnostics
                 elapsed = time.monotonic() - t0
+                loop_count += 1
+                elapsed_sum += elapsed
+                max_elapsed = max(max_elapsed, elapsed)
+                if elapsed > dt:
+                    overrun_count += 1
+                if loop_count % 250 == 0:  # Log every 5 seconds
+                    avg_ms = (elapsed_sum / loop_count) * 1000
+                    logger.info(
+                        "Loop stats: avg=%.1fms, max=%.1fms, overruns=%d/%d (target=%.1fms)",
+                        avg_ms, max_elapsed * 1000, overrun_count, loop_count, dt * 1000,
+                    )
                 if (dt - elapsed) > 0:
                     time.sleep(dt - elapsed)
 
