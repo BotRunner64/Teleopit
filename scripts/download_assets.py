@@ -70,20 +70,24 @@ def download_all(groups, cache_dir):
         subprocess.check_call([sys.executable, "-m", "pip", "install", "modelscope"])
         from modelscope import snapshot_download
 
-    # Build ignore patterns for remote paths belonging to groups NOT requested.
-    # This prevents snapshot_download from fetching the full repo (e.g. 26GB data).
+    # Build allow_patterns (whitelist) for the requested groups only.
+    # More reliable than ignore_file_pattern across modelscope versions.
     requested = set(groups)
-    ignore_patterns = []
+    allow_patterns = []
     for group_name, entries in ASSET_GROUPS.items():
-        if group_name not in requested:
+        if group_name in requested:
             for entry in entries:
-                # Match the remote path prefix (file or directory)
-                ignore_patterns.append(entry.remote_path)
+                # Match the exact file or everything under a directory
+                allow_patterns.append(f"{entry.remote_path}*")
 
     print(f"\nDownloading {REPO_ID} to {cache_dir} ...")
-    if ignore_patterns:
-        print(f"Skipping: {', '.join(ignore_patterns)}")
-    snapshot_download(REPO_ID, local_dir=str(cache_dir), ignore_file_pattern=ignore_patterns or None)
+    print(f"Fetching: {[e.remote_path for g in groups for e in ASSET_GROUPS[g]]}")
+    snapshot_download(
+        REPO_ID,
+        local_dir=str(cache_dir),
+        allow_patterns=allow_patterns,
+        allow_file_pattern=allow_patterns,
+    )
 
     # Copy assets to their target locations
     for group in groups:
