@@ -718,7 +718,7 @@ class StandingController:
                 max_elapsed = max(max_elapsed, elapsed)
                 if elapsed > dt:
                     overrun_count += 1
-                if loop_count % 250 == 0:  # Log every 5 seconds
+                if loop_count % 12 == 0:  # Log every ~0.25 second
                     avg_ms = (elapsed_sum / loop_count) * 1000
                     logger.info(
                         "Loop stats: avg=%.1fms, max=%.1fms, overruns=%d/%d (target=%.1fms)",
