@@ -207,11 +207,6 @@ class Sim2RealController:
             self._joint_pos_lower = None
             self._joint_pos_upper = None
 
-        # ---- Control loop timing diagnostics ----
-        self._loop_count: int = 0
-        self._loop_timer_start: float = 0.0
-        self._timing_log_interval: int = int(5.0 * self.policy_hz)  # every 5 seconds
-
         # ---- Mocap switch safety ----
         mocap_sw = cfg_get(cfg, "mocap_switch", {})
         self._check_frames: int = int(cfg_get(mocap_sw, "check_frames", 10))
@@ -232,8 +227,6 @@ class Sim2RealController:
             "Control loop started | mode=IDLE | press Start to enter STANDING"
         )
         dt = 1.0 / self.policy_hz
-        self._loop_count = 0
-        self._loop_timer_start = time.monotonic()
 
         try:
             while True:
@@ -268,23 +261,7 @@ class Sim2RealController:
                 elif self.mode == RobotMode.MOCAP:
                     self._mocap_step()
 
-                # 6. Timing diagnostics
-                self._loop_count += 1
-                elapsed = time.monotonic() - t0
-                if elapsed > dt * 1.5:
-                    logger.warning(
-                        "Control loop overrun: %.1fms (target %.1fms)",
-                        elapsed * 1000, dt * 1000,
-                    )
-                if self._loop_count % self._timing_log_interval == 0:
-                    wall = time.monotonic() - self._loop_timer_start
-                    actual_hz = self._loop_count / wall if wall > 0 else 0
-                    logger.info(
-                        "Control loop: %.1f Hz (target %.0f Hz) | mode=%s",
-                        actual_hz, self.policy_hz, self.mode.value,
-                    )
-
-                # 7. Rate control
+                # 6. Rate control
                 self._sleep_until(t0, dt)
 
         except KeyboardInterrupt:

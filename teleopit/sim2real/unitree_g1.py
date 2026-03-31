@@ -108,10 +108,8 @@ class UnitreeG1Robot:
         self._publish_thread: threading.Thread | None = None
         self._publish_running: bool = False
 
-        # mode_machine: use fixed constant for G1 HG protocol (matching GR00T),
-        # continuously tracked from LowState for diagnostics
-        self._mode_machine: int = int(_cfg_get(cfg, "mode_machine", _MODE_MACHINE))
-        self._lowstate_mode_machine: int = -1
+        # mode_machine: fixed constant for G1 HG protocol (matching GR00T)
+        self._mode_machine: int = _MODE_MACHINE
 
         # Cached MotionSwitcherClient (lazy init)
         self._motion_switcher: Any = None
@@ -123,11 +121,7 @@ class UnitreeG1Robot:
         if self._lowstate is None:
             logger.warning("No LowState received within 3s -- robot may not be connected")
         else:
-            logger.info(
-                "UnitreeG1Robot: configured mode_machine=%d, LowState mode_machine=%d",
-                self._mode_machine,
-                getattr(self, "_lowstate_mode_machine", -1),
-            )
+            logger.info("UnitreeG1Robot: mode_machine=%d", self._mode_machine)
 
         logger.info(
             "UnitreeG1Robot initialised on %s (LowCmd publisher: DEFERRED)",
@@ -140,9 +134,6 @@ class UnitreeG1Robot:
 
     def _on_lowstate(self, msg: Any) -> None:
         self._lowstate = msg
-        # Continuously track mode_machine from robot for diagnostics;
-        # LowCmd always uses the configured constant (_MODE_MACHINE).
-        self._lowstate_mode_machine = msg.mode_machine
 
     # ------------------------------------------------------------------
     # Lazy LowCmd publisher + 250Hz publish thread
