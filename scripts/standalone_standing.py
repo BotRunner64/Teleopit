@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
-"""Standalone G1 standing script -- no RL policy, no xrobotoolkit dependency.
+"""Standalone G1 standing script with RL policy -- no Teleopit/xrobotoolkit dependency.
 
-Sends fixed standing-pose PD commands directly via Unitree SDK2 DDS.
+Uses ONNX RL policy inference to maintain balanced standing, matching the
+STANDING mode in Sim2RealController. Only depends on:
+  - unitree_sdk2py (from third_party/)
+  - onnxruntime
+  - mujoco
+  - numpy
+
 Usage:
-    python scripts/standalone_standing.py --network-interface enp130s0
+    python scripts/standalone_standing.py \
+        --policy track.onnx \
+        --network-interface enp130s0
 
 Flow:
     1. Init DDS, subscribe to rt/lowstate
-    2. Enter debug mode (release MotionSwitcher modes)
-    3. Lock joints to current position
-    4. Ramp from current position to standing pose over 2s
-    5. Hold standing pose until Ctrl-C
+    2. Load ONNX policy + MuJoCo model for observation building
+    3. Enter debug mode (release MotionSwitcher modes)
+    4. Lock joints, then run RL policy standing loop with startup ramp
+    5. Hold standing until Ctrl-C or L1+R1
     6. On exit: set damping, restore ai mode
 """
 
@@ -18,12 +26,24 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import signal
 import struct
+import sys
 import threading
 import time
+from collections import deque
+from pathlib import Path
 
+# Add unitree_sdk2_python from third_party to sys.path
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_SDK_PATH = _REPO_ROOT / "third_party" / "unitree_sdk2_python"
+if _SDK_PATH.exists():
+    sys.path.insert(0, str(_SDK_PATH))
+
+import mujoco
 import numpy as np
+import onnxruntime as ort
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -34,8 +54,12 @@ NUM_MOTORS = 35
 MODE_PR = 0
 MODE_MACHINE = 5
 PUBLISH_HZ = 250
+POLICY_HZ = 50.0
 POS_STOP_F = 2146000000.0
 VEL_STOP_F = 16000.0
+KD_DAMPING = 8.0
+RAMP_DURATION = 2.0
+JOINT_VEL_LIMIT = 10.0
 
 # Default standing pose (from g1_constants.py HOME_KEYFRAME)
 DEFAULT_ANGLES = np.array([
@@ -44,6 +68,15 @@ DEFAULT_ANGLES = np.array([
     0, 0, 0,                                # Waist (12-14)
     0.2, 0.2, 0, 0.6, 0, 0, 0,            # Left arm (15-21)
     0.2, -0.2, 0, 0.6, 0, 0, 0,           # Right arm (22-28)
+], dtype=np.float32)
+
+# Action scale (from g1.yaml)
+ACTION_SCALE = np.array([
+    0.5475, 0.3507, 0.5475, 0.3507, 0.4386, 0.4386,
+    0.5475, 0.3507, 0.5475, 0.3507, 0.4386, 0.4386,
+    0.5475, 0.4386, 0.4386,
+    0.4386, 0.4386, 0.4386, 0.4386, 0.4386, 0.0745, 0.0745,
+    0.4386, 0.4386, 0.4386, 0.4386, 0.4386, 0.0745, 0.0745,
 ], dtype=np.float32)
 
 # PD gains (from mjlab g1_constants.py)
@@ -63,36 +96,301 @@ KD = np.array([
     0.9, 0.9, 0.9, 0.9, 0.9, 1.1, 1.1,
 ], dtype=np.float32)
 
-KD_DAMPING = 8.0
-RAMP_DURATION = 2.0  # seconds to ramp from current to standing pose
+# Joint position limits (from pico4_sim2real.yaml)
+JOINT_POS_LOWER = np.array([
+    -2.5307, -0.5236, -2.7576, -0.087267, -0.87267, -0.2618,
+    -2.5307, -2.9671, -2.7576, -0.087267, -0.87267, -0.2618,
+    -2.618, -0.52, -0.52,
+    -3.0892, -1.5882, -2.618, -1.0472, -1.972222054, -1.61443, -1.61443,
+    -3.0892, -2.2515, -2.618, -1.0472, -1.972222054, -1.61443, -1.61443,
+], dtype=np.float32)
 
-# Identity joint map: logical joint i -> motor slot i
+JOINT_POS_UPPER = np.array([
+    2.8798, 2.9671, 2.7576, 2.8798, 0.5236, 0.2618,
+    2.8798, 0.5236, 2.7576, 2.8798, 0.5236, 0.2618,
+    2.618, 0.52, 0.52,
+    2.6704, 2.2515, 2.618, 2.0944, 1.972222054, 1.61443, 1.61443,
+    2.6704, 1.5882, 2.618, 2.0944, 1.972222054, 1.61443, 1.61443,
+], dtype=np.float32)
+
+# MuJoCo XML path for FK
+MJCF_PATH = _REPO_ROOT / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_mjlab.xml"
+
 JOINT_MAP = list(range(NUM_JOINTS))
+GRAVITY_UNIT_W = np.array([0.0, 0.0, -1.0], dtype=np.float32)
 
-# ---- Wireless remote button parsing (for L1+R1 emergency stop) ----
-# Byte offsets in the 40-byte wireless_remote payload
-_KEYS_OFFSET = 2  # uint16 at byte 2
-
-
-def _parse_keys(remote_bytes: bytes) -> int:
-    """Extract 16-bit key bitmask from 40-byte wireless remote payload."""
-    if len(remote_bytes) < 4:
-        return 0
-    return struct.unpack_from("<H", remote_bytes, _KEYS_OFFSET)[0]
-
-
-# Button masks (matching Unitree wireless remote)
+# Wireless remote button masks
+_KEYS_OFFSET = 2
 _R1 = 0x0001
 _L1 = 0x0002
 
 
-class StandingController:
-    """Minimal controller: ramp to standing pose and hold."""
+# =====================================================================
+# Quaternion helpers (from teleopit.controllers.observation)
+# =====================================================================
 
-    def __init__(self, network_interface: str, ramp_duration: float = RAMP_DURATION) -> None:
+def quat_inv(q):
+    inv = q.copy()
+    inv[..., 1:] = -inv[..., 1:]
+    return inv
+
+
+def quat_mul(q1, q2):
+    w1, x1, y1, z1 = q1[..., 0], q1[..., 1], q1[..., 2], q1[..., 3]
+    w2, x2, y2, z2 = q2[..., 0], q2[..., 1], q2[..., 2], q2[..., 3]
+    return np.stack([
+        w1*w2 - x1*x2 - y1*y2 - z1*z2,
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2,
+    ], axis=-1).astype(np.float32)
+
+
+def quat_rotate(q, v):
+    v_quat = np.zeros((*v.shape[:-1], 4), dtype=np.float32)
+    v_quat[..., 1:4] = v
+    result = quat_mul(quat_mul(q, v_quat), quat_inv(q))
+    return result[..., 1:4]
+
+
+def yaw_quat(q):
+    w, x, y, z = float(q[0]), float(q[1]), float(q[2]), float(q[3])
+    yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+    out = np.array([math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0)], dtype=np.float32)
+    out /= max(float(np.linalg.norm(out)), 1e-8)
+    return out
+
+
+def align_motion_qpos_yaw(robot_quat_wxyz, motion_qpos):
+    """Align motion_qpos[3:7] quaternion yaw to match robot yaw."""
+    motion_quat = np.asarray(motion_qpos[3:7], dtype=np.float32)
+    robot_quat = np.asarray(robot_quat_wxyz, dtype=np.float32)
+    delta = quat_mul(robot_quat, quat_inv(motion_quat))
+    delta_yaw = yaw_quat(delta)
+    motion_qpos[3:7] = quat_mul(delta_yaw, motion_quat).astype(motion_qpos.dtype)
+    return motion_qpos
+
+
+def quat_to_rot6d(q):
+    w, x, y, z = q[0], q[1], q[2], q[3]
+    r00 = 1 - 2 * (y*y + z*z)
+    r01 = 2 * (x*y - w*z)
+    r10 = 2 * (x*y + w*z)
+    r11 = 1 - 2 * (x*x + z*z)
+    r20 = 2 * (x*z - w*y)
+    r21 = 2 * (y*z + w*x)
+    return np.array([r00, r01, r10, r11, r20, r21], dtype=np.float32)
+
+
+# =====================================================================
+# Observation builder (from teleopit.controllers.observation)
+# =====================================================================
+
+class ObservationBuilder:
+    """166D VelCmd observation builder using MuJoCo FK."""
+
+    def __init__(self, xml_path: str):
+        self._mj_model = mujoco.MjModel.from_xml_path(xml_path)
+        self._mj_data = mujoco.MjData(self._mj_model)
+
+        # Find anchor body (torso_link)
+        body_names = {self._mj_model.body(i).name: i for i in range(self._mj_model.nbody)}
+        self._anchor_body_id = body_names["torso_link"]
+
+        # Base obs: command(29+29) + anchor_ori_b(6) + ang_vel(3) + joint_pos_rel(29) + qvel(29) + last_act(29)
+        # = 154
+        # VelCmd extra: projected_gravity(3) + ref_lin_vel_b(3) + ref_ang_vel_b(3) + ref_proj_gravity(3)
+        # = 12
+        # Total = 166
+        self.total_obs_size = NUM_JOINTS * 2 + 6 + 3 + NUM_JOINTS * 3 + 12
+
+    def _run_fk(self, base_pos, base_quat, joint_pos):
+        self._mj_data.qpos[:] = 0.0
+        self._mj_data.qpos[0:3] = np.asarray(base_pos, dtype=np.float64).reshape(3)
+        quat = np.asarray(base_quat, dtype=np.float64).reshape(4)
+        quat = quat / max(np.linalg.norm(quat), 1e-8)
+        self._mj_data.qpos[3:7] = quat
+        n = min(len(joint_pos), self._mj_model.nq - 7)
+        self._mj_data.qpos[7:7 + n] = np.asarray(joint_pos, dtype=np.float64)[:n]
+        mujoco.mj_kinematics(self._mj_model, self._mj_data)
+
+    def _get_body_quat(self, body_id):
+        return np.asarray(self._mj_data.xquat[body_id], dtype=np.float32).copy()
+
+    def build(self, robot_qpos, robot_qvel, robot_quat, robot_ang_vel,
+              motion_qpos, motion_joint_vel, last_action):
+        """Build 166D observation for VelCmd policy.
+
+        Args:
+            robot_qpos: (29,) current joint positions
+            robot_qvel: (29,) current joint velocities
+            robot_quat: (4,) base orientation quaternion (w,x,y,z)
+            robot_ang_vel: (3,) base angular velocity
+            motion_qpos: (36,) reference motion [pos(3) + quat(4) + joints(29)]
+            motion_joint_vel: (29,) reference joint velocity
+            last_action: (29,) previous policy action
+        """
+        qpos = np.asarray(robot_qpos, dtype=np.float32)[:NUM_JOINTS]
+        qvel = np.asarray(robot_qvel, dtype=np.float32)[:NUM_JOINTS]
+        robot_q = np.asarray(robot_quat, dtype=np.float32)
+        ang_vel = np.asarray(robot_ang_vel, dtype=np.float32)
+        motion = np.asarray(motion_qpos, dtype=np.float32)
+        m_joint_vel = np.asarray(motion_joint_vel, dtype=np.float32)[:NUM_JOINTS]
+        last_act = np.asarray(last_action, dtype=np.float32)
+
+        # Robot anchor FK
+        self._run_fk(np.zeros(3, dtype=np.float32), robot_q, qpos)
+        robot_anchor_quat = self._get_body_quat(self._anchor_body_id)
+
+        # Motion anchor FK
+        motion_base_pos = motion[0:3]
+        motion_base_quat = motion[3:7]
+        motion_joint_pos = motion[7:7 + NUM_JOINTS]
+        self._run_fk(motion_base_pos, motion_base_quat, motion_joint_pos)
+        motion_anchor_quat = self._get_body_quat(self._anchor_body_id)
+
+        # Base observation (154D)
+        command = np.concatenate((motion_joint_pos, m_joint_vel), dtype=np.float32)
+        rel_quat = quat_mul(quat_inv(robot_anchor_quat), motion_anchor_quat)
+        motion_anchor_ori_b = quat_to_rot6d(rel_quat)
+        joint_pos_rel = qpos - DEFAULT_ANGLES
+
+        base_obs = np.concatenate([
+            command,            # 29 + 29 = 58
+            motion_anchor_ori_b,  # 6
+            ang_vel,            # 3
+            joint_pos_rel,      # 29
+            qvel,               # 29
+            last_act,           # 29
+        ], dtype=np.float32)
+
+        # VelCmd extra (12D) -- standing has zero reference velocities
+        projected_gravity = quat_rotate(quat_inv(robot_q), GRAVITY_UNIT_W)
+        robot_inv = quat_inv(robot_anchor_quat)
+        # Zero reference velocities for standing
+        ref_lin_vel_b = np.zeros(3, dtype=np.float32)
+        ref_ang_vel_b = np.zeros(3, dtype=np.float32)
+        ref_proj_gravity = quat_rotate(quat_inv(motion_anchor_quat), GRAVITY_UNIT_W)
+
+        velcmd_obs = np.concatenate([
+            projected_gravity,      # 3
+            ref_lin_vel_b,          # 3
+            ref_ang_vel_b,          # 3
+            ref_proj_gravity,       # 3
+        ], dtype=np.float32)
+
+        obs = np.concatenate([base_obs, velcmd_obs], dtype=np.float32)
+        return obs
+
+
+# =====================================================================
+# ONNX Policy wrapper (from teleopit.controllers.rl_policy)
+# =====================================================================
+
+class PolicyInference:
+    """Minimal ONNX policy inference wrapper."""
+
+    def __init__(self, policy_path: str):
+        providers = ["CPUExecutionProvider"]
+        available = set(ort.get_available_providers())
+        if "CUDAExecutionProvider" in available:
+            providers.insert(0, "CUDAExecutionProvider")
+
+        self._session = ort.InferenceSession(policy_path, providers=providers)
+        onnx_inputs = self._session.get_inputs()
+        self._input_name = onnx_inputs[0].name
+        self._output_name = self._session.get_outputs()[0].name
+
+        # Check for dual-input (obs + obs_history) model
+        self._multi_input = False
+        self._history_length = 0
+        self._history_buf: deque[np.ndarray] = deque()
+        if len(onnx_inputs) == 2 and onnx_inputs[1].name == "obs_history":
+            self._multi_input = True
+            self._history_length = int(onnx_inputs[1].shape[1])
+            self._history_buf = deque(maxlen=self._history_length)
+
+        # Extract expected obs dim
+        self._expected_obs_dim = None
+        if len(onnx_inputs[0].shape) >= 2 and isinstance(onnx_inputs[0].shape[-1], int):
+            self._expected_obs_dim = int(onnx_inputs[0].shape[-1])
+
+        logger.info(
+            "Policy loaded: input=%s, obs_dim=%s, multi_input=%s, history_len=%d",
+            self._input_name, self._expected_obs_dim, self._multi_input, self._history_length,
+        )
+
+    def compute_action(self, observation: np.ndarray) -> np.ndarray:
+        obs = np.asarray(observation, dtype=np.float32)
+        if obs.ndim == 1:
+            obs = obs[np.newaxis, :]
+        obs_flat = obs.reshape(-1)
+
+        if self._multi_input:
+            if len(self._history_buf) == 0:
+                for _ in range(self._history_length):
+                    self._history_buf.append(obs_flat.copy())
+            else:
+                self._history_buf.append(obs_flat.copy())
+            obs_history = np.stack(list(self._history_buf), axis=0)[np.newaxis].astype(np.float32)
+            feed = {self._input_name: obs, "obs_history": obs_history}
+        else:
+            feed = {self._input_name: obs}
+
+        raw_action = np.asarray(
+            self._session.run([self._output_name], feed)[0], dtype=np.float32
+        ).reshape(-1)
+        return raw_action
+
+    def get_target_dof_pos(self, raw_action: np.ndarray) -> np.ndarray:
+        clipped = np.clip(raw_action, -10.0, 10.0)
+        scaled = clipped * ACTION_SCALE
+        return scaled + DEFAULT_ANGLES
+
+    def reset(self):
+        self._history_buf.clear()
+
+
+# =====================================================================
+# Main controller
+# =====================================================================
+
+class StandingController:
+    """RL-policy-based standing controller matching Sim2RealController.STANDING."""
+
+    def __init__(self, network_interface: str, policy_path: str,
+                 ramp_duration: float = RAMP_DURATION) -> None:
         self._network_interface = network_interface
         self._ramp_duration = ramp_duration
         self._shutdown = False
+
+        # ---- Load policy and observation builder ----
+        self._policy = PolicyInference(policy_path)
+        xml_path = str(MJCF_PATH)
+        if not MJCF_PATH.exists():
+            raise FileNotFoundError(f"MuJoCo XML not found: {xml_path}")
+        self._obs_builder = ObservationBuilder(xml_path)
+
+        # Verify observation dimension matches policy expectation
+        if (self._policy._expected_obs_dim is not None and
+                self._policy._expected_obs_dim != self._obs_builder.total_obs_size):
+            raise ValueError(
+                f"Obs dimension mismatch: builder={self._obs_builder.total_obs_size}, "
+                f"policy={self._policy._expected_obs_dim}"
+            )
+
+        # ---- Policy state ----
+        self._last_action = np.zeros(NUM_JOINTS, dtype=np.float32)
+        # Standing reference qpos: [pos(3), quat(4), joints(29)] = 36D
+        self._standing_qpos = np.zeros(36, dtype=np.float64)
+        self._standing_qpos[3] = 1.0  # identity quaternion w=1
+        self._standing_qpos[7:36] = DEFAULT_ANGLES.astype(np.float64)
+
+        # Startup ramp state
+        self._ramp_duration_steps = max(1, int(ramp_duration * POLICY_HZ))
+        self._ramp_step = 0
+        self._ramp_start_positions: np.ndarray | None = None
+        self._ramp_active = False
 
         # ---- SDK imports ----
         from unitree_sdk2py.core.channel import (
@@ -113,22 +411,18 @@ class StandingController:
         # ---- DDS init ----
         ChannelFactoryInitialize(0, self._network_interface)
 
-        # Subscriber: rt/lowstate
         self._lowstate = None
         self._state_sub = ChannelSubscriber("rt/lowstate", HG_LowState)
         self._state_sub.Init(self._on_lowstate, 10)
 
-        # Publisher: rt/lowcmd
         self._cmd_pub = ChannelPublisher("rt/lowcmd", HG_LowCmd)
         self._cmd_pub.Init()
 
-        # Build default LowCmd message
+        # Build default LowCmd
         self._cmd = self._LowCmd_Factory()
         self._cmd.mode_pr = MODE_PR
         self._cmd.mode_machine = MODE_MACHINE
         self._cmd.level_flag = 0xFF
-
-        # Init all motor slots
         for i in range(NUM_MOTORS):
             self._cmd.motor_cmd[i].mode = 0x01
             if i < NUM_JOINTS:
@@ -147,8 +441,6 @@ class StandingController:
         self._cmd_lock = threading.Lock()
         self._publish_thread = None
         self._publish_running = False
-
-        # Motion switcher (lazy)
         self._motion_switcher = None
 
         # Wait for first state
@@ -156,13 +448,26 @@ class StandingController:
         deadline = time.monotonic() + 5.0
         while self._lowstate is None and time.monotonic() < deadline:
             time.sleep(0.05)
-
         if self._lowstate is None:
             raise RuntimeError("No LowState received within 5s -- check network and robot power")
         logger.info("LowState received, robot connected")
 
     def _on_lowstate(self, msg) -> None:
         self._lowstate = msg
+
+    # ---- Robot state reading ----
+
+    def _get_robot_state(self):
+        """Read (qpos, qvel, quat, ang_vel) from LowState."""
+        ls = self._lowstate
+        qpos = np.zeros(NUM_JOINTS, dtype=np.float32)
+        qvel = np.zeros(NUM_JOINTS, dtype=np.float32)
+        for i in range(NUM_JOINTS):
+            qpos[i] = ls.motor_state[JOINT_MAP[i]].q
+            qvel[i] = ls.motor_state[JOINT_MAP[i]].dq
+        quat = np.array(ls.imu_state.quaternion, dtype=np.float32)
+        ang_vel = np.array(ls.imu_state.gyroscope, dtype=np.float32)
+        return qpos, qvel, quat, ang_vel
 
     # ---- 250Hz publish thread ----
 
@@ -206,7 +511,6 @@ class StandingController:
         return client
 
     def enter_debug_mode(self) -> bool:
-        """Release all MotionSwitcher modes to enable rt/lowcmd control."""
         try:
             client = self._get_motion_switcher()
             for _ in range(10):
@@ -218,14 +522,13 @@ class StandingController:
                 logger.info("Releasing mode: %s", mode_name)
                 client.ReleaseMode()
                 time.sleep(1)
-            logger.warning("Could not fully release modes after 10 attempts")
+            logger.warning("Could not release modes after 10 attempts")
             return False
         except Exception as exc:
             logger.error("enter_debug_mode failed: %s", exc)
             return False
 
     def exit_debug_mode(self) -> bool:
-        """Restore ai mode via MotionSwitcher."""
         self._stop_publish()
         try:
             client = self._get_motion_switcher()
@@ -238,28 +541,18 @@ class StandingController:
 
     # ---- Motor commands ----
 
-    def _get_current_qpos(self) -> np.ndarray:
-        """Read current joint positions from LowState."""
-        ls = self._lowstate
-        qpos = np.zeros(NUM_JOINTS, dtype=np.float32)
-        for i in range(NUM_JOINTS):
-            qpos[i] = ls.motor_state[JOINT_MAP[i]].q
-        return qpos
-
-    def _send_positions(self, target: np.ndarray, kp: np.ndarray, kd: np.ndarray) -> None:
-        """Update motor commands for all 29 joints."""
+    def _send_positions(self, target: np.ndarray) -> None:
         with self._cmd_lock:
             for i in range(NUM_JOINTS):
                 idx = JOINT_MAP[i]
                 self._cmd.motor_cmd[idx].mode = 1
                 self._cmd.motor_cmd[idx].q = float(target[i])
-                self._cmd.motor_cmd[idx].kp = float(kp[i])
+                self._cmd.motor_cmd[idx].kp = float(KP[i])
                 self._cmd.motor_cmd[idx].dq = 0.0
-                self._cmd.motor_cmd[idx].kd = float(kd[i])
+                self._cmd.motor_cmd[idx].kd = float(KD[i])
                 self._cmd.motor_cmd[idx].tau = 0.0
 
     def _set_damping(self) -> None:
-        """All motors to damping mode."""
         with self._cmd_lock:
             for i in range(NUM_MOTORS):
                 self._cmd.motor_cmd[i].mode = 1
@@ -270,7 +563,6 @@ class StandingController:
                 self._cmd.motor_cmd[i].tau = 0.0
 
     def _lock_joints(self) -> None:
-        """Lock all joints to current position."""
         ls = self._lowstate
         with self._cmd_lock:
             for i in range(NUM_JOINTS):
@@ -282,23 +574,85 @@ class StandingController:
                 self._cmd.motor_cmd[idx].kd = float(KD[i])
                 self._cmd.motor_cmd[idx].tau = 0.0
 
+    # ---- Safety checks ----
+
     def _check_emergency_stop(self) -> bool:
-        """Check if L1+R1 are both pressed on the wireless remote."""
         ls = self._lowstate
         if ls is None:
             return False
         try:
             remote_bytes = bytes(ls.wireless_remote)
-            keys = _parse_keys(remote_bytes)
+            if len(remote_bytes) < 4:
+                return False
+            keys = struct.unpack_from("<H", remote_bytes, _KEYS_OFFSET)[0]
             return bool(keys & _R1) and bool(keys & _L1)
         except Exception:
             return False
 
+    def _check_joint_vel_safety(self, qvel: np.ndarray) -> bool:
+        max_vel = np.max(np.abs(qvel))
+        if max_vel > JOINT_VEL_LIMIT:
+            logger.error("SAFETY: joint vel %.2f rad/s > limit %.2f -- damping!", max_vel, JOINT_VEL_LIMIT)
+            return True
+        return False
+
+    # ---- Startup ramp ----
+
+    def _apply_startup_ramp(self, target_dof_pos: np.ndarray) -> np.ndarray:
+        if not self._ramp_active or self._ramp_start_positions is None:
+            return target_dof_pos
+
+        ramp_factor = min(1.0, self._ramp_step / self._ramp_duration_steps)
+        ramped = self._ramp_start_positions + ramp_factor * (target_dof_pos - self._ramp_start_positions)
+
+        self._ramp_step += 1
+        if self._ramp_step >= self._ramp_duration_steps:
+            self._ramp_active = False
+            logger.info("Startup ramp complete (%d steps)", self._ramp_duration_steps)
+
+        return np.asarray(ramped, dtype=np.float32)
+
+    # ---- Standing step (matches Sim2RealController._standing_step) ----
+
+    def _standing_step(self) -> np.ndarray:
+        """One step of RL policy standing inference. Returns target joint positions."""
+        qpos, qvel, quat, ang_vel = self._get_robot_state()
+
+        # Build standing reference aligned to robot's current yaw
+        ref_qpos = self._standing_qpos.copy()
+        align_motion_qpos_yaw(quat, ref_qpos)
+
+        # Zero joint velocity reference for standing
+        motion_joint_vel = np.zeros(NUM_JOINTS, dtype=np.float32)
+        motion_qpos = np.asarray(ref_qpos[:7 + NUM_JOINTS], dtype=np.float32)
+
+        # Build observation
+        obs = self._obs_builder.build(
+            robot_qpos=qpos,
+            robot_qvel=qvel,
+            robot_quat=quat,
+            robot_ang_vel=ang_vel,
+            motion_qpos=ref_qpos,
+            motion_joint_vel=motion_joint_vel,
+            last_action=self._last_action,
+        )
+
+        # Policy inference
+        action = self._policy.compute_action(obs)
+        target_dof_pos = self._policy.get_target_dof_pos(action)
+
+        # Startup ramp
+        target_dof_pos = self._apply_startup_ramp(target_dof_pos)
+
+        # Joint limits
+        target_dof_pos = np.clip(target_dof_pos, JOINT_POS_LOWER, JOINT_POS_UPPER)
+
+        self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
+        return target_dof_pos
+
     # ---- Main loop ----
 
     def run(self) -> None:
-        """Enter debug mode, ramp to standing, hold until Ctrl-C or L1+R1."""
-        # Register signal handler
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
@@ -308,53 +662,55 @@ class StandingController:
             if not self.enter_debug_mode():
                 logger.error("Failed to enter debug mode, aborting")
                 return
+            time.sleep(0.5)
 
             # 2. Start 250Hz publish thread
             self._start_publish()
 
-            # 3. Lock joints to current position first
+            # 3. Lock joints to current position
             logger.info("Locking joints to current position ...")
             self._lock_joints()
-            time.sleep(0.5)  # Brief hold to stabilize
+            time.sleep(0.3)
 
-            # 4. Ramp from current position to standing pose
-            logger.info("Ramping to standing pose over %.1fs ...", self._ramp_duration)
-            start_qpos = self._get_current_qpos()
-            ramp_start = time.monotonic()
-            dt = 1.0 / 50.0  # 50Hz control loop (matches policy_hz)
+            # 4. Initialize policy state and startup ramp
+            qpos, _, quat, _ = self._get_robot_state()
+            self._last_action = np.zeros(NUM_JOINTS, dtype=np.float32)
+            self._policy.reset()
+            self._ramp_start_positions = qpos.copy()
+            self._ramp_step = 0
+            self._ramp_active = True
+            logger.info(
+                "Starting RL policy standing | ramp=%d steps (%.1fs)",
+                self._ramp_duration_steps, self._ramp_duration_steps / POLICY_HZ,
+            )
 
+            # 5. Policy control loop at 50Hz
+            dt = 1.0 / POLICY_HZ
             while not self._shutdown:
                 t0 = time.monotonic()
-                elapsed = t0 - ramp_start
 
-                # Emergency stop check
+                # Emergency stop
                 if self._check_emergency_stop():
                     logger.warning("L1+R1 pressed -- emergency damping!")
                     self._set_damping()
                     time.sleep(1.0)
                     break
 
-                # Compute interpolation alpha
-                if elapsed < self._ramp_duration:
-                    alpha = elapsed / self._ramp_duration
-                    # Smooth cubic interpolation (ease in/out)
-                    alpha = 3 * alpha**2 - 2 * alpha**3
-                    target = start_qpos + alpha * (DEFAULT_ANGLES - start_qpos)
-                else:
-                    target = DEFAULT_ANGLES
+                # Joint velocity safety
+                _, qvel, _, _ = self._get_robot_state()
+                if self._check_joint_vel_safety(qvel):
+                    self._set_damping()
+                    time.sleep(1.0)
+                    break
 
-                self._send_positions(target, KP, KD)
+                # Policy standing step
+                target = self._standing_step()
+                self._send_positions(target)
 
-                # Sleep to maintain 50Hz
-                sleep_time = dt - (time.monotonic() - t0)
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-
-            if not self._shutdown:
-                return  # Emergency stop triggered, cleanup below
-
-            # 5. Hold standing (already at default angles) until shutdown
-            # (We land here after ramp if no emergency stop, but _shutdown was set)
+                # Rate control
+                elapsed = time.monotonic() - t0
+                if (dt - elapsed) > 0:
+                    time.sleep(dt - elapsed)
 
         except Exception as exc:
             logger.error("Error in main loop: %s", exc)
@@ -366,30 +722,33 @@ class StandingController:
         self._shutdown = True
 
     def _cleanup(self) -> None:
-        """Safely shut down: damping -> restore ai mode."""
         logger.info("Shutting down: setting damping ...")
         self._set_damping()
         time.sleep(0.5)
-
         logger.info("Restoring ai mode ...")
         self.exit_debug_mode()
         logger.info("Done.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="G1 standalone standing (no RL policy)")
+    parser = argparse.ArgumentParser(description="G1 standalone standing with RL policy")
+    parser.add_argument(
+        "--policy", type=str, required=True,
+        help="Path to ONNX policy file (e.g. track.onnx)",
+    )
     parser.add_argument(
         "--network-interface", type=str, default="eth0",
         help="Network interface for DDS (e.g. eth0, enp130s0)",
     )
     parser.add_argument(
         "--ramp-duration", type=float, default=RAMP_DURATION,
-        help="Seconds to ramp from current to standing pose (default: 2.0)",
+        help="Seconds for startup ramp (default: 2.0)",
     )
     args = parser.parse_args()
 
     controller = StandingController(
         network_interface=args.network_interface,
+        policy_path=args.policy,
         ramp_duration=args.ramp_duration,
     )
     controller.run()
