@@ -187,6 +187,31 @@ class Sim2RealController:
         self._fixed_reference_yaw_quat: Float32Array | None = None
         self._fixed_reference_pivot_pos_w: Float32Array | None = None
 
+        # ---- Startup ramp (matching GR00T JointSafetyMonitor pattern) ----
+        ramp_dur = float(cfg_get(cfg, "startup_ramp_duration", cfg_get(real_cfg, "startup_ramp_duration", 2.0)))
+        self._ramp_duration_steps: int = max(1, int(ramp_dur * self.policy_hz))
+        self._ramp_step: int = 0
+        self._ramp_start_positions: Float32Array | None = None
+        self._ramp_active: bool = False
+
+        # ---- Joint safety (inspired by GR00T JointSafetyMonitor) ----
+        self._joint_vel_limit: float = float(
+            cfg_get(cfg, "joint_vel_limit", cfg_get(real_cfg, "joint_vel_limit", 10.0))
+        )
+        joint_pos_lower = cfg_get(real_cfg, "joint_pos_lower", None)
+        joint_pos_upper = cfg_get(real_cfg, "joint_pos_upper", None)
+        if joint_pos_lower is not None and joint_pos_upper is not None:
+            self._joint_pos_lower = np.asarray(joint_pos_lower, dtype=np.float32)
+            self._joint_pos_upper = np.asarray(joint_pos_upper, dtype=np.float32)
+        else:
+            self._joint_pos_lower = None
+            self._joint_pos_upper = None
+
+        # ---- Control loop timing diagnostics ----
+        self._loop_count: int = 0
+        self._loop_timer_start: float = 0.0
+        self._timing_log_interval: int = int(5.0 * self.policy_hz)  # every 5 seconds
+
         # ---- Mocap switch safety ----
         mocap_sw = cfg_get(cfg, "mocap_switch", {})
         self._check_frames: int = int(cfg_get(mocap_sw, "check_frames", 10))
@@ -207,6 +232,8 @@ class Sim2RealController:
             "Control loop started | mode=IDLE | press Start to enter STANDING"
         )
         dt = 1.0 / self.policy_hz
+        self._loop_count = 0
+        self._loop_timer_start = time.monotonic()
 
         try:
             while True:
@@ -226,16 +253,38 @@ class Sim2RealController:
                     self._sleep_until(t0, dt)
                     continue
 
-                # 3. Mode transitions
+                # 3. Joint velocity safety check
+                if self.mode in (RobotMode.STANDING, RobotMode.MOCAP):
+                    if self._check_joint_velocity_safety():
+                        self._sleep_until(t0, dt)
+                        continue
+
+                # 4. Mode transitions
                 self._handle_transitions()
 
-                # 4. Execute current mode
+                # 5. Execute current mode
                 if self.mode == RobotMode.STANDING:
                     self._standing_step()
                 elif self.mode == RobotMode.MOCAP:
                     self._mocap_step()
 
-                # 5. Rate control
+                # 6. Timing diagnostics
+                self._loop_count += 1
+                elapsed = time.monotonic() - t0
+                if elapsed > dt * 1.5:
+                    logger.warning(
+                        "Control loop overrun: %.1fms (target %.1fms)",
+                        elapsed * 1000, dt * 1000,
+                    )
+                if self._loop_count % self._timing_log_interval == 0:
+                    wall = time.monotonic() - self._loop_timer_start
+                    actual_hz = self._loop_count / wall if wall > 0 else 0
+                    logger.info(
+                        "Control loop: %.1f Hz (target %.0f Hz) | mode=%s",
+                        actual_hz, self.policy_hz, self.mode.value,
+                    )
+
+                # 7. Rate control
                 self._sleep_until(t0, dt)
 
         except KeyboardInterrupt:
@@ -276,6 +325,13 @@ class Sim2RealController:
 
         action = self.policy.compute_action(obs)
         target_dof_pos = self.policy.get_target_dof_pos(action)
+
+        # Apply startup ramp: smoothly blend from locked position to policy output
+        target_dof_pos = self._apply_startup_ramp(target_dof_pos)
+
+        # Clip to joint limits if configured
+        target_dof_pos = self._clip_to_joint_limits(target_dof_pos)
+
         self.robot.send_positions(target_dof_pos)
 
         self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
@@ -385,6 +441,10 @@ class Sim2RealController:
         action = self.policy.compute_action(obs)
         target_dof_pos = self.policy.get_target_dof_pos(action)
 
+        # Apply startup ramp and joint limits
+        target_dof_pos = self._apply_startup_ramp(target_dof_pos)
+        target_dof_pos = self._clip_to_joint_limits(target_dof_pos)
+
         # Update position targets (250Hz thread handles publishing)
         self.robot.send_positions(target_dof_pos)
 
@@ -439,6 +499,57 @@ class Sim2RealController:
             anchor_ang_vel_w = np.zeros(3, dtype=np.float32)
 
         return anchor_lin_vel_w, anchor_ang_vel_w
+
+    # ------------------------------------------------------------------
+    # Startup ramp and safety
+    # ------------------------------------------------------------------
+
+    def _apply_startup_ramp(self, target_dof_pos: Float32Array) -> Float32Array:
+        """Smoothly ramp from locked position to policy output (matching GR00T pattern).
+
+        During the first ``_ramp_duration_steps`` after entering STANDING,
+        linearly interpolate between the initial joint positions and the
+        policy-commanded targets.  This prevents the step discontinuity
+        that causes violent shaking on the NX board.
+        """
+        if not self._ramp_active:
+            return target_dof_pos
+
+        if self._ramp_start_positions is None:
+            # Should not happen, but be safe
+            self._ramp_active = False
+            return target_dof_pos
+
+        ramp_factor = min(1.0, self._ramp_step / self._ramp_duration_steps)
+        ramped = self._ramp_start_positions + ramp_factor * (
+            target_dof_pos - self._ramp_start_positions
+        )
+
+        self._ramp_step += 1
+        if self._ramp_step >= self._ramp_duration_steps:
+            self._ramp_active = False
+            logger.info("Startup ramp complete (%d steps)", self._ramp_duration_steps)
+
+        return np.asarray(ramped, dtype=np.float32)
+
+    def _clip_to_joint_limits(self, target_dof_pos: Float32Array) -> Float32Array:
+        """Clip target positions to configured joint limits."""
+        if self._joint_pos_lower is not None and self._joint_pos_upper is not None:
+            return np.clip(target_dof_pos, self._joint_pos_lower, self._joint_pos_upper)
+        return target_dof_pos
+
+    def _check_joint_velocity_safety(self) -> bool:
+        """Check joint velocities against safety limit. Returns True if violation detected."""
+        state = self.robot.get_state()
+        max_vel = np.max(np.abs(state.qvel))
+        if max_vel > self._joint_vel_limit:
+            logger.error(
+                "SAFETY: joint velocity %.2f rad/s exceeds limit %.2f -- entering damping",
+                max_vel, self._joint_vel_limit,
+            )
+            self._enter_damping()
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # State machine transitions
@@ -509,6 +620,15 @@ class Sim2RealController:
         init_qpos[7:36] = state.qpos.astype(np.float64)
         self._last_retarget_qpos = init_qpos
         self._last_reference_qpos = None
+
+        # Activate startup ramp: smoothly blend from current to policy targets
+        self._ramp_start_positions = state.qpos.copy().astype(np.float32)
+        self._ramp_step = 0
+        self._ramp_active = True
+        logger.info(
+            "Startup ramp armed: %d steps (%.1fs)",
+            self._ramp_duration_steps, self._ramp_duration_steps / self.policy_hz,
+        )
 
         if prev_mode == RobotMode.MOCAP:
             # Returning from MOCAP: soft reset to keep policy observation

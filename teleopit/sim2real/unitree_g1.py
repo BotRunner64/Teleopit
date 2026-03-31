@@ -3,10 +3,11 @@
 Wraps DDS communication (LowCmd publisher / LowState subscriber) and
 provides a RobotState-compatible API for the sim2real controller.
 
-Design based on unitreerobotics/xr_teleoperate patterns:
+Design based on unitreerobotics/xr_teleoperate and GR00T-WholeBodyControl patterns:
 - LowCmd publisher is created LAZILY (only for low-level/debug mode)
 - Uses unitree_hg_msg_dds__LowCmd_() default constructor for messages
-- mode_machine is read from LowState and stamped on every LowCmd
+- mode_machine fixed to 5 for G1 HG protocol (matching GR00T)
+- level_flag=0xFF, unused motor slots use PosStopF/VelStopF sentinels
 - CRC32 computed on every outgoing LowCmd
 - Continuous publishing at 250Hz via dedicated thread
 """
@@ -32,6 +33,11 @@ _NUM_MOTORS = 35
 _MODE_PR = 0
 # Motor control rate (Hz) -- matches xr_teleoperate
 _PUBLISH_HZ = 250
+# Fixed MODE_MACHINE for G1 HG protocol (matching GR00T UNITREE_LEGGED_CONST)
+_MODE_MACHINE = 5
+# SDK sentinel values for "no command" motor slots (matching GR00T InitLowCmd)
+_POS_STOP_F = 2146000000.0
+_VEL_STOP_F = 16000.0
 
 
 def _cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
@@ -102,9 +108,10 @@ class UnitreeG1Robot:
         self._publish_thread: threading.Thread | None = None
         self._publish_running: bool = False
 
-        # mode_machine tracking (read from LowState, must be set on every LowCmd)
-        self._mode_machine: int = 0
-        self._mode_machine_updated: bool = False
+        # mode_machine: use fixed constant for G1 HG protocol (matching GR00T),
+        # continuously tracked from LowState for diagnostics
+        self._mode_machine: int = int(_cfg_get(cfg, "mode_machine", _MODE_MACHINE))
+        self._lowstate_mode_machine: int = -1
 
         # Cached MotionSwitcherClient (lazy init)
         self._motion_switcher: Any = None
@@ -117,8 +124,9 @@ class UnitreeG1Robot:
             logger.warning("No LowState received within 3s -- robot may not be connected")
         else:
             logger.info(
-                "UnitreeG1Robot: mode_machine=%d from LowState",
+                "UnitreeG1Robot: configured mode_machine=%d, LowState mode_machine=%d",
                 self._mode_machine,
+                getattr(self, "_lowstate_mode_machine", -1),
             )
 
         logger.info(
@@ -132,9 +140,9 @@ class UnitreeG1Robot:
 
     def _on_lowstate(self, msg: Any) -> None:
         self._lowstate = msg
-        if not self._mode_machine_updated:
-            self._mode_machine = msg.mode_machine
-            self._mode_machine_updated = True
+        # Continuously track mode_machine from robot for diagnostics;
+        # LowCmd always uses the configured constant (_MODE_MACHINE).
+        self._lowstate_mode_machine = msg.mode_machine
 
     # ------------------------------------------------------------------
     # Lazy LowCmd publisher + 250Hz publish thread
@@ -159,15 +167,27 @@ class UnitreeG1Robot:
         self._cmd = self._LowCmd_Factory()
         self._cmd.mode_pr = _MODE_PR
         self._cmd.mode_machine = self._mode_machine
+        self._cmd.level_flag = 0xFF  # Required by G1 HG protocol (matching GR00T)
 
-        # Initialize all motors to damping (safe default)
+        # Initialize all motor slots (matching GR00T InitLowCmd pattern).
+        # Controlled joints (0..28) start in damping; unused slots (29..34)
+        # get PosStopF/VelStopF sentinel values so the MCU ignores them.
         for i in range(_NUM_MOTORS):
-            self._cmd.motor_cmd[i].mode = 1  # Enable motor (G1 hg protocol)
-            self._cmd.motor_cmd[i].q = 0.0
-            self._cmd.motor_cmd[i].kp = 0.0
-            self._cmd.motor_cmd[i].dq = 0.0
-            self._cmd.motor_cmd[i].kd = self._kd_damping
-            self._cmd.motor_cmd[i].tau = 0.0
+            self._cmd.motor_cmd[i].mode = 0x01  # G1 hg motor enable
+            if i < _NUM_JOINTS:
+                # Controlled joint: damping as safe default
+                self._cmd.motor_cmd[i].q = 0.0
+                self._cmd.motor_cmd[i].kp = 0.0
+                self._cmd.motor_cmd[i].dq = 0.0
+                self._cmd.motor_cmd[i].kd = self._kd_damping
+                self._cmd.motor_cmd[i].tau = 0.0
+            else:
+                # Unused motor slot: SDK "stop" sentinels (matching GR00T)
+                self._cmd.motor_cmd[i].q = _POS_STOP_F
+                self._cmd.motor_cmd[i].kp = 0.0
+                self._cmd.motor_cmd[i].dq = _VEL_STOP_F
+                self._cmd.motor_cmd[i].kd = 0.0
+                self._cmd.motor_cmd[i].tau = 0.0
 
         self._low_level_ready = True
         logger.info("LowCmd publisher created (low-level control ready)")
