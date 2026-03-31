@@ -383,6 +383,7 @@ class StandingController:
             )
 
         self._no_policy = no_policy
+        self._state_delay = 0.0
 
         # ---- Action filter (EMA low-pass) ----
         self._action_filter_alpha = np.clip(action_filter_alpha, 0.01, 1.0)
@@ -734,6 +735,10 @@ class StandingController:
                     time.sleep(1.0)
                     break
 
+                # Artificial state delay (simulate network latency for onboard)
+                if self._state_delay > 0:
+                    time.sleep(self._state_delay)
+
                 # Policy standing step (or fixed pose if --no-policy)
                 if self._no_policy:
                     target = self._apply_startup_ramp(DEFAULT_ANGLES.copy())
@@ -798,6 +803,10 @@ def main():
         "--no-policy", action="store_true",
         help="Skip RL policy, just send fixed DEFAULT_ANGLES (diagnostic mode)",
     )
+    parser.add_argument(
+        "--state-delay", type=float, default=0.0,
+        help="Artificial delay (seconds) before reading state, simulates network latency (e.g. 0.005)",
+    )
     args = parser.parse_args()
 
     controller = StandingController(
@@ -807,6 +816,7 @@ def main():
         action_filter_alpha=args.action_filter_alpha,
         no_policy=args.no_policy,
     )
+    controller._state_delay = args.state_delay
     controller.run()
 
 
