@@ -652,15 +652,18 @@ class StandingController:
         action = self._policy.compute_action(obs)
         target_dof_pos = self._policy.get_target_dof_pos(action)
 
-        # Diagnostic: log obs and action
+        # Diagnostic: log every 0.5s during oscillation
         self._step_count += 1
-        if self._step_count <= 3:
+        if self._step_count % 25 == 1:
             logger.info(
-                "DIAG step=%d | obs[:10]=%s | obs[-10:]=%s | action[:6]=%s",
+                "DIAG step=%d | ang_vel=%s | qvel_norm=%.4f | action_norm=%.4f | "
+                "target[:6]=%s | qpos[:6]=%s",
                 self._step_count,
-                np.array2string(obs[:10], precision=6, separator=','),
-                np.array2string(obs[-10:], precision=6, separator=','),
-                np.array2string(action[:6], precision=6, separator=','),
+                np.array2string(ang_vel, precision=4, separator=','),
+                float(np.linalg.norm(qvel)),
+                float(np.linalg.norm(action)),
+                np.array2string(target_dof_pos[:6], precision=4, separator=','),
+                np.array2string(qpos[:6], precision=4, separator=','),
             )
 
         # Startup ramp
