@@ -627,6 +627,7 @@ class StandingController:
 
     def _standing_step(self) -> np.ndarray:
         """One step of RL policy standing inference. Returns target joint positions."""
+        _t0 = time.monotonic()
         qpos, qvel, quat, ang_vel = self._get_robot_state()
 
         # Build standing reference aligned to robot's current yaw
@@ -637,6 +638,7 @@ class StandingController:
         motion_joint_vel = np.zeros(NUM_JOINTS, dtype=np.float32)
         motion_qpos = np.asarray(ref_qpos[:7 + NUM_JOINTS], dtype=np.float32)
 
+        _t1 = time.monotonic()
         # Build observation
         obs = self._obs_builder.build(
             robot_qpos=qpos,
@@ -648,18 +650,21 @@ class StandingController:
             last_action=self._last_action,
         )
 
+        _t2 = time.monotonic()
         # Policy inference
         action = self._policy.compute_action(obs)
         target_dof_pos = self._policy.get_target_dof_pos(action)
+        _t3 = time.monotonic()
 
-        # Diagnostic: log every 0.5s during oscillation
+        # Diagnostic: log timing breakdown and key values
         self._step_count += 1
         if self._step_count % 25 == 1:
             logger.info(
-                "DIAG step=%d | ang_vel=%s | qvel_norm=%.4f | action_norm=%.4f | "
-                "target[:6]=%s | qpos[:6]=%s",
+                "DIAG step=%d | prep=%.1fms obs=%.1fms policy=%.1fms total=%.1fms | "
+                "qvel_norm=%.4f | action_norm=%.4f",
                 self._step_count,
-                np.array2string(ang_vel, precision=4, separator=','),
+                (_t1 - _t0) * 1000, (_t2 - _t1) * 1000,
+                (_t3 - _t2) * 1000, (_t3 - _t0) * 1000,
                 float(np.linalg.norm(qvel)),
                 float(np.linalg.norm(action)),
                 np.array2string(target_dof_pos[:6], precision=4, separator=','),
