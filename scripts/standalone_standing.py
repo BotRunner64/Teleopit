@@ -654,19 +654,26 @@ class StandingController:
 
         _t2 = time.monotonic()
         # Policy inference
-        action = self._policy.compute_action(obs)
+        raw_action = self._policy.compute_action(obs)
+
+        # Action EMA filter: smooth the RAW action so both target AND last_action
+        # in the observation are filtered — breaks the oscillation feedback loop
+        if self._action_filter_alpha < 1.0 - 1e-6 and self._last_action is not None:
+            action = (self._action_filter_alpha * raw_action
+                      + (1.0 - self._action_filter_alpha) * self._last_action)
+        else:
+            action = raw_action
+
         target_dof_pos = self._policy.get_target_dof_pos(action)
         _t3 = time.monotonic()
 
-        # Diagnostic: log timing breakdown and key values
+        # Diagnostic
         self._step_count += 1
         if self._step_count % 25 == 1:
             logger.info(
-                "DIAG step=%d | prep=%.1fms obs=%.1fms policy=%.1fms total=%.1fms | "
-                "qvel_norm=%.4f | action_norm=%.4f | target[:6]=%s | qpos[:6]=%s",
-                self._step_count,
-                (_t1 - _t0) * 1000, (_t2 - _t1) * 1000,
-                (_t3 - _t2) * 1000, (_t3 - _t0) * 1000,
+                "DIAG step=%d | total=%.1fms | qvel_norm=%.4f | action_norm=%.4f | "
+                "target[:6]=%s | qpos[:6]=%s",
+                self._step_count, (_t3 - _t0) * 1000,
                 float(np.linalg.norm(qvel)),
                 float(np.linalg.norm(action)),
                 np.array2string(target_dof_pos[:6], precision=4, separator=','),
@@ -678,12 +685,6 @@ class StandingController:
 
         # Joint limits
         target_dof_pos = np.clip(target_dof_pos, JOINT_POS_LOWER, JOINT_POS_UPPER)
-
-        # Action low-pass filter (EMA): smooths target to suppress oscillation
-        if self._prev_target is not None and self._action_filter_alpha < 1.0 - 1e-6:
-            target_dof_pos = (self._action_filter_alpha * target_dof_pos
-                              + (1.0 - self._action_filter_alpha) * self._prev_target)
-        self._prev_target = target_dof_pos.copy()
 
         self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
         return target_dof_pos
