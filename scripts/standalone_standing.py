@@ -380,6 +380,7 @@ class StandingController:
             )
 
         # ---- Policy state ----
+        self._step_count = 0
         self._last_action = np.zeros(NUM_JOINTS, dtype=np.float32)
         # Standing reference qpos: [pos(3), quat(4), joints(29)] = 36D
         self._standing_qpos = np.zeros(36, dtype=np.float64)
@@ -640,6 +641,22 @@ class StandingController:
         # Policy inference
         action = self._policy.compute_action(obs)
         target_dof_pos = self._policy.get_target_dof_pos(action)
+
+        # Diagnostic: log key values for first 5 steps
+        self._step_count += 1
+        if self._step_count <= 5:
+            proj_grav = quat_rotate(quat_inv(quat), GRAVITY_UNIT_W)
+            logger.info(
+                "DIAG step=%d | quat=%s | ang_vel=%s | proj_grav=%s | "
+                "qpos[:6]=%s | action[:6]=%s | target[:6]=%s",
+                self._step_count,
+                np.array2string(quat, precision=4, separator=','),
+                np.array2string(ang_vel, precision=4, separator=','),
+                np.array2string(proj_grav, precision=4, separator=','),
+                np.array2string(qpos[:6], precision=4, separator=','),
+                np.array2string(action[:6], precision=4, separator=','),
+                np.array2string(target_dof_pos[:6], precision=4, separator=','),
+            )
 
         # Startup ramp
         target_dof_pos = self._apply_startup_ramp(target_dof_pos)
