@@ -360,7 +360,8 @@ class StandingController:
     """RL-policy-based standing controller matching Sim2RealController.STANDING."""
 
     def __init__(self, network_interface: str, policy_path: str,
-                 ramp_duration: float = RAMP_DURATION) -> None:
+                 ramp_duration: float = RAMP_DURATION,
+                 action_filter_alpha: float = 1.0) -> None:
         self._network_interface = network_interface
         self._ramp_duration = ramp_duration
         self._shutdown = False
@@ -379,6 +380,10 @@ class StandingController:
                 f"Obs dimension mismatch: builder={self._obs_builder.total_obs_size}, "
                 f"policy={self._policy._expected_obs_dim}"
             )
+
+        # ---- Action filter (EMA low-pass) ----
+        self._action_filter_alpha = np.clip(action_filter_alpha, 0.01, 1.0)
+        self._prev_target: np.ndarray | None = None
 
         # ---- Policy state ----
         self._step_count = 0
@@ -665,6 +670,12 @@ class StandingController:
         # Joint limits
         target_dof_pos = np.clip(target_dof_pos, JOINT_POS_LOWER, JOINT_POS_UPPER)
 
+        # Action low-pass filter (EMA): smooths target to suppress oscillation
+        if self._prev_target is not None and self._action_filter_alpha < 1.0 - 1e-6:
+            target_dof_pos = (self._action_filter_alpha * target_dof_pos
+                              + (1.0 - self._action_filter_alpha) * self._prev_target)
+        self._prev_target = target_dof_pos.copy()
+
         self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
         return target_dof_pos
 
@@ -777,12 +788,17 @@ def main():
         "--ramp-duration", type=float, default=RAMP_DURATION,
         help="Seconds for startup ramp (default: 2.0)",
     )
+    parser.add_argument(
+        "--action-filter-alpha", type=float, default=1.0,
+        help="Action EMA filter alpha: 1.0=no filter, 0.3=strong filter (default: 1.0)",
+    )
     args = parser.parse_args()
 
     controller = StandingController(
         network_interface=args.network_interface,
         policy_path=args.policy,
         ramp_duration=args.ramp_duration,
+        action_filter_alpha=args.action_filter_alpha,
     )
     controller.run()
 
