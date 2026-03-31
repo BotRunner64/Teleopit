@@ -205,6 +205,11 @@ class ObservationBuilder:
         # Total = 166
         self.total_obs_size = NUM_JOINTS * 2 + 6 + 3 + NUM_JOINTS * 3 + 12
 
+        # Precompute motion torso offset for standing (DEFAULT_ANGLES with identity base)
+        # torso_quat_world = quat_mul(base_quat, torso_offset) for constant joint angles
+        self._run_fk(np.zeros(3), np.array([1, 0, 0, 0], dtype=np.float32), DEFAULT_ANGLES)
+        self._standing_torso_offset = self._get_body_quat(self._anchor_body_id).copy()
+
     def _run_fk(self, base_pos, base_quat, joint_pos):
         self._mj_data.qpos[:] = 0.0
         self._mj_data.qpos[0:3] = np.asarray(base_pos, dtype=np.float64).reshape(3)
@@ -239,16 +244,14 @@ class ObservationBuilder:
         m_joint_vel = np.asarray(motion_joint_vel, dtype=np.float32)[:NUM_JOINTS]
         last_act = np.asarray(last_action, dtype=np.float32)
 
-        # Robot anchor FK
+        # Robot anchor FK (must use MuJoCo -- joints vary)
         self._run_fk(np.zeros(3, dtype=np.float32), robot_q, qpos)
         robot_anchor_quat = self._get_body_quat(self._anchor_body_id)
 
-        # Motion anchor FK
-        motion_base_pos = motion[0:3]
+        # Motion anchor: precomputed offset (no FK needed for standing)
         motion_base_quat = motion[3:7]
         motion_joint_pos = motion[7:7 + NUM_JOINTS]
-        self._run_fk(motion_base_pos, motion_base_quat, motion_joint_pos)
-        motion_anchor_quat = self._get_body_quat(self._anchor_body_id)
+        motion_anchor_quat = quat_mul(motion_base_quat, self._standing_torso_offset)
 
         # Base observation (154D)
         command = np.concatenate((motion_joint_pos, m_joint_vel), dtype=np.float32)
@@ -661,7 +664,7 @@ class StandingController:
         if self._step_count % 25 == 1:
             logger.info(
                 "DIAG step=%d | prep=%.1fms obs=%.1fms policy=%.1fms total=%.1fms | "
-                "qvel_norm=%.4f | action_norm=%.4f",
+                "qvel_norm=%.4f | action_norm=%.4f | target[:6]=%s | qpos[:6]=%s",
                 self._step_count,
                 (_t1 - _t0) * 1000, (_t2 - _t1) * 1000,
                 (_t3 - _t2) * 1000, (_t3 - _t0) * 1000,
