@@ -244,11 +244,10 @@ class ObservationBuilder:
         m_joint_vel = np.asarray(motion_joint_vel, dtype=np.float32)[:NUM_JOINTS]
         last_act = np.asarray(last_action, dtype=np.float32)
 
-        # Robot anchor FK (must use MuJoCo -- joints vary)
-        self._run_fk(np.zeros(3, dtype=np.float32), robot_q, qpos)
-        robot_anchor_quat = self._get_body_quat(self._anchor_body_id)
+        # Anchor quaternions: skip MuJoCo FK, use base quat * precomputed offset
+        # For standing, waist joints ≈ 0 so torso ≈ base orientation
+        robot_anchor_quat = quat_mul(robot_q, self._standing_torso_offset)
 
-        # Motion anchor: precomputed offset (no FK needed for standing)
         motion_base_quat = motion[3:7]
         motion_joint_pos = motion[7:7 + NUM_JOINTS]
         motion_anchor_quat = quat_mul(motion_base_quat, self._standing_torso_offset)
