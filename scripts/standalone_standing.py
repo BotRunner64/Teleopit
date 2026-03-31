@@ -361,7 +361,8 @@ class StandingController:
 
     def __init__(self, network_interface: str, policy_path: str,
                  ramp_duration: float = RAMP_DURATION,
-                 action_filter_alpha: float = 1.0) -> None:
+                 action_filter_alpha: float = 1.0,
+                 no_policy: bool = False) -> None:
         self._network_interface = network_interface
         self._ramp_duration = ramp_duration
         self._shutdown = False
@@ -380,6 +381,8 @@ class StandingController:
                 f"Obs dimension mismatch: builder={self._obs_builder.total_obs_size}, "
                 f"policy={self._policy._expected_obs_dim}"
             )
+
+        self._no_policy = no_policy
 
         # ---- Action filter (EMA low-pass) ----
         self._action_filter_alpha = np.clip(action_filter_alpha, 0.01, 1.0)
@@ -736,8 +739,12 @@ class StandingController:
                     time.sleep(1.0)
                     break
 
-                # Policy standing step
-                target = self._standing_step()
+                # Policy standing step (or fixed pose if --no-policy)
+                if self._no_policy:
+                    target = self._apply_startup_ramp(DEFAULT_ANGLES.copy())
+                    target = np.clip(target, JOINT_POS_LOWER, JOINT_POS_UPPER)
+                else:
+                    target = self._standing_step()
                 self._send_positions(target)
 
                 # Rate control with timing diagnostics
@@ -792,6 +799,10 @@ def main():
         "--action-filter-alpha", type=float, default=1.0,
         help="Action EMA filter alpha: 1.0=no filter, 0.3=strong filter (default: 1.0)",
     )
+    parser.add_argument(
+        "--no-policy", action="store_true",
+        help="Skip RL policy, just send fixed DEFAULT_ANGLES (diagnostic mode)",
+    )
     args = parser.parse_args()
 
     controller = StandingController(
@@ -799,6 +810,7 @@ def main():
         policy_path=args.policy,
         ramp_duration=args.ramp_duration,
         action_filter_alpha=args.action_filter_alpha,
+        no_policy=args.no_policy,
     )
     controller.run()
 
