@@ -244,13 +244,7 @@ class Sim2RealController:
                     self._sleep_until(t0, dt)
                     continue
 
-                # 3. Joint velocity safety check
-                if self.mode in (RobotMode.STANDING, RobotMode.MOCAP):
-                    if self._check_joint_velocity_safety():
-                        self._sleep_until(t0, dt)
-                        continue
-
-                # 4. Mode transitions
+                # 3. Mode transitions
                 self._handle_transitions()
 
                 # 5. Execute current mode
