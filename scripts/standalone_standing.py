@@ -829,6 +829,7 @@ class StandingController:
                     time.sleep(1.0)
                     break
 
+                t_safety = time.monotonic()
                 # Joint velocity safety
                 _, qvel, _, _ = self._get_robot_state()
                 if self._check_joint_vel_safety(qvel):
@@ -840,13 +841,16 @@ class StandingController:
                 if self._state_delay > 0:
                     time.sleep(self._state_delay)
 
+                t_policy = time.monotonic()
                 # Policy standing step (or fixed pose if --no-policy)
                 if self._no_policy:
                     target = self._apply_startup_ramp(DEFAULT_ANGLES.copy())
                     target = np.clip(target, JOINT_POS_LOWER, JOINT_POS_UPPER)
                 else:
                     target = self._standing_step()
+                t_send = time.monotonic()
                 self._send_positions(target)
+                t_done = time.monotonic()
 
                 # Rate control with timing diagnostics
                 elapsed = time.monotonic() - t0
@@ -855,6 +859,15 @@ class StandingController:
                 max_elapsed = max(max_elapsed, elapsed)
                 if elapsed > dt:
                     overrun_count += 1
+                    logger.warning(
+                        "OVERRUN step=%d | estop=%.2fms safety=%.2fms policy=%.2fms send=%.2fms TOTAL=%.1fms",
+                        loop_count,
+                        (t_safety - t0) * 1000,
+                        (t_policy - t_safety) * 1000,
+                        (t_send - t_policy) * 1000,
+                        (t_done - t_send) * 1000,
+                        elapsed * 1000,
+                    )
                 if loop_count % 12 == 0:  # Log every ~0.25 second
                     avg_ms = (elapsed_sum / loop_count) * 1000
                     logger.info(
