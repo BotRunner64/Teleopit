@@ -109,9 +109,9 @@ class Sim2RealController:
             )
         self._reference_debug_log = bool(cfg_get(cfg, "reference_debug_log", False))
         raw_reference_delay_s = cfg_get(cfg, "retarget_buffer_delay_s", cfg_get(cfg, "realtime_input_delay_s", None))
-        provider_fps = float(getattr(self.input_provider, "fps", self.policy_hz))
+        provider_fps = float(getattr(self.input_provider, "fps", 30.0))
         self._reference_delay_s = (
-            1.0 / provider_fps
+            1.0 / max(provider_fps, 1.0)
             if raw_reference_delay_s in (None, "", "null")
             else float(raw_reference_delay_s)
         )

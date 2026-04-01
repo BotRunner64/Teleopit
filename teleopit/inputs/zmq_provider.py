@@ -70,9 +70,12 @@ class ZMQInputProvider:
         self._lock = threading.Lock()
         self._frame_ready = threading.Event()
         self._buffer: deque[tuple[HumanFrame, float]] = deque(maxlen=max(buffer_size, 2))
-        self._fps_timestamps: deque[float] = deque(maxlen=30)
-        self._frame_seq: int = 0
+        self._fps_timestamps: deque[float] = deque(maxlen=30)  # source timestamps for fps measurement
+        self._frame_seq: int = 0  # mirrors source _seq (only increments on real new frames)
         self._running = True
+
+        # Clock offset: maps publisher monotonic → local monotonic (set once on first frame)
+        self._clock_offset: float | None = None
 
         # Receiver thread
         self._thread = threading.Thread(target=self._recv_loop, daemon=True, name="zmq_input")
@@ -85,7 +88,7 @@ class ZMQInputProvider:
 
     @property
     def fps(self) -> float:
-        """Measured receive fps (falls back to 30.0 until enough samples)."""
+        """Measured source fps (falls back to 30.0 until enough samples)."""
         with self._lock:
             if len(self._fps_timestamps) < 2:
                 return 30.0
@@ -191,6 +194,8 @@ class ZMQInputProvider:
                 # Single frame: "<topic> <msgpack payload>"
                 sep = raw.index(b" ")
                 payload = msgpack.unpackb(raw[sep + 1:], raw=False)
+                source_ts = payload.pop("_ts", None)
+                source_seq = payload.pop("_seq", None)
                 frame = self._deserialize_frame(payload)
             except zmq.Again:  # recv timeout — check shutdown flag
                 continue
@@ -202,11 +207,27 @@ class ZMQInputProvider:
                 logger.exception("Failed to process ZMQ frame")
                 continue
 
-            timestamp = time.monotonic()
+            local_ts = time.monotonic()
+
+            # Map publisher timestamp to local clock domain for correct
+            # inter-frame spacing even when ZMQ queues messages.
+            # Offset is set once on first frame; never auto-reset to avoid
+            # masking staleness from queued old packets.
+            if source_ts is not None:
+                if self._clock_offset is None:
+                    self._clock_offset = local_ts - source_ts
+                buffer_ts = source_ts + self._clock_offset
+            else:
+                buffer_ts = local_ts  # fallback for publishers without _ts
+
+            # Only count genuinely new frames (skip heartbeat duplicates)
+            is_new_frame = source_seq is None or source_seq != self._frame_seq
+
             with self._lock:
-                self._buffer.append((frame, timestamp))
-                self._fps_timestamps.append(timestamp)
-                self._frame_seq += 1
+                self._buffer.append((frame, buffer_ts))
+                if is_new_frame:
+                    self._fps_timestamps.append(source_ts if source_ts is not None else local_ts)
+                    self._frame_seq = int(source_seq) if source_seq is not None else self._frame_seq + 1
             if not self._frame_ready.is_set():
                 self._frame_ready.set()
 

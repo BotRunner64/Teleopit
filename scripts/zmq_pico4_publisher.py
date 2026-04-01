@@ -22,11 +22,13 @@ from teleopit.inputs.pico4_provider import Pico4InputProvider
 logger = logging.getLogger(__name__)
 
 
-def _serialize_frame(frame: dict) -> bytes:
-    """Convert HumanFrame to msgpack bytes."""
+def _serialize_frame(frame: dict, source_ts: float, source_seq: int) -> bytes:
+    """Convert HumanFrame to msgpack bytes with source timestamp and sequence."""
     payload = {}
     for name, (pos, quat) in frame.items():
         payload[name] = [pos.tolist(), quat.tolist()]
+    payload["_ts"] = source_ts
+    payload["_seq"] = source_seq
     return msgpack.packb(payload, use_bin_type=True)
 
 
@@ -62,7 +64,7 @@ def main() -> None:
                 continue
             last_frame_seq = frame_seq
             last_send_time = now
-            payload = _serialize_frame(frame)
+            payload = _serialize_frame(frame, ts, frame_seq)
             sock.send(topic_bytes + b" " + payload)
             seq += 1
             if seq % 300 == 0:

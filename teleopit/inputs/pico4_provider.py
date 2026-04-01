@@ -210,6 +210,7 @@ class Pico4InputProvider:
                 self._frame_seq += 1
                 self._last_raw_body_poses = body_poses.copy()
             self._frame_ready.set()
+            time.sleep(0.005)  # yield CPU between frames to avoid scheduling jitter
 
     @staticmethod
     def _convert_body_poses_to_frame(body_poses: NDArray[np.float64]) -> HumanFrame:
