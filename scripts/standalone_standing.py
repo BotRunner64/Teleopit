@@ -457,6 +457,15 @@ class StandingController:
         self._publish_running = False
         self._motion_switcher = None
 
+        # ---- Pipeline state ----
+        # Atomic target buffer: inference thread writes, publish thread reads.
+        # Python GIL guarantees atomic reference assignment for single-producer
+        # single-consumer — no lock needed.
+        self._target_buf: np.ndarray | None = None
+        self._damping_requested = False
+        self._inference_thread: threading.Thread | None = None
+        self._inference_running = False
+
         # Wait for first state
         logger.info("Waiting for LowState on %s ...", self._network_interface)
         deadline = time.monotonic() + 5.0
@@ -499,16 +508,53 @@ class StandingController:
             self._publish_thread = None
 
     def _publish_loop(self) -> None:
+        """250Hz hard-realtime publish loop.
+
+        Reads the latest target from _target_buf (written by inference thread)
+        and publishes motor commands via DDS. No lock contention with inference.
+        """
         dt = 1.0 / PUBLISH_HZ
+        pub_count = 0
+        max_pub_ms = 0.0
         while self._publish_running:
             t0 = time.monotonic()
-            with self._cmd_lock:
-                self._cmd.mode_machine = MODE_MACHINE
-                self._cmd.crc = self._crc.Crc(self._cmd)
-                self._cmd_pub.Write(self._cmd)
-            elapsed = time.monotonic() - t0
-            if (dt - elapsed) > 0:
-                time.sleep(dt - elapsed)
+
+            if self._damping_requested:
+                # Emergency: switch all motors to damping
+                for i in range(NUM_MOTORS):
+                    self._cmd.motor_cmd[i].mode = 1
+                    self._cmd.motor_cmd[i].q = 0.0
+                    self._cmd.motor_cmd[i].kp = 0.0
+                    self._cmd.motor_cmd[i].dq = 0.0
+                    self._cmd.motor_cmd[i].kd = KD_DAMPING
+                    self._cmd.motor_cmd[i].tau = 0.0
+            else:
+                # Read latest target (lock-free atomic reference read)
+                target = self._target_buf
+                if target is not None:
+                    for i in range(NUM_JOINTS):
+                        idx = JOINT_MAP[i]
+                        self._cmd.motor_cmd[idx].mode = 1
+                        self._cmd.motor_cmd[idx].q = float(target[i])
+                        self._cmd.motor_cmd[idx].kp = float(KP[i])
+                        self._cmd.motor_cmd[idx].dq = 0.0
+                        self._cmd.motor_cmd[idx].kd = float(KD[i])
+                        self._cmd.motor_cmd[idx].tau = 0.0
+
+            self._cmd.mode_machine = MODE_MACHINE
+            self._cmd.crc = self._crc.Crc(self._cmd)
+            self._cmd_pub.Write(self._cmd)
+
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            pub_count += 1
+            max_pub_ms = max(max_pub_ms, elapsed_ms)
+            if pub_count % 2500 == 0:  # Log every ~10s
+                logger.info("Publish stats: max=%.2fms over last 2500 cycles", max_pub_ms)
+                max_pub_ms = 0.0
+
+            remain = dt - (time.monotonic() - t0)
+            if remain > 0:
+                time.sleep(remain)
 
     # ---- Motion switcher ----
 
@@ -554,17 +600,6 @@ class StandingController:
             return False
 
     # ---- Motor commands ----
-
-    def _send_positions(self, target: np.ndarray) -> None:
-        with self._cmd_lock:
-            for i in range(NUM_JOINTS):
-                idx = JOINT_MAP[i]
-                self._cmd.motor_cmd[idx].mode = 1
-                self._cmd.motor_cmd[idx].q = float(target[i])
-                self._cmd.motor_cmd[idx].kp = float(KP[i])
-                self._cmd.motor_cmd[idx].dq = 0.0
-                self._cmd.motor_cmd[idx].kd = float(KD[i])
-                self._cmd.motor_cmd[idx].tau = 0.0
 
     def _set_damping(self) -> None:
         with self._cmd_lock:
@@ -695,6 +730,85 @@ class StandingController:
         self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
         return target_dof_pos
 
+    # ---- Inference thread ----
+
+    def _start_inference(self) -> None:
+        if self._inference_thread is not None:
+            return
+        self._inference_running = True
+        self._inference_thread = threading.Thread(target=self._inference_loop, daemon=True)
+        self._inference_thread.start()
+
+    def _stop_inference(self) -> None:
+        self._inference_running = False
+        if self._inference_thread is not None:
+            self._inference_thread.join(timeout=2.0)
+            self._inference_thread = None
+
+    def _inference_loop(self) -> None:
+        """~50Hz soft-realtime inference loop.
+
+        Runs policy inference and writes target positions to _target_buf.
+        The 250Hz publish thread reads _target_buf independently — even if
+        inference takes 30ms, the robot keeps receiving 250Hz commands with
+        the last good target.
+        """
+        dt = 1.0 / POLICY_HZ
+        loop_count = 0
+        overrun_count = 0
+        max_elapsed = 0.0
+        elapsed_sum = 0.0
+
+        while self._inference_running and not self._shutdown:
+            t0 = time.monotonic()
+
+            # Emergency stop check
+            if self._check_emergency_stop():
+                logger.warning("L1+R1 pressed -- emergency damping!")
+                self._damping_requested = True
+                self._shutdown = True
+                break
+
+            # Joint velocity safety check
+            _, qvel, _, _ = self._get_robot_state()
+            if self._check_joint_vel_safety(qvel):
+                self._damping_requested = True
+                self._shutdown = True
+                break
+
+            # Artificial state delay (for debugging)
+            if self._state_delay > 0:
+                time.sleep(self._state_delay)
+
+            # Policy step
+            if self._no_policy:
+                target = self._apply_startup_ramp(DEFAULT_ANGLES.copy())
+                target = np.clip(target, JOINT_POS_LOWER, JOINT_POS_UPPER)
+            else:
+                target = self._standing_step()
+
+            # Atomic write to target buffer (publish thread reads this)
+            self._target_buf = target
+
+            # Timing diagnostics (informational only — not a control failure)
+            elapsed = time.monotonic() - t0
+            loop_count += 1
+            elapsed_sum += elapsed
+            max_elapsed = max(max_elapsed, elapsed)
+            if elapsed > dt:
+                overrun_count += 1
+
+            if loop_count % 50 == 0:
+                avg_ms = (elapsed_sum / loop_count) * 1000
+                logger.info(
+                    "Inference stats: avg=%.1fms, max=%.1fms, overruns=%d/%d (target=%.1fms)",
+                    avg_ms, max_elapsed * 1000, overrun_count, loop_count, dt * 1000,
+                )
+
+            remain = dt - (time.monotonic() - t0)
+            if remain > 0:
+                time.sleep(remain)
+
     # ---- Main loop ----
 
     def _run_dry(self) -> None:
@@ -801,81 +915,38 @@ class StandingController:
             self._lock_joints()
             time.sleep(0.3)
 
-            # 4. Initialize policy state and startup ramp
+            # 4. ONNX warmup — eliminate first-inference spike
+            logger.info("Warming up ONNX runtime ...")
+            dummy_obs = np.zeros(self._obs_builder.total_obs_size, dtype=np.float32)
+            for _ in range(3):
+                self._policy.compute_action(dummy_obs)
+            self._policy.reset()
+            logger.info("ONNX warmup complete")
+
+            # 5. Initialize policy state and startup ramp
             qpos, _, quat, _ = self._get_robot_state()
             self._last_action = np.zeros(NUM_JOINTS, dtype=np.float32)
-            self._policy.reset()
             self._ramp_start_positions = qpos.copy()
             self._ramp_step = 0
             self._ramp_active = True
+
+            # Initialize target buffer to locked joint positions
+            self._target_buf = qpos.copy()
+
             logger.info(
-                "Starting RL policy standing | ramp=%d steps (%.1fs)",
+                "Starting RL policy standing (pipelined) | ramp=%d steps (%.1fs)",
                 self._ramp_duration_steps, self._ramp_duration_steps / POLICY_HZ,
             )
 
-            # 5. Policy control loop at 50Hz
-            dt = 1.0 / POLICY_HZ
-            loop_count = 0
-            overrun_count = 0
-            max_elapsed = 0.0
-            elapsed_sum = 0.0
+            # 6. Start inference thread (~50Hz, soft deadline)
+            self._start_inference()
+
+            # 7. Main thread waits for shutdown signal
             while not self._shutdown:
-                t0 = time.monotonic()
+                time.sleep(0.1)
 
-                # Emergency stop
-                if self._check_emergency_stop():
-                    logger.warning("L1+R1 pressed -- emergency damping!")
-                    self._set_damping()
-                    time.sleep(1.0)
-                    break
-
-                t_safety = time.monotonic()
-                # Joint velocity safety
-                _, qvel, _, _ = self._get_robot_state()
-                if self._check_joint_vel_safety(qvel):
-                    self._set_damping()
-                    time.sleep(1.0)
-                    break
-
-                # Artificial state delay (simulate network latency for onboard)
-                if self._state_delay > 0:
-                    time.sleep(self._state_delay)
-
-                t_policy = time.monotonic()
-                # Policy standing step (or fixed pose if --no-policy)
-                if self._no_policy:
-                    target = self._apply_startup_ramp(DEFAULT_ANGLES.copy())
-                    target = np.clip(target, JOINT_POS_LOWER, JOINT_POS_UPPER)
-                else:
-                    target = self._standing_step()
-                t_send = time.monotonic()
-                self._send_positions(target)
-                t_done = time.monotonic()
-
-                # Rate control with timing diagnostics
-                elapsed = time.monotonic() - t0
-                loop_count += 1
-                elapsed_sum += elapsed
-                max_elapsed = max(max_elapsed, elapsed)
-                if elapsed > dt:
-                    overrun_count += 1
-                    logger.warning(
-                        "OVERRUN step=%d | estop=%.2fms safety=%.2fms policy=%.2fms send=%.2fms TOTAL=%.1fms",
-                        loop_count,
-                        (t_safety - t0) * 1000,
-                        (t_policy - t_safety) * 1000,
-                        (t_send - t_policy) * 1000,
-                        (t_done - t_send) * 1000,
-                        elapsed * 1000,
-                    )
-                if loop_count % 12 == 0:  # Log every ~0.25 second
-                    avg_ms = (elapsed_sum / loop_count) * 1000
-                    logger.info(
-                        "Loop stats: avg=%.1fms, max=%.1fms, overruns=%d/%d (target=%.1fms)",
-                        avg_ms, max_elapsed * 1000, overrun_count, loop_count, dt * 1000,
-                    )
-                if (dt - elapsed) > 0:
-                    time.sleep(dt - elapsed)
+            # 8. Stop inference thread
+            self._stop_inference()
 
         except Exception as exc:
             logger.error("Error in main loop: %s", exc)
@@ -887,8 +958,9 @@ class StandingController:
         self._shutdown = True
 
     def _cleanup(self) -> None:
+        self._inference_running = False
         logger.info("Shutting down: setting damping ...")
-        self._set_damping()
+        self._damping_requested = True
         time.sleep(0.5)
         logger.info("Restoring ai mode ...")
         self.exit_debug_mode()
