@@ -25,10 +25,16 @@ class CMakeBuild(build_ext):
         extdir = ext_fullpath.parent.resolve()
 
         cfg = "Release"
+
+        # Get pybind11 cmake dir from the installed Python package
+        import pybind11
+        pybind11_cmake_dir = pybind11.get_cmake_dir()
+
         cmake_args = [
             f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extdir}{os.sep}",
             f"-DPYTHON_EXECUTABLE={sys.executable}",
             f"-DCMAKE_BUILD_TYPE={cfg}",
+            f"-Dpybind11_DIR={pybind11_cmake_dir}",
         ]
         build_args = ["--config", cfg]
 
