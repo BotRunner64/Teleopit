@@ -670,14 +670,16 @@ class StandingController:
 
         # Diagnostic
         self._step_count += 1
-        if self._step_count % 25 == 1:
+        step_ms = (_t3 - _t0) * 1000
+        if self._step_count % 25 == 1 or step_ms > (1000.0 / POLICY_HZ):
+            tag = "OVERRUN" if step_ms > (1000.0 / POLICY_HZ) else "DIAG"
             logger.info(
-                "DIAG step=%d | state=%.2fms obs=%.2fms infer=%.2fms total=%.1fms | "
+                "%s step=%d | state=%.2fms obs=%.2fms infer=%.2fms total=%.1fms | "
                 "qvel_norm=%.4f | action_norm=%.4f | "
                 "target[:6]=%s | qpos[:6]=%s",
-                self._step_count,
+                tag, self._step_count,
                 (_t1 - _t0) * 1000, (_t2 - _t1) * 1000, (_t3 - _t2) * 1000,
-                (_t3 - _t0) * 1000,
+                step_ms,
                 float(np.linalg.norm(qvel)),
                 float(np.linalg.norm(action)),
                 np.array2string(target_dof_pos[:6], precision=4, separator=','),
