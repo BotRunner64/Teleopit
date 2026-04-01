@@ -32,15 +32,16 @@ static constexpr int NUM_JOINTS = 29;
 static constexpr int NUM_MOTORS = 35;
 static constexpr uint8_t MODE_PR = 0;
 static constexpr uint8_t MODE_MACHINE = 5;
-static constexpr int PUBLISH_HZ = 500;
+static constexpr int DEFAULT_PUBLISH_HZ = 200;
 static constexpr float POS_STOP_F = 2.146e9f;
 static constexpr float VEL_STOP_F = 16000.0f;
 static constexpr float KD_DAMPING = 8.0f;
 
 class G1Bridge {
 public:
-    explicit G1Bridge(const std::string& network_interface)
-        : publish_running_(false)
+    explicit G1Bridge(const std::string& network_interface, int publish_hz = DEFAULT_PUBLISH_HZ)
+        : publish_hz_(publish_hz)
+        , publish_running_(false)
         , state_received_(false)
         , has_target_(false)
         , damping_requested_(false)
@@ -266,7 +267,7 @@ private:
     void publish_loop() {
         using clock = std::chrono::steady_clock;
         const auto period = std::chrono::duration_cast<clock::duration>(
-            std::chrono::duration<double>(1.0 / PUBLISH_HZ));
+            std::chrono::duration<double>(1.0 / publish_hz_));
 
         auto next_tick = clock::now();
 
@@ -336,6 +337,7 @@ private:
     std::atomic<bool> damping_requested_;
 
     // Publish thread
+    int publish_hz_;
     std::thread publish_thread_;
     std::atomic<bool> publish_running_;
 
@@ -348,7 +350,8 @@ PYBIND11_MODULE(g1_bridge_sdk, m) {
     m.doc() = "G1 C++ DDS bridge for unitree_sdk2";
 
     py::class_<G1Bridge>(m, "G1Bridge")
-        .def(py::init<const std::string&>(), py::arg("network_interface"))
+        .def(py::init<const std::string&, int>(),
+             py::arg("network_interface"), py::arg("publish_hz") = DEFAULT_PUBLISH_HZ)
         .def("wait_for_state", &G1Bridge::wait_for_state,
              py::arg("timeout_sec") = 5.0,
              py::call_guard<py::gil_scoped_release>(),

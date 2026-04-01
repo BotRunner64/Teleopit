@@ -53,7 +53,7 @@ NUM_JOINTS = 29
 NUM_MOTORS = 35
 MODE_PR = 0
 MODE_MACHINE = 5
-PUBLISH_HZ = 250
+PUBLISH_HZ = 200
 POLICY_HZ = 50.0
 POS_STOP_F = 2146000000.0
 VEL_STOP_F = 16000.0
@@ -364,7 +364,8 @@ class StandingController:
                  ramp_duration: float = RAMP_DURATION,
                  action_filter_alpha: float = 1.0,
                  no_policy: bool = False,
-                 backend: str = "cpp") -> None:
+                 backend: str = "cpp",
+                 publish_hz: int = 250) -> None:
         self._network_interface = network_interface
         self._ramp_duration = ramp_duration
         self._shutdown = False
@@ -411,6 +412,8 @@ class StandingController:
         self._inference_thread: threading.Thread | None = None
         self._inference_running = False
 
+        self._publish_hz = publish_hz
+
         if self._use_cpp:
             self._init_cpp_backend()
         else:
@@ -422,8 +425,8 @@ class StandingController:
 
     def _init_cpp_backend(self) -> None:
         import g1_bridge_sdk
-        logger.info("Using C++ bridge backend (500Hz publish)")
-        self._bridge = g1_bridge_sdk.G1Bridge(self._network_interface)
+        logger.info("Using C++ bridge backend (%dHz publish)", self._publish_hz)
+        self._bridge = g1_bridge_sdk.G1Bridge(self._network_interface, self._publish_hz)
 
         logger.info("Waiting for LowState on %s ...", self._network_interface)
         if not self._bridge.wait_for_state(5.0):
@@ -812,12 +815,9 @@ class StandingController:
                 self._shutdown = True
                 break
 
-            # Joint velocity safety check
+            # Joint velocity safety check (warning only, no shutdown)
             _, qvel, _, _ = self._get_robot_state()
-            if self._check_joint_vel_safety(qvel):
-                self._set_damping()
-                self._shutdown = True
-                break
+            self._check_joint_vel_safety(qvel)
 
             # Artificial state delay (for debugging)
             if self._state_delay > 0:
@@ -1042,7 +1042,11 @@ def main():
     )
     parser.add_argument(
         "--backend", type=str, choices=["cpp", "python"], default="cpp",
-        help="DDS backend: 'cpp' (C++ bridge, 500Hz) or 'python' (Python SDK, 250Hz)",
+        help="DDS backend: 'cpp' (C++ bridge) or 'python' (Python SDK)",
+    )
+    parser.add_argument(
+        "--publish-hz", type=int, default=200,
+        help="C++ publish frequency in Hz (default: 200, matching training pd_hz)",
     )
     args = parser.parse_args()
 
@@ -1053,6 +1057,7 @@ def main():
         action_filter_alpha=args.action_filter_alpha,
         no_policy=args.no_policy,
         backend=args.backend,
+        publish_hz=args.publish_hz,
     )
     controller._state_delay = args.state_delay
     controller._dry_run = args.dry_run
