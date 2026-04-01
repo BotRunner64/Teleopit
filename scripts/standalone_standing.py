@@ -385,6 +385,7 @@ class StandingController:
             )
 
         self._no_policy = no_policy
+        self._dry_run = False
         self._state_delay = 0.0
 
         # ---- Action filter (EMA low-pass) ----
@@ -671,9 +672,12 @@ class StandingController:
         self._step_count += 1
         if self._step_count % 25 == 1:
             logger.info(
-                "DIAG step=%d | total=%.1fms | qvel_norm=%.4f | action_norm=%.4f | "
+                "DIAG step=%d | state=%.2fms obs=%.2fms infer=%.2fms total=%.1fms | "
+                "qvel_norm=%.4f | action_norm=%.4f | "
                 "target[:6]=%s | qpos[:6]=%s",
-                self._step_count, (_t3 - _t0) * 1000,
+                self._step_count,
+                (_t1 - _t0) * 1000, (_t2 - _t1) * 1000, (_t3 - _t2) * 1000,
+                (_t3 - _t0) * 1000,
                 float(np.linalg.norm(qvel)),
                 float(np.linalg.norm(action)),
                 np.array2string(target_dof_pos[:6], precision=4, separator=','),
@@ -691,9 +695,93 @@ class StandingController:
 
     # ---- Main loop ----
 
+    def _run_dry(self) -> None:
+        """Dry-run: read state + build obs + infer, no motor commands. Safe for timing tests."""
+        logger.info("=== DRY-RUN MODE: no motor commands will be sent ===")
+        self._last_action = np.zeros(NUM_JOINTS, dtype=np.float32)
+        self._policy.reset()
+        self._ramp_active = False
+
+        dt = 1.0 / POLICY_HZ
+        loop_count = 0
+        overrun_count = 0
+        elapsed_sum = 0.0
+        max_elapsed = 0.0
+        state_sum = 0.0
+        obs_sum = 0.0
+        infer_sum = 0.0
+
+        while not self._shutdown:
+            t0 = time.monotonic()
+
+            # 1. Read state
+            qpos, qvel, quat, ang_vel = self._get_robot_state()
+            t1 = time.monotonic()
+
+            # 2. Build reference
+            ref_qpos = self._standing_qpos.copy()
+            align_motion_qpos_yaw(quat, ref_qpos)
+            motion_joint_vel = np.zeros(NUM_JOINTS, dtype=np.float32)
+
+            # 3. Build observation
+            obs = self._obs_builder.build(
+                robot_qpos=qpos, robot_qvel=qvel,
+                robot_quat=quat, robot_ang_vel=ang_vel,
+                motion_qpos=ref_qpos, motion_joint_vel=motion_joint_vel,
+                last_action=self._last_action,
+            )
+            t2 = time.monotonic()
+
+            # 4. Policy inference
+            raw_action = self._policy.compute_action(obs)
+            target = self._policy.get_target_dof_pos(raw_action)
+            t3 = time.monotonic()
+
+            self._last_action = raw_action.copy()
+            loop_count += 1
+            e = t3 - t0
+            elapsed_sum += e
+            max_elapsed = max(max_elapsed, e)
+            state_sum += (t1 - t0)
+            obs_sum += (t2 - t1)
+            infer_sum += (t3 - t2)
+            if e > dt:
+                overrun_count += 1
+
+            if loop_count % 50 == 0:
+                n = loop_count
+                logger.info(
+                    "DRY step=%d | state=%.2fms obs=%.2fms infer=%.2fms total=%.2fms | "
+                    "max=%.2fms overruns=%d/%d | target[:6]=%s",
+                    n,
+                    (state_sum / n) * 1000, (obs_sum / n) * 1000,
+                    (infer_sum / n) * 1000, (elapsed_sum / n) * 1000,
+                    max_elapsed * 1000, overrun_count, n,
+                    np.array2string(target[:6], precision=4, separator=','),
+                )
+
+            remain = dt - (time.monotonic() - t0)
+            if remain > 0:
+                time.sleep(remain)
+
+        logger.info(
+            "DRY-RUN finished: %d steps, avg total=%.2fms "
+            "(state=%.2f obs=%.2f infer=%.2f) max=%.2fms overruns=%d",
+            loop_count,
+            (elapsed_sum / max(loop_count, 1)) * 1000,
+            (state_sum / max(loop_count, 1)) * 1000,
+            (obs_sum / max(loop_count, 1)) * 1000,
+            (infer_sum / max(loop_count, 1)) * 1000,
+            max_elapsed * 1000, overrun_count,
+        )
+
     def run(self) -> None:
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
+
+        if self._dry_run:
+            self._run_dry()
+            return
 
         try:
             # 1. Enter debug mode
@@ -818,6 +906,10 @@ def main():
         "--state-delay", type=float, default=0.0,
         help="Artificial delay (seconds) before reading state, simulates network latency (e.g. 0.005)",
     )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Read state + build obs + infer only, no motor commands (safe timing test)",
+    )
     args = parser.parse_args()
 
     controller = StandingController(
@@ -828,6 +920,7 @@ def main():
         no_policy=args.no_policy,
     )
     controller._state_delay = args.state_delay
+    controller._dry_run = args.dry_run
     controller.run()
 
 
