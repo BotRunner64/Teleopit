@@ -439,9 +439,7 @@ class StandingController:
     def _get_motion_switcher(self):
         if self._motion_switcher is not None:
             return self._motion_switcher
-        # Python SDK RPC layer needs its own DDS factory init (separate from C++ bridge)
-        from unitree_sdk2py.core.channel import ChannelFactoryInitialize
-        ChannelFactoryInitialize(0, self._network_interface)
+        # DDS domain already initialized by C++ bridge — no ChannelFactoryInitialize needed
         from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import (
             MotionSwitcherClient,
         )
