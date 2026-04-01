@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
 from typing import Dict, Tuple
 
 import msgpack
@@ -38,6 +39,8 @@ class ZMQInputProvider:
         Format tag for retargeting (default ``"xrobot"``).
     timeout : float
         Seconds to wait for the first frame before raising.
+    buffer_size : int
+        Maximum number of frames to keep in the receive buffer.
     """
 
     def __init__(
@@ -47,6 +50,7 @@ class ZMQInputProvider:
         topic: str = "pico4",
         human_format: str = "xrobot",
         timeout: float = 30.0,
+        buffer_size: int = 60,
     ) -> None:
         import zmq
 
@@ -58,17 +62,15 @@ class ZMQInputProvider:
         self._ctx = zmq.Context()
         self._sock = self._ctx.socket(zmq.SUB)
         self._sock.setsockopt(zmq.RCVTIMEO, 2000)  # 2s recv timeout for shutdown checks
-        self._sock.setsockopt(zmq.CONFLATE, 1)  # keep only latest message
+        self._sock.setsockopt(zmq.RCVHWM, 5)  # limit receive queue to prevent stale-frame accumulation
         self._sock.connect(f"tcp://{host}:{port}")
         self._sock.subscribe(topic.encode("utf-8"))
 
-        # Thread-safe state (matches UDPBVHInputProvider / Pico4InputProvider pattern)
+        # Thread-safe state: deque buffer of (frame, timestamp) pairs
         self._lock = threading.Lock()
         self._frame_ready = threading.Event()
-        self._previous_frame: HumanFrame | None = None
-        self._latest_frame: HumanFrame | None = None
-        self._previous_timestamp: float | None = None
-        self._latest_timestamp: float | None = None
+        self._buffer: deque[tuple[HumanFrame, float]] = deque(maxlen=max(buffer_size, 2))
+        self._fps_timestamps: deque[float] = deque(maxlen=30)
         self._frame_seq: int = 0
         self._running = True
 
@@ -82,9 +84,17 @@ class ZMQInputProvider:
     # ------------------------------------------------------------------
 
     @property
-    def fps(self) -> int:
-        """Pico4 body tracking runs at ~30 fps."""
-        return 30
+    def fps(self) -> float:
+        """Measured receive fps (falls back to 30.0 until enough samples)."""
+        with self._lock:
+            if len(self._fps_timestamps) < 2:
+                return 30.0
+            oldest = self._fps_timestamps[0]
+            newest = self._fps_timestamps[-1]
+            dt = newest - oldest
+            if dt <= 0:
+                return 30.0
+            return (len(self._fps_timestamps) - 1) / dt
 
     @property
     def human_format(self) -> str:
@@ -106,9 +116,9 @@ class ZMQInputProvider:
                 f"No ZMQ body data received within {self._timeout}s"
             )
         with self._lock:
-            if self._latest_frame is None:
+            if not self._buffer:
                 raise RuntimeError("ZMQ frame buffer signaled ready without a latest frame")
-            return self._latest_frame
+            return self._buffer[-1][0]
 
     def get_frame_packet(self) -> tuple[HumanFrame, float, int]:
         """Return the latest frame together with timestamp and sequence."""
@@ -117,35 +127,46 @@ class ZMQInputProvider:
                 f"No ZMQ body data received within {self._timeout}s"
             )
         with self._lock:
-            if self._latest_frame is None or self._latest_timestamp is None:
+            if not self._buffer:
                 raise RuntimeError("ZMQ frame buffer signaled ready without a latest frame")
-            return self._latest_frame, float(self._latest_timestamp), int(self._frame_seq)
+            frame, ts = self._buffer[-1]
+            return frame, ts, self._frame_seq
 
     def sample_frame(self, query_time_s: float, delay_s: float) -> HumanFrame:
-        """Sample a delayed interpolated realtime frame from the receive buffer."""
+        """Sample a delayed interpolated frame from the receive buffer."""
         if not self._frame_ready.wait(timeout=self._timeout):
             raise TimeoutError(
                 f"No ZMQ body data received within {self._timeout}s"
             )
         with self._lock:
-            latest_frame = self._latest_frame
-            latest_timestamp = self._latest_timestamp
-            previous_frame = self._previous_frame
-            previous_timestamp = self._previous_timestamp
+            buf = list(self._buffer)
 
-        if latest_frame is None or latest_timestamp is None:
+        if not buf:
             raise RuntimeError("ZMQ frame buffer signaled ready without a latest frame")
-        if (
-            previous_frame is None
-            or previous_timestamp is None
-            or latest_timestamp <= previous_timestamp + 1e-6
-        ):
-            return latest_frame
+        if len(buf) == 1:
+            return buf[0][0]
 
         target_time = float(query_time_s - max(delay_s, 0.0))
-        alpha = (target_time - previous_timestamp) / (latest_timestamp - previous_timestamp)
-        alpha = float(np.clip(alpha, 0.0, 1.0))
-        return interpolate_human_frames(previous_frame, latest_frame, alpha)
+
+        # Clamp to buffer bounds
+        if target_time <= buf[0][1]:
+            return buf[0][0]
+        if target_time >= buf[-1][1]:
+            return buf[-1][0]
+
+        # Linear scan to find bracketing frames
+        for i in range(1, len(buf)):
+            older_frame, older_ts = buf[i - 1]
+            newer_frame, newer_ts = buf[i]
+            if target_time <= newer_ts:
+                dt = newer_ts - older_ts
+                if dt <= 1e-6:
+                    return newer_frame
+                alpha = float(np.clip((target_time - older_ts) / dt, 0.0, 1.0))
+                return interpolate_human_frames(older_frame, newer_frame, alpha)
+
+        # Fallback: return latest
+        return buf[-1][0]
 
     def close(self) -> None:
         """Stop the receiver thread and close the socket."""
@@ -183,10 +204,8 @@ class ZMQInputProvider:
 
             timestamp = time.monotonic()
             with self._lock:
-                self._previous_frame = self._latest_frame
-                self._previous_timestamp = self._latest_timestamp
-                self._latest_frame = frame
-                self._latest_timestamp = timestamp
+                self._buffer.append((frame, timestamp))
+                self._fps_timestamps.append(timestamp)
                 self._frame_seq += 1
             if not self._frame_ready.is_set():
                 self._frame_ready.set()

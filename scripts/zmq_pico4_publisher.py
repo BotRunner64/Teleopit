@@ -35,7 +35,6 @@ def main() -> None:
     parser.add_argument("--bind", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=5555, help="ZMQ PUB port (default: 5555)")
     parser.add_argument("--topic", default="pico4", help="ZMQ topic (default: pico4)")
-    parser.add_argument("--fps", type=float, default=30.0, help="Publish rate (default: 30)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
@@ -47,23 +46,28 @@ def main() -> None:
 
     provider = Pico4InputProvider(human_format="xrobot")
     topic_bytes = args.topic.encode("utf-8")
-    dt = 1.0 / args.fps
     seq = 0
+    last_frame_seq = -1
+    last_send_time = 0.0
+    heartbeat_interval = 0.1  # resend latest frame every 100ms when stationary
 
-    print(f"Publishing Pico4 data on tcp://{args.bind}:{args.port} at {args.fps:.0f}fps...")
+    print(f"Publishing Pico4 data on tcp://{args.bind}:{args.port} ...")
     print("Waiting for Pico4 body tracking data...")
     try:
         while True:
-            t0 = time.monotonic()
-            frame = provider.get_frame()
+            frame, ts, frame_seq = provider.get_frame_packet()
+            now = time.monotonic()
+            if frame_seq == last_frame_seq and now - last_send_time < heartbeat_interval:
+                time.sleep(0.001)
+                continue
+            last_frame_seq = frame_seq
+            last_send_time = now
             payload = _serialize_frame(frame)
             sock.send(topic_bytes + b" " + payload)
             seq += 1
             if seq % 300 == 0:
-                print(f"  Published {seq} frames")
-            elapsed = time.monotonic() - t0
-            if dt - elapsed > 0:
-                time.sleep(dt - elapsed)
+                fps = provider.fps
+                print(f"  Published {seq} frames ({fps:.1f} fps)")
     except KeyboardInterrupt:
         print(f"\nStopped after {seq} frames.")
     finally:
