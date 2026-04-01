@@ -502,12 +502,10 @@ class StandingController:
         dt = 1.0 / PUBLISH_HZ
         while self._publish_running:
             t0 = time.monotonic()
-            # Copy cmd under lock, then CRC + Write outside lock to minimize contention
             with self._cmd_lock:
-                cmd_copy = copy.deepcopy(self._cmd)
-            cmd_copy.mode_machine = MODE_MACHINE
-            cmd_copy.crc = self._crc.Crc(cmd_copy)
-            self._cmd_pub.Write(cmd_copy)
+                self._cmd.mode_machine = MODE_MACHINE
+                self._cmd.crc = self._crc.Crc(self._cmd)
+                self._cmd_pub.Write(self._cmd)
             elapsed = time.monotonic() - t0
             if (dt - elapsed) > 0:
                 time.sleep(dt - elapsed)
