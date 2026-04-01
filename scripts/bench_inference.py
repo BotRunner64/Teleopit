@@ -7,14 +7,10 @@ Usage:
 from __future__ import annotations
 
 import time
-from pathlib import Path
 
 import hydra
 import numpy as np
 from omegaconf import DictConfig
-
-from teleopit.runtime.cli import add_unitree_sdk_submodule
-add_unitree_sdk_submodule(Path(__file__).resolve().parent.parent)
 
 from teleopit.controllers.rl_policy import RLPolicyController
 from teleopit.runtime.common import cfg_get

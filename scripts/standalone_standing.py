@@ -3,7 +3,7 @@
 
 Uses ONNX RL policy inference to maintain balanced standing, matching the
 STANDING mode in Sim2RealController. Only depends on:
-  - unitree_sdk2py (from third_party/)
+  - g1_bridge_sdk (C++ DDS bridge)
   - onnxruntime
   - mujoco
   - numpy
@@ -25,7 +25,6 @@ Flow:
 from __future__ import annotations
 
 import argparse
-import copy
 import logging
 import math
 import signal
@@ -37,9 +36,6 @@ from collections import deque
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_SDK_PATH = _REPO_ROOT / "third_party" / "unitree_sdk2_python"
-if _SDK_PATH.exists():
-    sys.path.insert(0, str(_SDK_PATH))
 
 import mujoco
 import numpy as np
@@ -362,14 +358,11 @@ class StandingController:
 
     def __init__(self, network_interface: str, policy_path: str,
                  ramp_duration: float = RAMP_DURATION,
-                 action_filter_alpha: float = 1.0,
                  no_policy: bool = False,
-                 backend: str = "cpp",
                  publish_hz: int = 250) -> None:
         self._network_interface = network_interface
         self._ramp_duration = ramp_duration
         self._shutdown = False
-        self._use_cpp = (backend == "cpp")
 
         # ---- Load policy and observation builder ----
         self._policy = PolicyInference(policy_path)
@@ -389,10 +382,6 @@ class StandingController:
         self._no_policy = no_policy
         self._dry_run = False
         self._state_delay = 0.0
-
-        # ---- Action filter (EMA low-pass) ----
-        self._action_filter_alpha = np.clip(action_filter_alpha, 0.01, 1.0)
-        self._prev_target: np.ndarray | None = None
 
         # ---- Policy state ----
         self._step_count = 0
@@ -414,10 +403,7 @@ class StandingController:
 
         self._publish_hz = publish_hz
 
-        if self._use_cpp:
-            self._init_cpp_backend()
-        else:
-            self._init_python_backend()
+        self._init_cpp_backend()
 
     # ==================================================================
     # Backend init
@@ -433,189 +419,44 @@ class StandingController:
             raise RuntimeError("No LowState received within 5s -- check network and robot power")
         logger.info("LowState received, robot connected")
 
-    def _init_python_backend(self) -> None:
-        from unitree_sdk2py.core.channel import (
-            ChannelFactoryInitialize,
-            ChannelPublisher,
-            ChannelSubscriber,
-        )
-        from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
-        from unitree_sdk2py.idl.unitree_hg.msg.dds_ import (
-            LowCmd_ as HG_LowCmd,
-            LowState_ as HG_LowState,
-        )
-        from unitree_sdk2py.utils.crc import CRC
-
-        logger.info("Using Python SDK backend (250Hz publish)")
-        self._LowCmd_Factory = unitree_hg_msg_dds__LowCmd_
-        self._crc = CRC()
-
-        ChannelFactoryInitialize(0, self._network_interface)
-
-        self._lowstate = None
-        self._state_sub = ChannelSubscriber("rt/lowstate", HG_LowState)
-        self._state_sub.Init(self._on_lowstate, 10)
-
-        self._cmd_pub = ChannelPublisher("rt/lowcmd", HG_LowCmd)
-        self._cmd_pub.Init()
-
-        # Build default LowCmd
-        self._cmd = self._LowCmd_Factory()
-        self._cmd.mode_pr = MODE_PR
-        self._cmd.mode_machine = MODE_MACHINE
-        self._cmd.level_flag = 0xFF
-        for i in range(NUM_MOTORS):
-            self._cmd.motor_cmd[i].mode = 0x01
-            if i < NUM_JOINTS:
-                self._cmd.motor_cmd[i].q = 0.0
-                self._cmd.motor_cmd[i].kp = 0.0
-                self._cmd.motor_cmd[i].dq = 0.0
-                self._cmd.motor_cmd[i].kd = KD_DAMPING
-                self._cmd.motor_cmd[i].tau = 0.0
-            else:
-                self._cmd.motor_cmd[i].q = POS_STOP_F
-                self._cmd.motor_cmd[i].kp = 0.0
-                self._cmd.motor_cmd[i].dq = VEL_STOP_F
-                self._cmd.motor_cmd[i].kd = 0.0
-                self._cmd.motor_cmd[i].tau = 0.0
-
-        self._cmd_lock = threading.Lock()
-        self._publish_thread = None
-        self._publish_running = False
-        self._motion_switcher = None
-        self._target_buf: np.ndarray | None = None
-        self._damping_requested = False
-
-        logger.info("Waiting for LowState on %s ...", self._network_interface)
-        deadline = time.monotonic() + 5.0
-        while self._lowstate is None and time.monotonic() < deadline:
-            time.sleep(0.05)
-        if self._lowstate is None:
-            raise RuntimeError("No LowState received within 5s -- check network and robot power")
-        logger.info("LowState received, robot connected")
-
-    def _on_lowstate(self, msg) -> None:
-        self._lowstate = copy.deepcopy(msg)
-
     # ==================================================================
     # Robot state reading
     # ==================================================================
 
     def _get_robot_state(self):
-        if self._use_cpp:
-            return self._bridge.get_state()
-        ls = self._lowstate
-        qpos = np.zeros(NUM_JOINTS, dtype=np.float32)
-        qvel = np.zeros(NUM_JOINTS, dtype=np.float32)
-        for i in range(NUM_JOINTS):
-            qpos[i] = ls.motor_state[JOINT_MAP[i]].q
-            qvel[i] = ls.motor_state[JOINT_MAP[i]].dq
-        quat = np.array(ls.imu_state.quaternion, dtype=np.float32)
-        ang_vel = np.array(ls.imu_state.gyroscope, dtype=np.float32)
-        return qpos, qvel, quat, ang_vel
+        return self._bridge.get_state()
 
     # ==================================================================
     # Publish thread
     # ==================================================================
 
     def _start_publish(self) -> None:
-        if self._use_cpp:
-            self._bridge.start_publish()
-            return
-        if self._publish_thread is not None:
-            return
-        self._publish_running = True
-        self._publish_thread = threading.Thread(target=self._publish_loop, daemon=True)
-        self._publish_thread.start()
+        self._bridge.start_publish()
 
     def _stop_publish(self) -> None:
-        if self._use_cpp:
-            self._bridge.stop_publish()
-            return
-        self._publish_running = False
-        if self._publish_thread is not None:
-            self._publish_thread.join(timeout=1.0)
-            self._publish_thread = None
-
-    def _publish_loop(self) -> None:
-        """250Hz Python SDK publish loop."""
-        dt = 1.0 / PUBLISH_HZ
-        pub_count = 0
-        max_pub_ms = 0.0
-        while self._publish_running:
-            t0 = time.monotonic()
-
-            if self._damping_requested:
-                for i in range(NUM_MOTORS):
-                    self._cmd.motor_cmd[i].mode = 1
-                    self._cmd.motor_cmd[i].q = 0.0
-                    self._cmd.motor_cmd[i].kp = 0.0
-                    self._cmd.motor_cmd[i].dq = 0.0
-                    self._cmd.motor_cmd[i].kd = KD_DAMPING
-                    self._cmd.motor_cmd[i].tau = 0.0
-            else:
-                target = self._target_buf
-                if target is not None:
-                    for i in range(NUM_JOINTS):
-                        idx = JOINT_MAP[i]
-                        self._cmd.motor_cmd[idx].mode = 1
-                        self._cmd.motor_cmd[idx].q = float(target[i])
-                        self._cmd.motor_cmd[idx].kp = float(KP[i])
-                        self._cmd.motor_cmd[idx].dq = 0.0
-                        self._cmd.motor_cmd[idx].kd = float(KD[i])
-                        self._cmd.motor_cmd[idx].tau = 0.0
-
-            self._cmd.mode_machine = MODE_MACHINE
-            self._cmd.crc = self._crc.Crc(self._cmd)
-            self._cmd_pub.Write(self._cmd)
-
-            elapsed_ms = (time.monotonic() - t0) * 1000
-            pub_count += 1
-            max_pub_ms = max(max_pub_ms, elapsed_ms)
-            if pub_count % 2500 == 0:
-                logger.info("Publish stats: max=%.2fms over last 2500 cycles", max_pub_ms)
-                max_pub_ms = 0.0
-
-            remain = dt - (time.monotonic() - t0)
-            if remain > 0:
-                time.sleep(remain)
+        self._bridge.stop_publish()
 
     # ==================================================================
     # Motion switcher
     # ==================================================================
 
-    def _get_motion_switcher(self):
-        """Lazy-init Python SDK MotionSwitcherClient (python backend only)."""
-        if self._motion_switcher is not None:
-            return self._motion_switcher
-        from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import (
-            MotionSwitcherClient,
-        )
-        client = MotionSwitcherClient()
-        client.SetTimeout(1.0)
-        client.Init()
-        self._motion_switcher = client
-        return client
-
     def enter_debug_mode(self) -> bool:
         try:
             for _ in range(10):
-                if self._use_cpp:
-                    code, name = self._bridge.check_mode()
-                    if code != 0 or not name:
-                        logger.info("Debug mode ready (no active mode)")
-                        return True
-                    logger.info("Releasing mode: %s", name)
-                    self._bridge.release_mode()
-                else:
-                    client = self._get_motion_switcher()
-                    code, result = client.CheckMode()
-                    mode_name = result.get("name", "") if isinstance(result, dict) else ""
-                    if not mode_name:
-                        logger.info("Debug mode ready (no active mode)")
-                        return True
-                    logger.info("Releasing mode: %s", mode_name)
-                    client.ReleaseMode()
+                code, name = self._bridge.check_mode()
+                logger.info("check_mode -> code=%s, name=%s", code, name)
+                if code != 0:
+                    logger.error("check_mode RPC failed with code=%s", code)
+                    return False
+                if not name:
+                    logger.info("Debug mode ready (no active mode)")
+                    return True
+                logger.info("Releasing mode: %s", name)
+                release_code = self._bridge.release_mode()
+                logger.info("release_mode('%s') -> code=%s", name, release_code)
+                if release_code != 0:
+                    logger.error("Failed to release mode '%s' (code=%s)", name, release_code)
+                    return False
                 time.sleep(1)
             logger.warning("Could not release modes after 10 attempts")
             return False
@@ -626,11 +467,7 @@ class StandingController:
     def exit_debug_mode(self) -> bool:
         self._stop_publish()
         try:
-            if self._use_cpp:
-                code = self._bridge.select_mode("ai")
-            else:
-                client = self._get_motion_switcher()
-                code, _ = client.SelectMode("ai")
+            code = self._bridge.select_mode("ai")
             logger.info("select_mode('ai') -> code=%s", code)
             return code == 0
         except Exception as exc:
@@ -642,27 +479,12 @@ class StandingController:
     # ==================================================================
 
     def _set_damping(self) -> None:
-        if self._use_cpp:
-            self._bridge.set_damping()
-        else:
-            self._damping_requested = True
+        self._bridge.set_damping()
 
     def _lock_joints(self) -> None:
-        if self._use_cpp:
-            qpos, _, _, _ = self._get_robot_state()
-            self._bridge.set_target(qpos, KP, KD)
-            self._bridge.lock_joints()
-        else:
-            ls = self._lowstate
-            with self._cmd_lock:
-                for i in range(NUM_JOINTS):
-                    idx = JOINT_MAP[i]
-                    self._cmd.motor_cmd[idx].mode = 1
-                    self._cmd.motor_cmd[idx].q = ls.motor_state[idx].q
-                    self._cmd.motor_cmd[idx].kp = float(KP[i])
-                    self._cmd.motor_cmd[idx].dq = 0.0
-                    self._cmd.motor_cmd[idx].kd = float(KD[i])
-                    self._cmd.motor_cmd[idx].tau = 0.0
+        qpos, _, _, _ = self._get_robot_state()
+        self._bridge.set_target(qpos, KP, KD)
+        self._bridge.lock_joints()
 
     # ==================================================================
     # Safety checks
@@ -670,13 +492,7 @@ class StandingController:
 
     def _check_emergency_stop(self) -> bool:
         try:
-            if self._use_cpp:
-                remote_bytes = self._bridge.get_wireless_remote()
-            else:
-                ls = self._lowstate
-                if ls is None:
-                    return False
-                remote_bytes = bytes(ls.wireless_remote)
+            remote_bytes = self._bridge.get_wireless_remote()
             if len(remote_bytes) < 4:
                 return False
             keys = struct.unpack_from("<H", remote_bytes, _KEYS_OFFSET)[0]
@@ -736,15 +552,7 @@ class StandingController:
 
         _t2 = time.monotonic()
         # Policy inference
-        raw_action = self._policy.compute_action(obs)
-
-        # Action EMA filter: smooth the RAW action so both target AND last_action
-        # in the observation are filtered — breaks the oscillation feedback loop
-        if self._action_filter_alpha < 1.0 - 1e-6 and self._last_action is not None:
-            action = (self._action_filter_alpha * raw_action
-                      + (1.0 - self._action_filter_alpha) * self._last_action)
-        else:
-            action = raw_action
+        action = self._policy.compute_action(obs)
 
         target_dof_pos = self._policy.get_target_dof_pos(action)
         _t3 = time.monotonic()
@@ -831,10 +639,7 @@ class StandingController:
                 target = self._standing_step()
 
             # Write target to publish thread
-            if self._use_cpp:
-                self._bridge.set_target(target, KP, KD)
-            else:
-                self._target_buf = target
+            self._bridge.set_target(target, KP, KD)
 
             # Timing diagnostics (informational only — not a control failure)
             elapsed = time.monotonic() - t0
@@ -1025,10 +830,6 @@ def main():
         help="Seconds for startup ramp (default: 2.0)",
     )
     parser.add_argument(
-        "--action-filter-alpha", type=float, default=1.0,
-        help="Action EMA filter alpha: 1.0=no filter, 0.3=strong filter (default: 1.0)",
-    )
-    parser.add_argument(
         "--no-policy", action="store_true",
         help="Skip RL policy, just send fixed DEFAULT_ANGLES (diagnostic mode)",
     )
@@ -1041,10 +842,6 @@ def main():
         help="Read state + build obs + infer only, no motor commands (safe timing test)",
     )
     parser.add_argument(
-        "--backend", type=str, choices=["cpp", "python"], default="cpp",
-        help="DDS backend: 'cpp' (C++ bridge) or 'python' (Python SDK)",
-    )
-    parser.add_argument(
         "--publish-hz", type=int, default=200,
         help="C++ publish frequency in Hz (default: 200, matching training pd_hz)",
     )
@@ -1054,9 +851,7 @@ def main():
         network_interface=args.network_interface,
         policy_path=args.policy,
         ramp_duration=args.ramp_duration,
-        action_filter_alpha=args.action_filter_alpha,
         no_policy=args.no_policy,
-        backend=args.backend,
         publish_hz=args.publish_hz,
     )
     controller._state_delay = args.state_delay

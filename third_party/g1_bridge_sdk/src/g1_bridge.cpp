@@ -43,6 +43,7 @@ public:
         : publish_hz_(publish_hz)
         , publish_running_(false)
         , state_received_(false)
+        , state_counter_(0)
         , has_target_(false)
         , damping_requested_(false)
     {
@@ -109,6 +110,10 @@ public:
         }
 
         return py::make_tuple(py_qpos, py_qvel, py_quat, py_ang_vel);
+    }
+
+    uint64_t get_state_counter() const {
+        return state_counter_.load(std::memory_order_acquire);
     }
 
     // Return wireless_remote bytes (40 bytes)
@@ -261,6 +266,7 @@ private:
                      std::min<size_t>(40, state.wireless_remote().size()));
         mode_machine_ = state.mode_machine();
 
+        state_counter_.fetch_add(1, std::memory_order_acq_rel);
         state_received_.store(true, std::memory_order_release);
     }
 
@@ -327,6 +333,7 @@ private:
     uint8_t wireless_remote_[40]{};
     uint8_t mode_machine_{0};
     std::atomic<bool> state_received_;
+    std::atomic<uint64_t> state_counter_;
 
     // Target buffer (Python writes, publish thread reads)
     std::mutex target_mutex_;
@@ -358,6 +365,8 @@ PYBIND11_MODULE(g1_bridge_sdk, m) {
              "Block until first LowState arrives (returns False on timeout)")
         .def("get_state", &G1Bridge::get_state,
              "Return (qpos[29], qvel[29], quat[4], ang_vel[3]) numpy arrays")
+        .def("get_state_counter", &G1Bridge::get_state_counter,
+             "Return the total number of LowState messages received since startup")
         .def("get_wireless_remote", &G1Bridge::get_wireless_remote,
              "Return 40-byte wireless remote data")
         .def("get_mode_machine", &G1Bridge::get_mode_machine,

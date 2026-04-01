@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -26,9 +25,3 @@ def validate_policy_path(cfg: Any, script_name: str) -> Path:
     if not policy_path.exists():
         raise FileNotFoundError(f"ONNX policy file not found: {policy_path}")
     return policy_path
-
-
-def add_unitree_sdk_submodule(repo_root: Path) -> None:
-    sdk_path = repo_root / "third_party" / "unitree_sdk2_python"
-    if sdk_path.exists():
-        sys.path.insert(0, str(sdk_path))

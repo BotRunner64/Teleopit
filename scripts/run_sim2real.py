@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import hydra
 from omegaconf import DictConfig
 
-from teleopit.runtime.cli import add_unitree_sdk_submodule, validate_policy_path
-
-add_unitree_sdk_submodule(Path(__file__).resolve().parent.parent)
+from teleopit.runtime.cli import validate_policy_path
 from teleopit.sim2real.controller import Sim2RealController
 
 

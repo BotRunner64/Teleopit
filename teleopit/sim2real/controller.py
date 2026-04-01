@@ -233,10 +233,8 @@ class Sim2RealController:
                 t0 = time.monotonic()
 
                 # 1. Read remote state
-                ls = self.robot.get_lowstate()
-                if ls is not None:
-                    remote_bytes = bytes(ls.wireless_remote)
-                    self.remote.update(remote_bytes)
+                remote_bytes = self.robot.get_wireless_remote()
+                self.remote.update(remote_bytes)
 
                 # 2. Emergency stop (highest priority)
                 if self._check_emergency_stop():
