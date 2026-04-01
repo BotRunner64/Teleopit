@@ -166,9 +166,10 @@ class ZMQInputProvider:
 
         while self._running:
             try:
-                parts = self._sock.recv_multipart()
-                # parts[0] = topic bytes, parts[1] = msgpack payload
-                payload = msgpack.unpackb(parts[1], raw=False)
+                raw = self._sock.recv()
+                # Single frame: "<topic> <msgpack payload>"
+                sep = raw.index(b" ")
+                payload = msgpack.unpackb(raw[sep + 1:], raw=False)
                 frame = self._deserialize_frame(payload)
             except zmq.Again:  # recv timeout — check shutdown flag
                 continue

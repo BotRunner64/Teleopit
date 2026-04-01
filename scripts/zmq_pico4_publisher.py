@@ -57,7 +57,7 @@ def main() -> None:
             t0 = time.monotonic()
             frame = provider.get_frame()
             payload = _serialize_frame(frame)
-            sock.send_multipart([topic_bytes, payload])
+            sock.send(topic_bytes + b" " + payload)
             seq += 1
             if seq % 300 == 0:
                 print(f"  Published {seq} frames")
