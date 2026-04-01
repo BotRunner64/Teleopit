@@ -12,6 +12,7 @@
 
 #include <unitree/robot/channel/channel_publisher.hpp>
 #include <unitree/robot/channel/channel_subscriber.hpp>
+#include <unitree/robot/b2/motion_switcher/motion_switcher_client.hpp>
 #include <unitree/idl/hg/LowCmd_.hpp>
 #include <unitree/idl/hg/LowState_.hpp>
 #include <unitree/dds_wrapper/common/crc.h>
@@ -184,7 +185,36 @@ public:
             publish_thread_.join();
     }
 
+    // ---- Motion Switcher RPC ----
+
+    // Check current mode, returns (code, name) tuple
+    py::tuple check_mode() {
+        ensure_motion_switcher();
+        std::string form, name;
+        int32_t code = motion_switcher_->CheckMode(form, name);
+        return py::make_tuple(code, name);
+    }
+
+    // Select a mode (e.g. "ai", "normal")
+    int32_t select_mode(const std::string& name) {
+        ensure_motion_switcher();
+        return motion_switcher_->SelectMode(name);
+    }
+
+    // Release current mode (enter debug/low-level mode)
+    int32_t release_mode() {
+        ensure_motion_switcher();
+        return motion_switcher_->ReleaseMode();
+    }
+
 private:
+    void ensure_motion_switcher() {
+        if (!motion_switcher_) {
+            motion_switcher_ = std::make_unique<unitree::robot::b2::MotionSwitcherClient>();
+            motion_switcher_->SetTimeout(1.0f);
+            motion_switcher_->Init();
+        }
+    }
     void init_default_cmd() {
         // Zero-init the command
         cmd_ = LowCmd_();
@@ -308,6 +338,9 @@ private:
     // Publish thread
     std::thread publish_thread_;
     std::atomic<bool> publish_running_;
+
+    // Motion switcher (lazy-init)
+    std::unique_ptr<unitree::robot::b2::MotionSwitcherClient> motion_switcher_;
 };
 
 // ---- pybind11 module ----
@@ -337,5 +370,12 @@ PYBIND11_MODULE(g1_bridge_sdk, m) {
              "Start 500Hz command publish thread")
         .def("stop_publish", &G1Bridge::stop_publish,
              py::call_guard<py::gil_scoped_release>(),
-             "Stop publish thread");
+             "Stop publish thread")
+        .def("check_mode", &G1Bridge::check_mode,
+             "Check current motion mode, returns (code, name)")
+        .def("select_mode", &G1Bridge::select_mode,
+             py::arg("name"),
+             "Select motion mode (e.g. 'ai', 'normal')")
+        .def("release_mode", &G1Bridge::release_mode,
+             "Release current mode (enter debug/low-level mode)");
 }

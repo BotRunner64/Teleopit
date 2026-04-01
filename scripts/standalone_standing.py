@@ -35,11 +35,7 @@ import time
 from collections import deque
 from pathlib import Path
 
-# Add unitree_sdk2_python from third_party to sys.path (needed for MotionSwitcherClient RPC)
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_SDK_PATH = _REPO_ROOT / "third_party" / "unitree_sdk2_python"
-if _SDK_PATH.exists():
-    sys.path.insert(0, str(_SDK_PATH))
 
 import g1_bridge_sdk
 import mujoco
@@ -408,7 +404,6 @@ class StandingController:
 
         # ---- C++ DDS bridge (all DDS communication in native threads) ----
         self._bridge = g1_bridge_sdk.G1Bridge(self._network_interface)
-        self._motion_switcher = None
 
         # ---- Pipeline state ----
         self._inference_thread: threading.Thread | None = None
@@ -436,30 +431,15 @@ class StandingController:
 
     # ---- Motion switcher ----
 
-    def _get_motion_switcher(self):
-        if self._motion_switcher is not None:
-            return self._motion_switcher
-        # DDS domain already initialized by C++ bridge — no ChannelFactoryInitialize needed
-        from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import (
-            MotionSwitcherClient,
-        )
-        client = MotionSwitcherClient()
-        client.SetTimeout(1.0)
-        client.Init()
-        self._motion_switcher = client
-        return client
-
     def enter_debug_mode(self) -> bool:
         try:
-            client = self._get_motion_switcher()
             for _ in range(10):
-                code, result = client.CheckMode()
-                mode_name = result.get("name", "") if isinstance(result, dict) else ""
-                if not mode_name:
+                code, name = self._bridge.check_mode()
+                if code != 0 or not name:
                     logger.info("Debug mode ready (no active mode)")
                     return True
-                logger.info("Releasing mode: %s", mode_name)
-                client.ReleaseMode()
+                logger.info("Releasing mode: %s", name)
+                self._bridge.release_mode()
                 time.sleep(1)
             logger.warning("Could not release modes after 10 attempts")
             return False
@@ -470,9 +450,8 @@ class StandingController:
     def exit_debug_mode(self) -> bool:
         self._stop_publish()
         try:
-            client = self._get_motion_switcher()
-            code, result = client.SelectMode("ai")
-            logger.info("SelectMode('ai') -> code=%s", code)
+            code = self._bridge.select_mode("ai")
+            logger.info("select_mode('ai') -> code=%s", code)
             return code == 0
         except Exception as exc:
             logger.error("exit_debug_mode failed: %s", exc)
