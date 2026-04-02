@@ -45,17 +45,24 @@ class _DummyRobot:
 class _DummyController:
     _expected_obs_dim = 4
 
+    def __init__(self) -> None:
+        self.reset_calls = 0
+
     def compute_action(self, obs: np.ndarray) -> np.ndarray:
         return np.array([0.1, -0.1], dtype=np.float32)
 
     def reset(self) -> None:
-        pass
+        self.reset_calls += 1
 
 
 class _DummyObsBuilder:
     def __init__(self) -> None:
         self.mimic_obs_calls: list[np.ndarray] = []
         self._base = _DummyObsBuilderBase()
+        self.reset_calls = 0
+
+    def reset(self) -> None:
+        self.reset_calls += 1
 
     def build(
         self,
@@ -442,9 +449,10 @@ def test_simulation_loop_pause_resume_freezes_then_blends_back(monkeypatch) -> N
     bus = InProcessBus()
     robot = _DummyRobot()
     obs_builder = _DummyObsBuilder()
+    controller = _DummyController()
     loop = SimulationLoop(
         robot=robot,
-        controller=_DummyController(),
+        controller=controller,
         obs_builder=obs_builder,
         bus=bus,
         cfg={
@@ -468,8 +476,10 @@ def test_simulation_loop_pause_resume_freezes_then_blends_back(monkeypatch) -> N
     )
 
     assert result["steps"] == 4
+    assert controller.reset_calls == 1
+    assert obs_builder.reset_calls == 1
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[0], np.array([0.2], dtype=np.float32), atol=1e-6)
-    np.testing.assert_allclose(obs_builder.mimic_obs_calls[1], np.array([0.2], dtype=np.float32), atol=1e-6)
-    np.testing.assert_allclose(obs_builder.mimic_obs_calls[2], np.array([0.2], dtype=np.float32), atol=1e-6)
-    assert obs_builder.mimic_obs_calls[3][0] > 0.2
+    np.testing.assert_allclose(obs_builder.mimic_obs_calls[1], np.array([0.0], dtype=np.float32), atol=1e-6)
+    np.testing.assert_allclose(obs_builder.mimic_obs_calls[2], np.array([0.0], dtype=np.float32), atol=1e-6)
+    assert obs_builder.mimic_obs_calls[3][0] > 0.0
     assert obs_builder.mimic_obs_calls[3][0] < 1.0

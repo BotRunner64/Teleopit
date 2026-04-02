@@ -522,10 +522,13 @@ class SimulationLoop:
                             if realtime_reference_manager is not None:
                                 realtime_reference_manager.set_warmup_steps(self._pause_resume_warmup_steps)
                                 realtime_reference_manager.reset()
+                            self._reset_temporal_policy_state()
                             self._step_runner.soft_reset_reference_state(
                                 reset_alignment=self._pause_reset_alignment_on_resume
                             )
+                            self._step_runner.last_action = np.zeros((self._num_actions,), dtype=np.float32)
                             self._step_runner.last_retarget_qpos = start_qpos.copy()
+                            self._step_runner.last_reference_qpos = start_qpos.copy()
                             self._step_runner.arm_motion_transition(
                                 start_qpos,
                                 duration_s=self._pause_resume_transition_duration,
@@ -933,18 +936,27 @@ class SimulationLoop:
         state: object,
     ) -> Float64Array:
         if last_commanded_motion_qpos is not None:
-            return last_commanded_motion_qpos.copy()
-        if last_retarget_qpos is not None:
-            return last_retarget_qpos.copy()
-        if latest_live_retargeted is not None:
-            return latest_live_retargeted.copy()
-        hold_qpos = np.zeros(36, dtype=np.float64)
+            hold_qpos = last_commanded_motion_qpos.copy()
+        elif last_retarget_qpos is not None:
+            hold_qpos = last_retarget_qpos.copy()
+        elif latest_live_retargeted is not None:
+            hold_qpos = latest_live_retargeted.copy()
+        else:
+            hold_qpos = np.zeros(36, dtype=np.float64)
         base_pos = getattr(state, "base_pos", None)
         if base_pos is not None:
             hold_qpos[0:3] = np.asarray(base_pos, dtype=np.float64)[:3]
         hold_qpos[3:7] = np.asarray(getattr(state, "quat"), dtype=np.float64)[:4]
         hold_qpos[7:7 + self._num_actions] = np.asarray(getattr(state, "qpos"), dtype=np.float64)[: self._num_actions]
         return hold_qpos
+
+    def _reset_temporal_policy_state(self) -> None:
+        reset_controller = getattr(self.controller, "reset", None)
+        if callable(reset_controller):
+            reset_controller()
+        reset_obs_builder = getattr(self.obs_builder, "reset", None)
+        if callable(reset_obs_builder):
+            reset_obs_builder()
 
     def _build_observation(
         self,
