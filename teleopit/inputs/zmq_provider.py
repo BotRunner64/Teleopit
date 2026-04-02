@@ -7,6 +7,7 @@ the same interface as ``Pico4InputProvider`` / ``UDPBVHInputProvider``.
 
 from __future__ import annotations
 
+from collections import deque
 import logging
 import threading
 import time
@@ -17,6 +18,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from teleopit.inputs.realtime_frame_cache import RealtimeFrameCache
+from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType, RealtimeInputPacket
 from teleopit.sim.reference_motion import interpolate_human_frames
 
 logger = logging.getLogger(__name__)
@@ -81,6 +83,7 @@ class ZMQInputProvider:
         self._lock = threading.Lock()
         self._frame_ready = threading.Event()
         self._frame_cache = RealtimeFrameCache[HumanFrame](buffer_size=buffer_size, fps_window=30)
+        self._pending_control_events: deque[ControlEvent] = deque()
         self._running = True
 
         # Clock offset: maps publisher monotonic → local monotonic (set once on first frame)
@@ -118,6 +121,9 @@ class ZMQInputProvider:
         ``timeout`` seconds).  Subsequent calls return immediately with the
         most recent frame.
         """
+        with self._lock:
+            if len(self._frame_cache) > 0:
+                return self._frame_cache.latest()
         if not self._frame_ready.wait(timeout=self._timeout):
             raise TimeoutError(
                 f"No ZMQ body data received within {self._timeout}s"
@@ -129,6 +135,9 @@ class ZMQInputProvider:
 
     def get_frame_packet(self) -> tuple[HumanFrame, float, int]:
         """Return the latest frame together with timestamp and sequence."""
+        with self._lock:
+            if len(self._frame_cache) > 0:
+                return self._frame_cache.latest_packet()
         if not self._frame_ready.wait(timeout=self._timeout):
             raise TimeoutError(
                 f"No ZMQ body data received within {self._timeout}s"
@@ -137,6 +146,36 @@ class ZMQInputProvider:
             if len(self._frame_cache) <= 0:
                 raise RuntimeError("ZMQ frame buffer signaled ready without a latest frame")
             return self._frame_cache.latest_packet()
+
+    def get_realtime_input_packet(self) -> RealtimeInputPacket[HumanFrame]:
+        """Return the latest frame packet together with pending control events."""
+        with self._lock:
+            if len(self._frame_cache) > 0:
+                frame, timestamp_s, seq = self._frame_cache.latest_packet()
+                control_events = tuple(self._pending_control_events)
+                self._pending_control_events.clear()
+                return RealtimeInputPacket(
+                    frame=frame,
+                    timestamp_s=timestamp_s,
+                    seq=seq,
+                    control_events=control_events,
+                )
+        if not self._frame_ready.wait(timeout=self._timeout):
+            raise TimeoutError(
+                f"No ZMQ body data received within {self._timeout}s"
+            )
+        with self._lock:
+            if len(self._frame_cache) <= 0:
+                raise RuntimeError("ZMQ frame buffer signaled ready without a latest frame")
+            frame, timestamp_s, seq = self._frame_cache.latest_packet()
+            control_events = tuple(self._pending_control_events)
+            self._pending_control_events.clear()
+        return RealtimeInputPacket(
+            frame=frame,
+            timestamp_s=timestamp_s,
+            seq=seq,
+            control_events=control_events,
+        )
 
     def sample_frame(self, query_time_s: float, delay_s: float) -> HumanFrame:
         """Sample a delayed interpolated frame from the receive buffer."""
@@ -199,6 +238,9 @@ class ZMQInputProvider:
                 payload = msgpack.unpackb(raw[sep + 1:], raw=False)
                 source_ts = self._normalize_source_ts(payload.pop("_ts", None))
                 source_seq = self._normalize_source_seq(payload.pop("_seq", None))
+                control_events = self._normalize_control_events(
+                    payload.pop("_control_events", payload.pop("control_events", None))
+                )
                 frame = self._deserialize_frame(payload)
             except zmq.Again:  # recv timeout — check shutdown flag
                 continue
@@ -217,6 +259,7 @@ class ZMQInputProvider:
                 source_seq=source_seq,
                 local_ts=local_ts,
                 drained_count=drained_count,
+                control_events=control_events,
             )
             if not self._frame_ready.is_set():
                 self._frame_ready.set()
@@ -242,6 +285,7 @@ class ZMQInputProvider:
         source_seq: int | None,
         local_ts: float,
         drained_count: int = 0,
+        control_events: tuple[ControlEvent, ...] = (),
     ) -> None:
         buffer_ts = self._map_buffer_timestamp(source_ts, local_ts)
 
@@ -277,6 +321,7 @@ class ZMQInputProvider:
                 fps_timestamp=source_ts if source_ts is not None else local_ts,
                 source_seq=source_seq,
             )
+            self._pending_control_events.extend(control_events)
             self._last_buffer_ts = buffer_ts
             if source_seq is not None:
                 self._last_source_seq = source_seq
@@ -304,6 +349,42 @@ class ZMQInputProvider:
         if isinstance(raw_value, bool):
             return int(raw_value)
         return int(raw_value)
+
+    @staticmethod
+    def _normalize_control_events(raw_value: object) -> tuple[ControlEvent, ...]:
+        if raw_value in (None, "", "null"):
+            return ()
+
+        values = raw_value if isinstance(raw_value, list) else [raw_value]
+        events: list[ControlEvent] = []
+        for item in values:
+            if isinstance(item, str):
+                if item == ControlEventType.TOGGLE_PAUSE.value:
+                    events.append(
+                        ControlEvent(
+                            event_type=ControlEventType.TOGGLE_PAUSE,
+                            source="zmq",
+                            timestamp_s=None,
+                        )
+                    )
+                continue
+
+            if not isinstance(item, dict):
+                continue
+
+            raw_type = item.get("event_type", item.get("type"))
+            if raw_type != ControlEventType.TOGGLE_PAUSE.value:
+                continue
+            raw_timestamp = item.get("timestamp_s", item.get("timestamp"))
+            timestamp_s = None if raw_timestamp in (None, "", "null") else float(raw_timestamp)
+            events.append(
+                ControlEvent(
+                    event_type=ControlEventType.TOGGLE_PAUSE,
+                    source=str(item.get("source", "zmq")),
+                    timestamp_s=timestamp_s,
+                )
+            )
+        return tuple(events)
 
     @staticmethod
     def _deserialize_frame(payload: dict) -> HumanFrame:

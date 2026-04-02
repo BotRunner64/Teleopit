@@ -46,13 +46,14 @@ class QposInterpolator:
     """
 
     def __init__(self, duration: float, policy_hz: float) -> None:
-        self._duration = max(duration, 0.0)
         self._policy_hz = policy_hz
-        self._total_steps = int(self._duration * policy_hz)
+        self._duration = 0.0
+        self._total_steps = 0
         self._step = 0
         self._start_qpos: NDArray | None = None
         self._active = False
         self._last_alpha = np.float64(1.0)
+        self.configure(duration)
 
     @property
     def duration(self) -> float:
@@ -71,6 +72,10 @@ class QposInterpolator:
         self._start_qpos = None
         self._active = False
         self._last_alpha = np.float64(1.0)
+
+    def configure(self, duration: float) -> None:
+        self._duration = max(float(duration), 0.0)
+        self._total_steps = int(self._duration * self._policy_hz)
 
     def start(self, start_qpos: NDArray) -> None:
         """Begin interpolation from *start_qpos* toward future targets."""

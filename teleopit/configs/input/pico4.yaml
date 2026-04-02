@@ -6,3 +6,5 @@ pico4_timeout: 60.0   # seconds to wait for first body tracking data
 pico4_buffer_size: 60
 pico4_timestamp_gap_reset_s: 0.15
 pico4_poll_sleep_s: 0.002
+pause_button: A
+pause_debounce_s: 0.25

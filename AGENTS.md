@@ -129,6 +129,8 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - The provider applies an input-space transform to match the current retarget config
 - Do not hardcode that transform as a public coordinate-system contract; validate against actual retarget/sim2sim behavior when SDK or firmware changes
 - Pico4 realtime control uses the same retargeted-reference timeline path as UDP realtime input
+- Pico4 sim2real pause/resume is handled as a mocap-session control event (`toggle_pause`), not as a mode switch to `STANDING`
+- Default Pico pause button is `A`; restore tracking by rebuilding realtime buffer + yaw/pivot alignment and blending back into live mocap
 
 ### SimulationLoop Runtime Behavior
 - `realtime=true` enforces wall-clock pacing even without a viewer
@@ -137,6 +139,8 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - BVH frame alignment is time-based: `bvh_idx = int(policy_time × input_fps)`
 - Realtime reference buffering is controlled by `retarget_buffer_enabled`, `retarget_buffer_window_s`, `retarget_buffer_delay_s`, `reference_steps`, `realtime_buffer_warmup_steps`, and the low/high watermark knobs
 - Realtime inferred `motion_joint_vel`, anchor linear velocity, and anchor angular velocity can be EMA-smoothed via `reference_velocity_smoothing_alpha` and `reference_anchor_velocity_smoothing_alpha`
+- Sim2real Pico pause/resume adds a mocap-session sub-state machine: `ACTIVE → PAUSED → RESUMING → ACTIVE`
+- Realtime sim2sim with Pico/ZMQ control events uses the same mocap-session pause/resume semantics and rebuilds the realtime reference path on resume
 
 ### Inference Observation
 Observation format: `velcmd_history` (166D, dual-input ONNX)

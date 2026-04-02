@@ -71,6 +71,10 @@ python scripts/run_sim.py \
 - PC 端 PC Service 是否正在运行
 - 两台设备是否在同一网络
 
+Pico sim2sim 也支持会话级暂停/恢复：
+- 默认按 Pico 手柄 **A** 冻结当前跟踪姿态
+- 再按一次 **A** 清空实时参考缓冲并平滑接回 live mocap
+
 ## 第四步：真机部署（Pico sim2real）
 
 确认仿真效果正常后，连接 Unitree G1 真机：
@@ -91,8 +95,9 @@ python scripts/run_sim2real.py \
 2. 按遥控器 **Start** → 进入 `STANDING`（机器人站立）
 3. 确认 Pico 追踪数据已到达（终端会有日志）
 4. 按 **Y** → 进入 `MOCAP`（开始遥操作）
-5. 按 **X** → 回到 `STANDING`
-6. **L1+R1** → 急停（`DAMPING`）
+5. 在 `MOCAP` 中按 Pico 手柄 **A** → 暂停当前跟踪，再按一次 **A** → 平滑恢复跟踪
+6. 按 **X** → 回到 `STANDING`
+7. **L1+R1** → 急停（`DAMPING`）
 
 状态机详情见 [sim2real.md](sim2real.md)。
 
@@ -104,10 +109,26 @@ python scripts/run_sim.py --config-name pico4_sim \
     controller.policy_path=track.onnx \
     input.pico4_timeout=30
 
+# 调整 sim2sim 的暂停恢复过渡
+python scripts/run_sim.py --config-name pico4_sim \
+    controller.policy_path=track.onnx \
+    pause_resume_transition_duration=1.0
+
 # 调整策略频率
 python scripts/run_sim2real.py --config-name pico4_sim2real \
     controller.policy_path=track.onnx \
     policy_hz=30
+
+# 修改暂停按键
+python scripts/run_sim2real.py --config-name pico4_sim2real \
+    controller.policy_path=track.onnx \
+    input.pause_button=right_axis_click
+
+# 调整暂停恢复过渡
+python scripts/run_sim2real.py --config-name pico4_sim2real \
+    controller.policy_path=track.onnx \
+    pause_resume_transition_duration=1.5 \
+    pause_resume_warmup_steps=3
 
 # 指定网卡
 python scripts/run_sim2real.py --config-name pico4_sim2real \

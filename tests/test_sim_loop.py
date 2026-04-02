@@ -6,6 +6,7 @@ import pytest
 from conftest import requires_mujoco
 from teleopit.bus.in_process import InProcessBus
 from teleopit.bus.topics import TOPIC_ACTION, TOPIC_MIMIC_OBS, TOPIC_ROBOT_STATE
+from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType, RealtimeInputPacket
 from teleopit.interfaces import RobotState
 
 
@@ -360,3 +361,115 @@ def test_simulation_loop_allows_future_reference_steps_without_explicit_high_wat
     )
 
     assert result["steps"] == 1
+
+
+@requires_mujoco
+def test_simulation_loop_pause_resume_freezes_then_blends_back(monkeypatch) -> None:
+    from teleopit.sim.loop import SimulationLoop
+
+    class _RealtimeInputProvider:
+        fps = 1
+
+        def __init__(self) -> None:
+            self._packets = [
+                RealtimeInputPacket(
+                    frame={
+                        "Pelvis": (
+                            np.array([0.2, 0.0, 0.0], dtype=np.float32),
+                            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                        )
+                    },
+                    timestamp_s=0.0,
+                    seq=0,
+                    control_events=(),
+                ),
+                RealtimeInputPacket(
+                    frame={
+                        "Pelvis": (
+                            np.array([1.0, 0.0, 0.0], dtype=np.float32),
+                            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                        )
+                    },
+                    timestamp_s=1.0,
+                    seq=1,
+                    control_events=(
+                        ControlEvent(
+                            event_type=ControlEventType.TOGGLE_PAUSE,
+                            source="pico4:test",
+                            timestamp_s=1.0,
+                        ),
+                    ),
+                ),
+                RealtimeInputPacket(
+                    frame={
+                        "Pelvis": (
+                            np.array([1.0, 0.0, 0.0], dtype=np.float32),
+                            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                        )
+                    },
+                    timestamp_s=2.0,
+                    seq=2,
+                    control_events=(
+                        ControlEvent(
+                            event_type=ControlEventType.TOGGLE_PAUSE,
+                            source="pico4:test",
+                            timestamp_s=2.0,
+                        ),
+                    ),
+                ),
+                RealtimeInputPacket(
+                    frame={
+                        "Pelvis": (
+                            np.array([1.0, 0.0, 0.0], dtype=np.float32),
+                            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                        )
+                    },
+                    timestamp_s=3.0,
+                    seq=3,
+                    control_events=(),
+                ),
+            ]
+            self._idx = 0
+
+        def get_realtime_input_packet(self):
+            packet = self._packets[min(self._idx, len(self._packets) - 1)]
+            self._idx += 1
+            return packet
+
+    monotonic_values = iter([0.0, 1.0, 2.0, 2.1, 3.0, 3.1, 4.0, 4.1, 5.0, 5.1])
+    monkeypatch.setattr("teleopit.sim.loop.time.monotonic", lambda: next(monotonic_values))
+
+    bus = InProcessBus()
+    robot = _DummyRobot()
+    obs_builder = _DummyObsBuilder()
+    loop = SimulationLoop(
+        robot=robot,
+        controller=_DummyController(),
+        obs_builder=obs_builder,
+        bus=bus,
+        cfg={
+            "policy_hz": 50.0,
+            "pd_hz": 50.0,
+            "realtime": False,
+            "transition_duration": 0.0,
+            "retarget_buffer_enabled": False,
+            "realtime_input_delay_s": 0.0,
+            "velcmd_fixed_ref_yaw_alignment": False,
+            "pause_resume_transition_duration": 1.0,
+            "pause_resume_warmup_steps": 0,
+        },
+        viewers=set(),
+    )
+
+    result = loop.run(
+        input_provider=_RealtimeInputProvider(),
+        retargeter=_DummyRetargeter(),
+        num_steps=4,
+    )
+
+    assert result["steps"] == 4
+    np.testing.assert_allclose(obs_builder.mimic_obs_calls[0], np.array([0.2], dtype=np.float32), atol=1e-6)
+    np.testing.assert_allclose(obs_builder.mimic_obs_calls[1], np.array([0.2], dtype=np.float32), atol=1e-6)
+    np.testing.assert_allclose(obs_builder.mimic_obs_calls[2], np.array([0.2], dtype=np.float32), atol=1e-6)
+    assert obs_builder.mimic_obs_calls[3][0] > 0.2
+    assert obs_builder.mimic_obs_calls[3][0] < 1.0

@@ -31,10 +31,12 @@ from teleopit.controllers.observation import (
 from teleopit.controllers.qpos_interpolator import QposInterpolator, QposLowPassFilter
 from teleopit.controllers.rl_policy import RLPolicyController
 from teleopit.inputs.pico4_provider import Pico4InputProvider
+from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType, RealtimeInputPacket
 from teleopit.inputs.udp_bvh_provider import UDPBVHInputProvider
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.runtime.common import cfg_get
 from teleopit.runtime.factory import build_sim2real_mocap_components
+from teleopit.runtime.mocap_session import MocapSessionManager, MocapSessionState
 from teleopit.sim.reference_timeline import ReferenceSample, ReferenceTimeline, ReferenceWindow, ReferenceWindowBuilder
 from teleopit.sim.realtime_utils import (
     ExponentialVecSmoother,
@@ -73,6 +75,10 @@ class Sim2RealController:
 
         # Motion command transition smoothing
         transition_dur = float(cfg_get(cfg, "transition_duration", 0.0) or 0.0)
+        self._mocap_transition_duration = transition_dur
+        self._pause_resume_transition_duration = float(
+            cfg_get(cfg, "pause_resume_transition_duration", transition_dur) or 0.0
+        )
         self._qpos_interpolator = QposInterpolator(transition_dur, self.policy_hz)
         self._fixed_ref_yaw_alignment = bool(cfg_get(cfg, "velcmd_fixed_ref_yaw_alignment", True))
 
@@ -96,6 +102,10 @@ class Sim2RealController:
         self.retargeter = mocap_components.retargeter
         self.policy = mocap_components.controller
         self.obs_builder = mocap_components.obs_builder
+        if not bool(getattr(self.policy, "_multi_input", False)):
+            raise ValueError(
+                "Sim2real requires an ONNX policy with dual inputs ('obs' and 'obs_history')."
+            )
         raw_retarget_buffer_enabled = cfg_get(cfg, "retarget_buffer_enabled", True)
         self._retarget_buffer_enabled = bool(raw_retarget_buffer_enabled)
         self._retarget_buffer_window_s = float(cfg_get(cfg, "retarget_buffer_window_s", 0.5))
@@ -137,6 +147,11 @@ class Sim2RealController:
             cfg_get(cfg, "realtime_buffer_warmup_steps", 0),
             field_name="realtime_buffer_warmup_steps",
         )
+        self._pause_resume_warmup_steps = self._parse_nonnegative_int(
+            cfg_get(cfg, "pause_resume_warmup_steps", self._realtime_buffer_warmup_steps),
+            field_name="pause_resume_warmup_steps",
+        )
+        self._pause_reset_alignment_on_resume = bool(cfg_get(cfg, "pause_reset_alignment_on_resume", True))
         self._realtime_catchup_enabled = bool(cfg_get(cfg, "realtime_catchup_enabled", False))
         self._realtime_catchup_trigger_steps = self._parse_optional_nonnegative_int(
             cfg_get(cfg, "realtime_catchup_trigger_steps", None),
@@ -213,6 +228,8 @@ class Sim2RealController:
         self._mocap_reentry_armed: bool = False
         self._fixed_reference_yaw_quat: Float32Array | None = None
         self._fixed_reference_pivot_pos_w: Float32Array | None = None
+        self._mocap_session = MocapSessionManager()
+        self._last_commanded_motion_qpos: Float64Array | None = None
 
         # ---- Startup ramp (matching GR00T JointSafetyMonitor pattern) ----
         ramp_dur = float(cfg_get(cfg, "startup_ramp_duration", cfg_get(real_cfg, "startup_ramp_duration", 2.0)))
@@ -332,6 +349,7 @@ class Sim2RealController:
 
         self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
         self._last_retarget_qpos = qpos.copy()
+        self._last_commanded_motion_qpos = qpos.copy()
 
     def _mocap_step(self) -> None:
         """Mocap mode: input provider -> retarget -> policy -> update LowCmd targets."""
@@ -341,17 +359,20 @@ class Sim2RealController:
             return
 
         try:
-            get_packet = getattr(self.input_provider, "get_frame_packet", None)
-            if callable(get_packet):
-                human_frame, frame_timestamp, frame_seq = get_packet()
-            else:
-                human_frame = self.input_provider.get_frame()
-                frame_timestamp = time.monotonic()
-                frame_seq = self._last_live_packet_seq + 1
+            packet = self._fetch_realtime_input_packet()
         except (TimeoutError, RuntimeError):
             logger.warning("Input provider error -- entering damping")
             self._enter_damping()
             return
+
+        self._handle_mocap_control_events(packet.control_events)
+        if self._mocap_session.state == MocapSessionState.PAUSED:
+            self._paused_mocap_step()
+            return
+
+        human_frame = packet.frame
+        frame_timestamp = float(packet.timestamp_s)
+        frame_seq = int(packet.seq)
 
         reference_window: ReferenceWindow | None = None
         if self._reference_timeline is not None:
@@ -406,6 +427,9 @@ class Sim2RealController:
         raw_reference_qpos = np.asarray(reference_qpos, dtype=np.float64).copy()
         reference_qpos = self._reference_qpos_smoother.apply(reference_qpos)
         qpos = self._qpos_interpolator.apply(reference_qpos)
+        if self._mocap_session.state == MocapSessionState.RESUMING and not self._qpos_interpolator.is_active:
+            self._mocap_session.finish_resume()
+            logger.info("Mocap session -> ACTIVE")
 
         anchor_lin_vel_w = np.zeros(3, dtype=np.float32)
         anchor_ang_vel_w = np.zeros(3, dtype=np.float32)
@@ -458,6 +482,7 @@ class Sim2RealController:
         self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
         self._last_retarget_qpos = qpos.copy()
         self._last_reference_qpos = reference_qpos.copy()
+        self._last_commanded_motion_qpos = qpos.copy()
 
     def _compute_anchor_velocities(
         self, qpos: Float64Array,
@@ -635,6 +660,8 @@ class Sim2RealController:
             "Startup ramp armed: %d steps (%.1fs)",
             self._ramp_duration_steps, self._ramp_duration_steps / self.policy_hz,
         )
+        self._mocap_session.reset()
+        self._last_commanded_motion_qpos = None
 
         if prev_mode == RobotMode.MOCAP:
             # Returning from MOCAP: soft reset to keep policy observation
@@ -718,14 +745,14 @@ class Sim2RealController:
         init_qpos[7:36] = state.qpos.astype(np.float64)
         self._last_retarget_qpos = init_qpos
         self._last_reference_qpos = None
-        self._fixed_reference_yaw_quat = None
-        self._fixed_reference_pivot_pos_w = None
-        self._qpos_interpolator.reset()
-        self._qpos_interpolator.start(init_qpos)
+        self._reset_reference_alignment()
+        self._arm_qpos_transition(init_qpos, duration_s=self._mocap_transition_duration)
         # Soft reset: only clear mocap reference state, keep policy history and
         # _last_action intact so that the TemporalCNN sees a continuous
         # observation stream across the Standing -> Mocap transition.
         self._reset_mocap_reference_state()
+        self._mocap_session.reset()
+        self._last_commanded_motion_qpos = init_qpos.copy()
         self._mocap_reentry_armed = False
 
         self.mode = RobotMode.MOCAP
@@ -750,6 +777,8 @@ class Sim2RealController:
             self._reference_timeline.clear()
         self._last_live_packet_seq = -1
         self._mocap_reentry_armed = False
+        self._mocap_session.reset()
+        self._last_commanded_motion_qpos = None
         logger.info("Mode -> DAMPING (press Start to re-enter STANDING)")
 
     # ------------------------------------------------------------------
@@ -912,12 +941,15 @@ class Sim2RealController:
     def _reset_policy_state(self) -> None:
         self._last_action = np.zeros(self.num_actions, dtype=np.float32)
         self._reset_mocap_reference_state()
+        self._reset_reference_alignment()
+        self._mocap_session.reset()
+        self._last_commanded_motion_qpos = None
         reset_policy = getattr(self.policy, "reset", None)
         if callable(reset_policy):
             reset_policy()
         self.obs_builder.reset()
 
-    def _reset_mocap_reference_state(self) -> None:
+    def _reset_mocap_reference_state(self, *, warmup_steps: int | None = None) -> None:
         """Reset mocap-specific reference state without disrupting policy observation continuity.
 
         Unlike ``_reset_policy_state``, this preserves ``_last_action``, the
@@ -927,12 +959,122 @@ class Sim2RealController:
         if self._reference_timeline is not None:
             self._reference_timeline.clear()
         if self._reference_manager is not None:
+            self._reference_manager.set_warmup_steps(
+                self._realtime_buffer_warmup_steps if warmup_steps is None else warmup_steps
+            )
             self._reference_manager.reset()
         self._motion_joint_vel_smoother.reset()
         self._motion_anchor_lin_vel_smoother.reset()
         self._motion_anchor_ang_vel_smoother.reset()
         self._reference_qpos_smoother.reset()
+        self._last_reference_qpos = None
         self._last_live_packet_seq = -1
+
+    def _reset_reference_alignment(self) -> None:
+        self._fixed_reference_yaw_quat = None
+        self._fixed_reference_pivot_pos_w = None
+
+    def _arm_qpos_transition(self, start_qpos: Float64Array, *, duration_s: float) -> None:
+        self._qpos_interpolator.reset()
+        self._qpos_interpolator.configure(duration_s)
+        self._qpos_interpolator.start(start_qpos)
+
+    def _fetch_realtime_input_packet(self) -> RealtimeInputPacket[object]:
+        get_realtime_input_packet = getattr(self.input_provider, "get_realtime_input_packet", None)
+        if callable(get_realtime_input_packet):
+            return get_realtime_input_packet()
+
+        get_packet = getattr(self.input_provider, "get_frame_packet", None)
+        if callable(get_packet):
+            frame, frame_timestamp, frame_seq = get_packet()
+            return RealtimeInputPacket(
+                frame=frame,
+                timestamp_s=float(frame_timestamp),
+                seq=int(frame_seq),
+                control_events=(),
+            )
+
+        frame = self.input_provider.get_frame()
+        return RealtimeInputPacket(
+            frame=frame,
+            timestamp_s=time.monotonic(),
+            seq=self._last_live_packet_seq + 1,
+            control_events=(),
+        )
+
+    def _handle_mocap_control_events(self, control_events: tuple[ControlEvent, ...]) -> None:
+        for event in control_events:
+            if event.event_type != ControlEventType.TOGGLE_PAUSE:
+                continue
+            if self._mocap_session.state == MocapSessionState.PAUSED:
+                self._resume_paused_mocap()
+            else:
+                self._pause_active_mocap()
+
+    def _pause_active_mocap(self) -> None:
+        hold_qpos = self._resolve_mocap_hold_qpos()
+        self._mocap_session.pause(hold_qpos)
+        self._qpos_interpolator.reset()
+        self._last_retarget_qpos = hold_qpos.copy()
+        self._last_reference_qpos = hold_qpos.copy()
+        self._last_commanded_motion_qpos = hold_qpos.copy()
+        logger.info("Mocap session -> PAUSED")
+
+    def _resume_paused_mocap(self) -> None:
+        start_qpos = self._mocap_session.begin_resume()
+        self._reset_mocap_reference_state(warmup_steps=self._pause_resume_warmup_steps)
+        if self._pause_reset_alignment_on_resume:
+            self._reset_reference_alignment()
+        self._last_retarget_qpos = start_qpos.copy()
+        self._last_commanded_motion_qpos = start_qpos.copy()
+        self._arm_qpos_transition(start_qpos, duration_s=self._pause_resume_transition_duration)
+        logger.info("Mocap session -> RESUMING")
+
+    def _resolve_mocap_hold_qpos(self) -> Float64Array:
+        if self._last_commanded_motion_qpos is not None:
+            return self._last_commanded_motion_qpos.copy()
+        if self._last_retarget_qpos is not None:
+            return np.asarray(self._last_retarget_qpos, dtype=np.float64).copy()
+        state = self.robot.get_state()
+        hold_qpos = np.zeros(36, dtype=np.float64)
+        hold_qpos[3:7] = np.asarray(state.quat, dtype=np.float64)
+        hold_qpos[7:36] = np.asarray(state.qpos, dtype=np.float64)
+        return hold_qpos
+
+    def _paused_mocap_step(self) -> None:
+        hold_qpos = self._mocap_session.hold_qpos
+        if hold_qpos is None:
+            raise RuntimeError("Paused mocap session is missing a hold_qpos")
+
+        robot_state = self.robot.get_state()
+        qpos = np.asarray(hold_qpos, dtype=np.float64).copy()
+        motion_joint_vel = np.zeros(self.num_actions, dtype=np.float32)
+        motion_qpos = np.asarray(qpos[:7 + self.num_actions], dtype=np.float32)
+        reference_window = None
+        if self._obs_builder_requires_reference_window():
+            reference_window = self._build_static_reference_window(qpos)
+
+        obs = self._build_policy_observation(
+            robot_state=robot_state,
+            motion_qpos=motion_qpos,
+            motion_joint_vel=motion_joint_vel,
+            last_action=self._last_action,
+            anchor_lin_vel_w=np.zeros(3, dtype=np.float32),
+            anchor_ang_vel_w=np.zeros(3, dtype=np.float32),
+            reference_window=reference_window,
+        )
+        obs = self._validate_observation_for_policy(obs)
+
+        action = self.policy.compute_action(obs)
+        target_dof_pos = self.policy.get_target_dof_pos(action)
+        target_dof_pos = self._apply_startup_ramp(target_dof_pos)
+        target_dof_pos = self._clip_to_joint_limits(target_dof_pos)
+
+        self.robot.send_positions(target_dof_pos)
+        self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
+        self._last_retarget_qpos = qpos.copy()
+        self._last_reference_qpos = qpos.copy()
+        self._last_commanded_motion_qpos = qpos.copy()
 
     @staticmethod
     def _parse_nonnegative_int(value: object, *, field_name: str) -> int:

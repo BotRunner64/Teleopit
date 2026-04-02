@@ -10,6 +10,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from teleopit.controllers.qpos_interpolator import QposInterpolator
+from teleopit.inputs.realtime_packet import ControlEventType, RealtimeInputPacket
 from teleopit.debug.rollout_trace import RolloutTraceWriter
 from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Recorder, Retargeter, Robot
 from teleopit.sim.reference_motion import (
@@ -25,6 +26,7 @@ from teleopit.sim.reference_timeline import (
 )
 from teleopit.sim.realtime_utils import RealtimeReferenceDiagnostics, RealtimeReferenceManager
 from teleopit.sim.runtime_components import PolicyStepRunner, RunRecorder, RuntimePublisher, ViewerManager
+from teleopit.runtime.mocap_session import MocapSessionManager, MocapSessionState
 
 Float32Array = NDArray[np.float32]
 Float64Array = NDArray[np.float64]
@@ -277,6 +279,10 @@ class SimulationLoop:
 
         # Motion command transition smoothing
         transition_dur = float(self._try_get_cfg("transition_duration") or 0.0)
+        self._mocap_transition_duration = transition_dur
+        self._pause_resume_transition_duration = float(
+            self._try_get_cfg("pause_resume_transition_duration") or transition_dur
+        )
         self._qpos_interpolator = QposInterpolator(transition_dur, self.policy_hz)
         raw_fixed_ref_yaw_alignment = self._try_get_cfg("velcmd_fixed_ref_yaw_alignment")
         fixed_ref_yaw_alignment = True if raw_fixed_ref_yaw_alignment is None else bool(raw_fixed_ref_yaw_alignment)
@@ -330,6 +336,14 @@ class SimulationLoop:
             self._try_get_cfg("realtime_buffer_warmup_steps"),
             default=0,
             field_name="realtime_buffer_warmup_steps",
+        )
+        self._pause_resume_warmup_steps = self._parse_nonnegative_int(
+            self._try_get_cfg("pause_resume_warmup_steps"),
+            default=self._realtime_buffer_warmup_steps,
+            field_name="pause_resume_warmup_steps",
+        )
+        self._pause_reset_alignment_on_resume = bool(
+            self._try_get_cfg("pause_reset_alignment_on_resume") if self._try_get_cfg("pause_reset_alignment_on_resume") is not None else True
         )
         self._reference_velocity_smoothing_alpha = self._parse_alpha(
             self._try_get_cfg("reference_velocity_smoothing_alpha"),
@@ -404,7 +418,7 @@ class SimulationLoop:
             input_fps = offline_reference.fps
         realtime_interpolated_input = (
             offline_reference is None
-            and hasattr(input_provider, "get_frame_packet")
+            and (hasattr(input_provider, "get_realtime_input_packet") or hasattr(input_provider, "get_frame_packet"))
         )
         realtime_input_delay_s = (
             1.0 / input_fps
@@ -458,6 +472,8 @@ class SimulationLoop:
         latest_live_human_frame: dict | None = None
         latest_live_retargeted: Float64Array | None = None
         latest_live_timestamp: float | None = None
+        mocap_session = MocapSessionManager()
+        last_commanded_motion_qpos: Float64Array | None = None
 
         debug_writer: RolloutTraceWriter | None = None
         if self._debug_trace_path is not None:
@@ -492,71 +508,73 @@ class SimulationLoop:
                     last_bvh_idx = sampled.frame_idx0
                     new_bvh_frame = True
                 elif realtime_interpolated_input:
-                    get_packet = getattr(input_provider, "get_frame_packet", None)
-                    if not callable(get_packet):
-                        raise TypeError("Realtime interpolated input must provide get_frame_packet()")
-                    human_frame, frame_timestamp, frame_seq = cast(
-                        tuple[dict, float, int], get_packet()
-                    )
-                    new_bvh_frame = frame_seq != last_live_packet_seq
-                    if new_bvh_frame:
-                        previous_live_human_frame = latest_live_human_frame
-                        previous_live_timestamp = latest_live_timestamp
-                        latest_live_human_frame = human_frame
-                        retargeted_qpos = self._step_runner._retarget_to_qpos(retargeter.retarget(human_frame))
-                        if reference_timeline is not None:
-                            reference_timeline.append(retargeted_qpos, float(frame_timestamp))
-                            if realtime_reference_manager is not None:
-                                realtime_reference_manager.note_realtime_frame()
-                        else:
-                            previous_live_retargeted = latest_live_retargeted
-                            latest_live_retargeted = retargeted_qpos
-                        latest_live_timestamp = float(frame_timestamp)
-                        last_live_packet_seq = int(frame_seq)
-
-                    if latest_live_human_frame is None:
-                        raise RuntimeError("Realtime input did not provide an initial frame")
-
-                    target_base_time = time.monotonic() - realtime_input_delay_s
-                    if (
-                        previous_live_human_frame is not None
-                        and previous_live_timestamp is not None
-                        and latest_live_timestamp is not None
-                        and latest_live_timestamp > previous_live_timestamp + 1e-6
-                    ):
-                        alpha = (target_base_time - previous_live_timestamp) / (
-                            latest_live_timestamp - previous_live_timestamp
-                        )
-                        alpha = float(np.clip(alpha, 0.0, 1.0))
-                        cached_human_frame = interpolate_human_frames(
-                            previous_live_human_frame,
-                            latest_live_human_frame,
-                            alpha,
-                        )
-                    else:
-                        cached_human_frame = latest_live_human_frame
-
-                    if reference_timeline is not None:
-                        if realtime_reference_manager is None:
-                            raise RuntimeError("Realtime reference manager must be initialized when using reference_timeline")
-                        if not realtime_reference_manager.warmup_done:
-                            time.sleep(min(policy_dt, 1.0 / max(input_fps, 1.0)))
+                    packet = self._fetch_realtime_input_packet(input_provider, last_live_packet_seq)
+                    human_frame = cast(dict, packet.frame)
+                    frame_timestamp = float(packet.timestamp_s)
+                    frame_seq = int(packet.seq)
+                    for control_event in packet.control_events:
+                        if control_event.event_type != ControlEventType.TOGGLE_PAUSE:
                             continue
-                        reference_window, realtime_reference_diag = realtime_reference_manager.sample(
-                            reference_timeline,
-                            target_base_time,
-                        )
-                        if self._reference_debug_log:
-                            if any(reference_window.fallback_mask()):
-                                self._log_reference_window(reference_window, len(reference_timeline))
-                            if realtime_reference_diag.used_repeat_padding:
-                                self._log_repeat_padding(reference_window, realtime_reference_diag, len(reference_timeline))
-                        cached_retargeted = reference_window.current_sample().qpos
+                        if mocap_session.state == MocapSessionState.PAUSED:
+                            start_qpos = mocap_session.begin_resume()
+                            if reference_timeline is not None:
+                                reference_timeline.clear()
+                            if realtime_reference_manager is not None:
+                                realtime_reference_manager.set_warmup_steps(self._pause_resume_warmup_steps)
+                                realtime_reference_manager.reset()
+                            self._step_runner.soft_reset_reference_state(
+                                reset_alignment=self._pause_reset_alignment_on_resume
+                            )
+                            self._step_runner.last_retarget_qpos = start_qpos.copy()
+                            self._step_runner.arm_motion_transition(
+                                start_qpos,
+                                duration_s=self._pause_resume_transition_duration,
+                            )
+                            previous_live_human_frame = None
+                            previous_live_retargeted = None
+                            previous_live_timestamp = None
+                            latest_live_human_frame = None
+                            latest_live_retargeted = None
+                            latest_live_timestamp = None
+                            last_live_packet_seq = -1
+                        else:
+                            mocap_session.pause(
+                                self._resolve_hold_qpos(
+                                    last_commanded_motion_qpos,
+                                    self._step_runner.last_retarget_qpos,
+                                    latest_live_retargeted,
+                                    self.robot.get_state(),
+                                )
+                            )
+                            self._step_runner.qpos_interpolator.reset()
+                    new_bvh_frame = frame_seq != last_live_packet_seq
+                    if mocap_session.state == MocapSessionState.PAUSED:
+                        cached_human_frame = human_frame
+                        cached_retargeted = mocap_session.hold_qpos
+                        if cached_retargeted is None:
+                            raise RuntimeError("Paused mocap session is missing a hold pose")
                     else:
-                        if latest_live_retargeted is None:
-                            raise RuntimeError("Realtime input did not provide an initial retargeted frame")
+                        if new_bvh_frame:
+                            previous_live_human_frame = latest_live_human_frame
+                            previous_live_timestamp = latest_live_timestamp
+                            latest_live_human_frame = human_frame
+                            retargeted_qpos = self._step_runner._retarget_to_qpos(retargeter.retarget(human_frame))
+                            if reference_timeline is not None:
+                                reference_timeline.append(retargeted_qpos, float(frame_timestamp))
+                                if realtime_reference_manager is not None:
+                                    realtime_reference_manager.note_realtime_frame()
+                            else:
+                                previous_live_retargeted = latest_live_retargeted
+                                latest_live_retargeted = retargeted_qpos
+                            latest_live_timestamp = float(frame_timestamp)
+                            last_live_packet_seq = int(frame_seq)
+
+                        if latest_live_human_frame is None:
+                            raise RuntimeError("Realtime input did not provide an initial frame")
+
+                        target_base_time = time.monotonic() - realtime_input_delay_s
                         if (
-                            previous_live_retargeted is not None
+                            previous_live_human_frame is not None
                             and previous_live_timestamp is not None
                             and latest_live_timestamp is not None
                             and latest_live_timestamp > previous_live_timestamp + 1e-6
@@ -565,13 +583,50 @@ class SimulationLoop:
                                 latest_live_timestamp - previous_live_timestamp
                             )
                             alpha = float(np.clip(alpha, 0.0, 1.0))
-                            cached_retargeted = interpolate_retarget_qpos(
-                                previous_live_retargeted,
-                                latest_live_retargeted,
+                            cached_human_frame = interpolate_human_frames(
+                                previous_live_human_frame,
+                                latest_live_human_frame,
                                 alpha,
                             )
                         else:
-                            cached_retargeted = latest_live_retargeted
+                            cached_human_frame = latest_live_human_frame
+
+                        if reference_timeline is not None:
+                            if realtime_reference_manager is None:
+                                raise RuntimeError("Realtime reference manager must be initialized when using reference_timeline")
+                            if not realtime_reference_manager.warmup_done:
+                                time.sleep(min(policy_dt, 1.0 / max(input_fps, 1.0)))
+                                continue
+                            reference_window, realtime_reference_diag = realtime_reference_manager.sample(
+                                reference_timeline,
+                                target_base_time,
+                            )
+                            if self._reference_debug_log:
+                                if any(reference_window.fallback_mask()):
+                                    self._log_reference_window(reference_window, len(reference_timeline))
+                                if realtime_reference_diag.used_repeat_padding:
+                                    self._log_repeat_padding(reference_window, realtime_reference_diag, len(reference_timeline))
+                            cached_retargeted = reference_window.current_sample().qpos
+                        else:
+                            if latest_live_retargeted is None:
+                                raise RuntimeError("Realtime input did not provide an initial retargeted frame")
+                            if (
+                                previous_live_retargeted is not None
+                                and previous_live_timestamp is not None
+                                and latest_live_timestamp is not None
+                                and latest_live_timestamp > previous_live_timestamp + 1e-6
+                            ):
+                                alpha = (target_base_time - previous_live_timestamp) / (
+                                    latest_live_timestamp - previous_live_timestamp
+                                )
+                                alpha = float(np.clip(alpha, 0.0, 1.0))
+                                cached_retargeted = interpolate_retarget_qpos(
+                                    previous_live_retargeted,
+                                    latest_live_retargeted,
+                                    alpha,
+                                )
+                            else:
+                                cached_retargeted = latest_live_retargeted
                 else:
                     bvh_idx = int(frame_f)
                     new_bvh_frame = bvh_idx != last_bvh_idx
@@ -583,7 +638,21 @@ class SimulationLoop:
                         last_bvh_idx = bvh_idx
 
                 state = self.robot.get_state()
-                preparation = self._step_runner.prepare_motion_command(cached_retargeted, state)
+                if realtime_interpolated_input and mocap_session.state == MocapSessionState.PAUSED:
+                    hold_qpos = mocap_session.hold_qpos
+                    if hold_qpos is None:
+                        raise RuntimeError("Paused mocap session is missing a hold pose")
+                    preparation = self._step_runner.prepare_static_motion_command(hold_qpos)
+                    if self._observation_uses_reference_window():
+                        reference_window = self._build_static_reference_window(hold_qpos)
+                else:
+                    preparation = self._step_runner.prepare_motion_command(cached_retargeted, state)
+                    if (
+                        realtime_interpolated_input
+                        and mocap_session.state == MocapSessionState.RESUMING
+                        and not self._qpos_interpolator.is_active
+                    ):
+                        mocap_session.finish_resume()
 
                 obs = self._build_observation(
                     state=state,
@@ -711,6 +780,7 @@ class SimulationLoop:
                         time.sleep(sleep_time)
 
                 self._step_runner.finish_step(action, preparation.qpos)
+                last_commanded_motion_qpos = preparation.qpos.copy()
                 steps_done += 1
         except KeyboardInterrupt:
             pass
@@ -810,6 +880,71 @@ class SimulationLoop:
             reference_steps=reference_steps,
             samples=samples,
         )
+
+    def _build_static_reference_window(self, qpos: Float64Array) -> ReferenceWindow:
+        base_time_s = time.monotonic()
+        reference_steps = tuple(self._reference_window_builder.reference_steps)
+        qpos_copy = np.asarray(qpos, dtype=np.float64).reshape(-1).copy()
+        samples = tuple(
+            ReferenceSample(
+                qpos=qpos_copy.copy(),
+                timestamp_s=base_time_s + float(step) / self.policy_hz,
+                mode="static_reference",
+                used_fallback=False,
+                older_timestamp_s=base_time_s + float(step) / self.policy_hz,
+                newer_timestamp_s=base_time_s + float(step) / self.policy_hz,
+                alpha=None,
+            )
+            for step in reference_steps
+        )
+        return ReferenceWindow(
+            base_time_s=base_time_s,
+            policy_dt_s=1.0 / self.policy_hz,
+            reference_steps=reference_steps,
+            samples=samples,
+        )
+
+    def _fetch_realtime_input_packet(
+        self,
+        input_provider: InputProvider,
+        last_live_packet_seq: int,
+    ) -> RealtimeInputPacket[dict]:
+        get_realtime_input_packet = getattr(input_provider, "get_realtime_input_packet", None)
+        if callable(get_realtime_input_packet):
+            return cast(RealtimeInputPacket[dict], get_realtime_input_packet())
+
+        get_packet = getattr(input_provider, "get_frame_packet", None)
+        if callable(get_packet):
+            frame, frame_timestamp, frame_seq = cast(tuple[dict, float, int], get_packet())
+            return RealtimeInputPacket(
+                frame=frame,
+                timestamp_s=float(frame_timestamp),
+                seq=int(frame_seq),
+                control_events=(),
+            )
+
+        raise TypeError("Realtime interpolated input must provide get_frame_packet()")
+
+    def _resolve_hold_qpos(
+        self,
+        last_commanded_motion_qpos: Float64Array | None,
+        last_retarget_qpos: Float64Array | None,
+        latest_live_retargeted: Float64Array | None,
+        state: object,
+    ) -> Float64Array:
+        if last_commanded_motion_qpos is not None:
+            return last_commanded_motion_qpos.copy()
+        if last_retarget_qpos is not None:
+            return last_retarget_qpos.copy()
+        if latest_live_retargeted is not None:
+            return latest_live_retargeted.copy()
+        hold_qpos = np.zeros(36, dtype=np.float64)
+        base_pos = getattr(state, "base_pos", None)
+        if base_pos is not None:
+            hold_qpos[0:3] = np.asarray(base_pos, dtype=np.float64)[:3]
+        hold_qpos[3:7] = np.asarray(getattr(state, "quat"), dtype=np.float64)[:4]
+        hold_qpos[7:7 + self._num_actions] = np.asarray(getattr(state, "qpos"), dtype=np.float64)[: self._num_actions]
+        return hold_qpos
 
     def _build_observation(
         self,

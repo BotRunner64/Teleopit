@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import threading
+from collections import deque
 
 import numpy as np
 
 from teleopit.inputs.realtime_frame_cache import RealtimeFrameCache
+from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType
 from teleopit.inputs.zmq_provider import ZMQInputProvider
 
 
@@ -22,6 +24,8 @@ def _make_provider() -> ZMQInputProvider:
     provider._lock = threading.Lock()
     provider._frame_ready = threading.Event()
     provider._frame_cache = RealtimeFrameCache(buffer_size=8, fps_window=30)
+    provider._timeout = 1.0
+    provider._pending_control_events = deque()
     provider._running = True
     provider._clock_offset = None
     provider._last_source_seq = None
@@ -63,3 +67,27 @@ def test_zmq_provider_monotonicizes_missing_source_seq_timestamps() -> None:
 
     assert len(provider._frame_cache) == 1
     np.testing.assert_allclose(provider._frame_cache.latest()["Pelvis"][0][0], 1.0, atol=1e-6)
+
+
+def test_zmq_provider_returns_control_events_once() -> None:
+    provider = _make_provider()
+
+    provider._process_packet(
+        _frame(1.0),
+        source_ts=1.0,
+        source_seq=10,
+        local_ts=11.0,
+        control_events=(
+            ControlEvent(
+                event_type=ControlEventType.TOGGLE_PAUSE,
+                source="zmq-test",
+                timestamp_s=1.0,
+            ),
+        ),
+    )
+
+    packet = provider.get_realtime_input_packet()
+    assert [event.event_type for event in packet.control_events] == [ControlEventType.TOGGLE_PAUSE]
+
+    packet = provider.get_realtime_input_packet()
+    assert packet.control_events == ()

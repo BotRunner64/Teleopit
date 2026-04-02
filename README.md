@@ -87,6 +87,8 @@ python train_mimic/scripts/save_onnx.py \
 | G1 真机部署（UDP） | `python scripts/run_sim2real.py ...` | [sim2real.md](docs/sim2real.md) |
 | 训练与导出 | `python train_mimic/scripts/train.py ...` | [training.md](docs/training.md) |
 
+Pico 真机遥操作支持手柄暂停/恢复：默认按 `A` 冻结当前跟踪姿态，再按一次 `A` 重新建立对齐并平滑接回 live mocap。
+
 ## 文档
 
 - **[Pico VR 部署](docs/pico4.md)**：Pico 4 / Pico 4 Ultra 全身追踪遥操作完整指南

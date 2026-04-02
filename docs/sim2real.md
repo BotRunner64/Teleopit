@@ -110,6 +110,11 @@ python scripts/run_onboard_sim2real.py \
 | `MOCAP` | Pico / UDP → retarget → RL policy → 关节控制 | 全身遥操作 |
 | `DAMPING` | 发送阻尼命令 | 急停 |
 
+对于 `input.provider=pico4` 的真机遥操作，`MOCAP` 内部还包含会话子状态：
+- `ACTIVE`：正常跟随 live mocap
+- `PAUSED`：冻结当前参考姿态，机器人持续平衡但不再跟随人体移动
+- `RESUMING`：清空 realtime reference buffer、重建 yaw/pivot 对齐后，平滑接回 live mocap
+
 状态机：
 
 ```text
@@ -130,7 +135,8 @@ python scripts/run_onboard_sim2real.py \
 2. 按 `Start` 进入 `STANDING`
 3. 确认输入正常（Pico 追踪已连接 / UDP 数据已到达）
 4. 按 `Y` 切到 `MOCAP`
-5. 按 `X` 回到 `STANDING`；`L1+R1` 急停进入 `DAMPING`
+5. Pico 遥操作时按手柄 `A` 可暂停/恢复当前 mocap 会话
+6. 按 `X` 回到 `STANDING`；`L1+R1` 急停进入 `DAMPING`
 
 ## 常用参数
 
@@ -147,6 +153,17 @@ python scripts/run_sim2real.py \
 python scripts/run_sim2real.py --config-name pico4_sim2real \
     controller.policy_path=track.onnx \
     input.pico4_timeout=30
+
+# 修改 Pico 暂停按键
+python scripts/run_sim2real.py --config-name pico4_sim2real \
+    controller.policy_path=track.onnx \
+    input.pause_button=right_axis_click
+
+# 调整暂停恢复过渡
+python scripts/run_sim2real.py --config-name pico4_sim2real \
+    controller.policy_path=track.onnx \
+    pause_resume_transition_duration=1.5 \
+    pause_resume_warmup_steps=3
 
 # 指定网卡
 python scripts/run_sim2real.py \

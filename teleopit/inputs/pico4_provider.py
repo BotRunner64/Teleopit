@@ -7,16 +7,18 @@ the BVH providers, so downstream retargeting is unchanged.
 
 from __future__ import annotations
 
+from collections import deque
 import logging
 import threading
 import time
-from typing import Any, Dict, Tuple
+from typing import Any, Callable, Dict, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation as R
 
 from teleopit.inputs.realtime_frame_cache import RealtimeFrameCache
+from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType, RealtimeInputPacket
 from teleopit.inputs.rot_utils import quat_mul_np
 from teleopit.sim.reference_motion import interpolate_human_frames
 
@@ -35,6 +37,17 @@ BODY_JOINT_NAMES = [
 ]
 
 HumanFrame = Dict[str, Tuple[NDArray[np.float64], NDArray[np.float64]]]
+
+_PICO_BUTTON_GETTERS: dict[str, str] = {
+    "A": "get_A_button",
+    "B": "get_B_button",
+    "X": "get_X_button",
+    "Y": "get_Y_button",
+    "left_axis_click": "get_left_axis_click",
+    "right_axis_click": "get_right_axis_click",
+    "left_menu_button": "get_left_menu_button",
+    "right_menu_button": "get_right_menu_button",
+}
 
 
 def _coordinate_transform_input(body_pose_dict: dict) -> dict:
@@ -67,6 +80,8 @@ class Pico4InputProvider:
         buffer_size: int = 60,
         timestamp_gap_reset_s: float = 0.15,
         poll_sleep_s: float = 0.002,
+        pause_button: str | None = "A",
+        pause_debounce_s: float = 0.25,
     ) -> None:
         try:
             import xrobotoolkit_sdk as xrt
@@ -86,10 +101,21 @@ class Pico4InputProvider:
         self._frame_cache = RealtimeFrameCache[HumanFrame](buffer_size=buffer_size, fps_window=30)
         self._timestamp_gap_reset_s = float(timestamp_gap_reset_s)
         self._poll_sleep_s = max(float(poll_sleep_s), 0.0)
+        self._pending_control_events: deque[ControlEvent] = deque()
+        self._pause_button = None if pause_button in (None, "", "null") else str(pause_button)
+        self._pause_debounce_s = max(float(pause_debounce_s), 0.0)
+        self._pause_button_reader = self._resolve_button_reader(self._pause_button)
+        self._last_pause_button_pressed = False
+        self._last_pause_toggle_timestamp: float | None = None
         self._last_raw_body_poses: NDArray[np.float64] | None = None
         self._last_frame_timestamp: float | None = None
         self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True, name="pico4_input")
         self._poll_thread.start()
+        if self._pause_button is not None and self._pause_button_reader is None:
+            logger.warning(
+                "Pico4InputProvider pause button '%s' is unsupported by xrobotoolkit_sdk; pause events disabled",
+                self._pause_button,
+            )
         logger.info("Pico4InputProvider initialized (xrobotoolkit_sdk)")
 
     @property
@@ -126,6 +152,9 @@ class Pico4InputProvider:
         Raises:
             TimeoutError: If no body data arrives within the timeout.
         """
+        with self._lock:
+            if len(self._frame_cache) > 0:
+                return self._frame_cache.latest()
         if not self._frame_ready.wait(timeout=self._timeout):
             raise TimeoutError(
                 f"No Pico4 body data received within {self._timeout:.1f}s timeout"
@@ -137,6 +166,9 @@ class Pico4InputProvider:
 
     def get_frame_packet(self) -> tuple[HumanFrame, float, int]:
         """Return the latest cached frame together with timestamp and sequence."""
+        with self._lock:
+            if len(self._frame_cache) > 0:
+                return self._frame_cache.latest_packet()
         if not self._frame_ready.wait(timeout=self._timeout):
             raise TimeoutError(
                 f"No Pico4 body data received within {self._timeout:.1f}s timeout"
@@ -145,6 +177,36 @@ class Pico4InputProvider:
             if len(self._frame_cache) <= 0:
                 raise RuntimeError("Pico4 frame buffer signaled ready without a latest frame")
             return self._frame_cache.latest_packet()
+
+    def get_realtime_input_packet(self) -> RealtimeInputPacket[HumanFrame]:
+        """Return the latest frame packet together with pending control events."""
+        with self._lock:
+            if len(self._frame_cache) > 0:
+                frame, timestamp_s, seq = self._frame_cache.latest_packet()
+                control_events = tuple(self._pending_control_events)
+                self._pending_control_events.clear()
+                return RealtimeInputPacket(
+                    frame=frame,
+                    timestamp_s=timestamp_s,
+                    seq=seq,
+                    control_events=control_events,
+                )
+        if not self._frame_ready.wait(timeout=self._timeout):
+            raise TimeoutError(
+                f"No Pico4 body data received within {self._timeout:.1f}s timeout"
+            )
+        with self._lock:
+            if len(self._frame_cache) <= 0:
+                raise RuntimeError("Pico4 frame buffer signaled ready without a latest frame")
+            frame, timestamp_s, seq = self._frame_cache.latest_packet()
+            control_events = tuple(self._pending_control_events)
+            self._pending_control_events.clear()
+        return RealtimeInputPacket(
+            frame=frame,
+            timestamp_s=timestamp_s,
+            seq=seq,
+            control_events=control_events,
+        )
 
     def sample_frame(self, query_time_s: float, delay_s: float) -> HumanFrame:
         """Sample a delayed interpolated realtime frame from the polling buffer."""
@@ -187,8 +249,10 @@ class Pico4InputProvider:
 
     def _poll_loop(self) -> None:
         while not self._closed:
+            timestamp = time.monotonic()
+            emitted_control_event = self._poll_control_events(timestamp=timestamp)
             if not self._xrt.is_body_data_available():
-                time.sleep(0.001)
+                time.sleep(self._poll_sleep_s if emitted_control_event else 0.001)
                 continue
 
             try:
@@ -198,11 +262,42 @@ class Pico4InputProvider:
                 time.sleep(0.05)
                 continue
 
-            if not self._accept_body_poses(body_poses, timestamp=time.monotonic()):
-                time.sleep(0.001)
+            if not self._accept_body_poses(body_poses, timestamp=timestamp):
+                time.sleep(self._poll_sleep_s if emitted_control_event else 0.001)
                 continue
 
             time.sleep(self._poll_sleep_s)
+
+    def _poll_control_events(self, *, timestamp: float) -> bool:
+        if self._pause_button_reader is None:
+            return False
+
+        try:
+            raw_value = self._pause_button_reader()
+        except Exception:
+            logger.exception("Failed to read Pico4 pause button '%s'; disabling pause events", self._pause_button)
+            self._pause_button_reader = None
+            return False
+
+        pressed = self._normalize_button_value(raw_value)
+        emitted = False
+        if pressed and not self._last_pause_button_pressed:
+            if (
+                self._last_pause_toggle_timestamp is None
+                or timestamp - self._last_pause_toggle_timestamp >= self._pause_debounce_s - 1e-9
+            ):
+                with self._lock:
+                    self._pending_control_events.append(
+                        ControlEvent(
+                            event_type=ControlEventType.TOGGLE_PAUSE,
+                            source=f"pico4:{self._pause_button}",
+                            timestamp_s=float(timestamp),
+                        )
+                    )
+                self._last_pause_toggle_timestamp = float(timestamp)
+                emitted = True
+        self._last_pause_button_pressed = pressed
+        return emitted
 
     def _accept_body_poses(self, body_poses: NDArray[np.float64], *, timestamp: float) -> bool:
         if self._last_raw_body_poses is not None and np.array_equal(body_poses, self._last_raw_body_poses):
@@ -231,6 +326,33 @@ class Pico4InputProvider:
 
         self._frame_ready.set()
         return True
+
+    def _resolve_button_reader(self, pause_button: str | None) -> Callable[[], object] | None:
+        if pause_button is None:
+            return None
+        getter_name = _PICO_BUTTON_GETTERS.get(pause_button, pause_button)
+        if not getter_name.startswith("get_"):
+            getter_name = f"get_{getter_name}"
+        getter = getattr(self._xrt, getter_name, None)
+        if not callable(getter):
+            return None
+        return getter
+
+    @staticmethod
+    def _normalize_button_value(raw_value: object) -> bool:
+        if isinstance(raw_value, np.ndarray):
+            if raw_value.size <= 0:
+                return False
+            raw_value = raw_value.reshape(-1)[0]
+        if isinstance(raw_value, (tuple, list)):
+            if not raw_value:
+                return False
+            raw_value = raw_value[0]
+        if isinstance(raw_value, (bool, np.bool_)):
+            return bool(raw_value)
+        if isinstance(raw_value, (int, float, np.integer, np.floating)):
+            return float(raw_value) > 0.5
+        return bool(raw_value)
 
     @staticmethod
     def _convert_body_poses_to_frame(body_poses: NDArray[np.float64]) -> HumanFrame:

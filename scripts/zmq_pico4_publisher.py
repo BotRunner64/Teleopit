@@ -18,17 +18,32 @@ import msgpack
 import zmq
 
 from teleopit.inputs.pico4_provider import Pico4InputProvider
+from teleopit.inputs.realtime_packet import ControlEvent
 
 logger = logging.getLogger(__name__)
 
 
-def _serialize_frame(frame: dict, source_ts: float, source_seq: int) -> bytes:
+def _serialize_frame(
+    frame: dict,
+    source_ts: float,
+    source_seq: int,
+    control_events: tuple[ControlEvent, ...] = (),
+) -> bytes:
     """Convert HumanFrame to msgpack bytes with source timestamp and sequence."""
     payload = {}
     for name, (pos, quat) in frame.items():
         payload[name] = [pos.tolist(), quat.tolist()]
     payload["_ts"] = source_ts
     payload["_seq"] = source_seq
+    if control_events:
+        payload["_control_events"] = [
+            {
+                "event_type": event.event_type.value,
+                "source": event.source,
+                "timestamp_s": event.timestamp_s,
+            }
+            for event in control_events
+        ]
     return msgpack.packb(payload, use_bin_type=True)
 
 
@@ -57,14 +72,18 @@ def main() -> None:
     print("Waiting for Pico4 body tracking data...")
     try:
         while True:
-            frame, ts, frame_seq = provider.get_frame_packet()
+            packet = provider.get_realtime_input_packet()
+            frame = packet.frame
+            ts = packet.timestamp_s
+            frame_seq = packet.seq
+            control_events = packet.control_events
             now = time.monotonic()
-            if frame_seq == last_frame_seq and now - last_send_time < heartbeat_interval:
+            if frame_seq == last_frame_seq and not control_events and now - last_send_time < heartbeat_interval:
                 time.sleep(0.001)
                 continue
             last_frame_seq = frame_seq
             last_send_time = now
-            payload = _serialize_frame(frame, ts, frame_seq)
+            payload = _serialize_frame(frame, ts, frame_seq, control_events)
             sock.send(topic_bytes + b" " + payload)
             seq += 1
             if seq % 300 == 0:

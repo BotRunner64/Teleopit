@@ -116,6 +116,9 @@ class RealtimeReferenceManager:
         self._catchup_active = False
         self._real_frame_count = 0
 
+    def set_warmup_steps(self, warmup_steps: int) -> None:
+        self._warmup_steps = max(int(warmup_steps), 0)
+
     def note_realtime_frame(self) -> None:
         self._real_frame_count += 1
 

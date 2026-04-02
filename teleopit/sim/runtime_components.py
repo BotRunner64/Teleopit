@@ -152,6 +152,44 @@ class PolicyStepRunner:
         self._reference_qpos_smoother.reset()
         self.qpos_interpolator.reset()
 
+    def soft_reset_reference_state(self, *, reset_alignment: bool = True) -> None:
+        self.last_reference_qpos = None
+        self._pending_reference_qpos = None
+        if reset_alignment:
+            self._fixed_reference_yaw_quat = None
+            self._fixed_reference_pivot_pos_w = None
+        self._motion_joint_vel_smoother.reset()
+        self._motion_anchor_lin_vel_smoother.reset()
+        self._motion_anchor_ang_vel_smoother.reset()
+        self._reference_qpos_smoother.reset()
+
+    def arm_motion_transition(self, start_qpos: Float64Array, *, duration_s: float) -> None:
+        self.qpos_interpolator.reset()
+        self.qpos_interpolator.configure(duration_s)
+        self.qpos_interpolator.start(start_qpos)
+
+    def prepare_static_motion_command(self, qpos: Float64Array) -> MotionPreparation:
+        hold_qpos = self._retarget_to_qpos(qpos)
+        mimic_obs = extract_mimic_obs(
+            qpos=hold_qpos,
+            last_qpos=hold_qpos,
+            dt=1.0 / self.policy_hz,
+        )
+        zeros_joint_vel = np.zeros((self.num_actions,), dtype=np.float32)
+        zeros_anchor_vel = np.zeros(3, dtype=np.float32)
+        self._pending_reference_qpos = hold_qpos.copy()
+        return MotionPreparation(
+            qpos=hold_qpos.copy(),
+            retarget_viewer_qpos=hold_qpos.copy(),
+            mimic_obs=np.asarray(mimic_obs, dtype=np.float32),
+            motion_joint_vel=zeros_joint_vel,
+            raw_motion_joint_vel=zeros_joint_vel.copy(),
+            motion_anchor_lin_vel_w=zeros_anchor_vel,
+            motion_anchor_ang_vel_w=zeros_anchor_vel.copy(),
+            raw_motion_anchor_lin_vel_w=zeros_anchor_vel.copy(),
+            raw_motion_anchor_ang_vel_w=zeros_anchor_vel.copy(),
+        )
+
     def prepare_motion_command(self, retargeted: object, state: object) -> MotionPreparation:
         reference_qpos = self._retarget_to_qpos(retargeted)
         if self.fixed_ref_yaw_alignment:

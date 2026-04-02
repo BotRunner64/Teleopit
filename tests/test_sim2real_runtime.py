@@ -5,6 +5,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType, RealtimeInputPacket
+
 
 class DummyRobot:
     def __init__(self, _cfg: object) -> None:
@@ -56,6 +58,7 @@ class DummyProvider:
         self.fps = 30
         self._frame_seq = 0
         self._frame_timestamp = 1.0
+        self._control_events: tuple[ControlEvent, ...] = ()
 
     def is_available(self) -> bool:
         return True
@@ -65,6 +68,16 @@ class DummyProvider:
 
     def get_frame_packet(self) -> tuple[dict[str, tuple[np.ndarray, np.ndarray]], float, int]:
         return self._frame, self._frame_timestamp, self._frame_seq
+
+    def get_realtime_input_packet(self) -> RealtimeInputPacket[dict[str, tuple[np.ndarray, np.ndarray]]]:
+        control_events = tuple(self._control_events)
+        self._control_events = ()
+        return RealtimeInputPacket(
+            frame=self._frame,
+            timestamp_s=self._frame_timestamp,
+            seq=self._frame_seq,
+            control_events=control_events,
+        )
 
 
 class DummyRetargeter:
@@ -78,6 +91,7 @@ class DummyRetargeter:
 class DummyPolicy:
     def __init__(self, expected_obs_dim: int = 166) -> None:
         self._expected_obs_dim = expected_obs_dim
+        self._multi_input = True
         self.reset_calls = 0
 
     def reset(self) -> None:
@@ -103,7 +117,7 @@ class DummyVelCmdObservationBuilder:
         self,
         _robot_state: object,
         motion_qpos: np.ndarray,
-        _motion_joint_vel: np.ndarray,
+        motion_joint_vel: np.ndarray,
         _last_action: np.ndarray,
         motion_anchor_lin_vel_w: np.ndarray,
         motion_anchor_ang_vel_w: np.ndarray,
@@ -111,6 +125,7 @@ class DummyVelCmdObservationBuilder:
         self.build_calls.append(
             {
                 "motion_qpos": np.asarray(motion_qpos, dtype=np.float32).copy(),
+                "motion_joint_vel": np.asarray(motion_joint_vel, dtype=np.float32).copy(),
                 "motion_anchor_lin_vel_w": np.asarray(motion_anchor_lin_vel_w, dtype=np.float32).copy(),
                 "motion_anchor_ang_vel_w": np.asarray(motion_anchor_ang_vel_w, dtype=np.float32).copy(),
             }
@@ -469,3 +484,113 @@ def test_mocap_step_reference_qpos_smoothing_filters_motion_change(monkeypatch) 
     np.testing.assert_allclose(obs_builder.build_calls[0]["motion_qpos"][0], 0.0, atol=1e-6)
     np.testing.assert_allclose(obs_builder.build_calls[1]["motion_qpos"][0], 0.5, atol=1e-6)
 
+
+def test_mocap_pause_freezes_reference_and_zeroes_velocities(monkeypatch) -> None:
+    from teleopit.sim2real.controller import Sim2RealController
+    from teleopit.runtime.mocap_session import MocapSessionState
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    target_qpos = np.zeros(36, dtype=np.float64)
+    target_qpos[0] = 0.2
+    target_qpos[3] = 1.0
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
+
+    cfg = _make_cfg(transition_duration=0.0)
+    cfg["retarget_buffer_enabled"] = False
+    cfg["velcmd_fixed_ref_yaw_alignment"] = False
+    ctrl = Sim2RealController(cfg)
+    monkeypatch.setattr(
+        ctrl,
+        "_compute_anchor_velocities",
+        lambda _qpos: (
+            np.zeros(3, dtype=np.float32),
+            np.zeros(3, dtype=np.float32),
+        ),
+    )
+
+    ctrl._mocap_step()
+    ctrl.input_provider._control_events = (
+        ControlEvent(
+            event_type=ControlEventType.TOGGLE_PAUSE,
+            source="pico4:test",
+            timestamp_s=1.1,
+        ),
+    )
+    ctrl.retargeter._qpos[0] = 1.0
+    ctrl.input_provider._frame_seq = 1
+    ctrl.input_provider._frame_timestamp = 1.1
+    ctrl._mocap_step()
+
+    assert ctrl._mocap_session.state == MocapSessionState.PAUSED
+    np.testing.assert_allclose(obs_builder.build_calls[-1]["motion_qpos"][0], 0.2, atol=1e-6)
+    np.testing.assert_allclose(obs_builder.build_calls[-1]["motion_joint_vel"], np.zeros(29, dtype=np.float32))
+    np.testing.assert_allclose(
+        obs_builder.build_calls[-1]["motion_anchor_lin_vel_w"],
+        np.zeros(3, dtype=np.float32),
+    )
+    np.testing.assert_allclose(
+        obs_builder.build_calls[-1]["motion_anchor_ang_vel_w"],
+        np.zeros(3, dtype=np.float32),
+    )
+
+
+def test_mocap_resume_transitions_from_hold_pose(monkeypatch) -> None:
+    from teleopit.sim2real.controller import Sim2RealController
+    from teleopit.runtime.mocap_session import MocapSessionState
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    target_qpos = np.zeros(36, dtype=np.float64)
+    target_qpos[0] = 0.2
+    target_qpos[3] = 1.0
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
+
+    cfg = _make_cfg(transition_duration=0.0)
+    cfg["retarget_buffer_enabled"] = False
+    cfg["velcmd_fixed_ref_yaw_alignment"] = False
+    cfg["pause_resume_transition_duration"] = 1.0
+    cfg["pause_resume_warmup_steps"] = 0
+    ctrl = Sim2RealController(cfg)
+    monkeypatch.setattr(
+        ctrl,
+        "_compute_anchor_velocities",
+        lambda _qpos: (
+            np.zeros(3, dtype=np.float32),
+            np.zeros(3, dtype=np.float32),
+        ),
+    )
+
+    ctrl._mocap_step()
+    ctrl.input_provider._control_events = (
+        ControlEvent(
+            event_type=ControlEventType.TOGGLE_PAUSE,
+            source="pico4:test",
+            timestamp_s=1.1,
+        ),
+    )
+    ctrl.input_provider._frame_seq = 1
+    ctrl.input_provider._frame_timestamp = 1.1
+    ctrl._mocap_step()
+
+    ctrl.retargeter._qpos[0] = 1.0
+    ctrl.input_provider._control_events = (
+        ControlEvent(
+            event_type=ControlEventType.TOGGLE_PAUSE,
+            source="pico4:test",
+            timestamp_s=1.2,
+        ),
+    )
+    ctrl.input_provider._frame_seq = 2
+    ctrl.input_provider._frame_timestamp = 1.2
+    ctrl._mocap_step()
+
+    assert ctrl._mocap_session.state == MocapSessionState.RESUMING
+    np.testing.assert_allclose(obs_builder.build_calls[-1]["motion_qpos"][0], 0.2, atol=1e-6)
+
+    ctrl.input_provider._frame_seq = 3
+    ctrl.input_provider._frame_timestamp = 1.3
+    ctrl._mocap_step()
+
+    assert obs_builder.build_calls[-1]["motion_qpos"][0] > 0.2
+    assert obs_builder.build_calls[-1]["motion_qpos"][0] < 1.0
