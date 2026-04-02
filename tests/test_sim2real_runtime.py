@@ -586,8 +586,6 @@ def test_mocap_resume_transitions_from_hold_pose(monkeypatch) -> None:
     ctrl._mocap_step()
 
     assert ctrl._mocap_session.state == MocapSessionState.RESUMING
-    assert policy.reset_calls == 1
-    assert obs_builder.reset_calls == 1
     np.testing.assert_allclose(obs_builder.build_calls[-1]["motion_qpos"][0], 0.2, atol=1e-6)
 
     ctrl.input_provider._frame_seq = 3
@@ -596,25 +594,3 @@ def test_mocap_resume_transitions_from_hold_pose(monkeypatch) -> None:
 
     assert obs_builder.build_calls[-1]["motion_qpos"][0] > 0.2
     assert obs_builder.build_calls[-1]["motion_qpos"][0] < 1.0
-
-
-def test_mocap_pause_uses_robot_state_for_hold_pose(monkeypatch) -> None:
-    from teleopit.sim2real.controller import Sim2RealController
-
-    policy = DummyPolicy()
-    obs_builder = DummyVelCmdObservationBuilder()
-    target_qpos = np.zeros(36, dtype=np.float64)
-    target_qpos[0] = 0.2
-    target_qpos[3] = 1.0
-    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
-
-    ctrl = Sim2RealController(_make_cfg(transition_duration=0.0))
-    ctrl._last_commanded_motion_qpos = target_qpos.copy()
-    ctrl.robot._state.quat = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
-    ctrl.robot._state.qpos = np.linspace(-0.3, 0.3, 29, dtype=np.float32)
-
-    hold_qpos = ctrl._resolve_mocap_hold_qpos()
-
-    np.testing.assert_allclose(hold_qpos[0], 0.2, atol=1e-6)
-    np.testing.assert_allclose(hold_qpos[3:7], ctrl.robot._state.quat.astype(np.float64), atol=1e-6)
-    np.testing.assert_allclose(hold_qpos[7:36], ctrl.robot._state.qpos.astype(np.float64), atol=1e-6)

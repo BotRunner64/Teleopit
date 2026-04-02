@@ -939,20 +939,15 @@ class Sim2RealController:
         return obs
 
     def _reset_policy_state(self) -> None:
-        self._reset_temporal_policy_state()
+        self._last_action = np.zeros(self.num_actions, dtype=np.float32)
         self._reset_mocap_reference_state()
         self._reset_reference_alignment()
         self._mocap_session.reset()
         self._last_commanded_motion_qpos = None
-
-    def _reset_temporal_policy_state(self) -> None:
-        self._last_action = np.zeros(self.num_actions, dtype=np.float32)
         reset_policy = getattr(self.policy, "reset", None)
         if callable(reset_policy):
             reset_policy()
-        reset_obs_builder = getattr(self.obs_builder, "reset", None)
-        if callable(reset_obs_builder):
-            reset_obs_builder()
+        self.obs_builder.reset()
 
     def _reset_mocap_reference_state(self, *, warmup_steps: int | None = None) -> None:
         """Reset mocap-specific reference state without disrupting policy observation continuity.
@@ -1028,29 +1023,22 @@ class Sim2RealController:
     def _resume_paused_mocap(self) -> None:
         start_qpos = self._mocap_session.begin_resume()
         self._reset_mocap_reference_state(warmup_steps=self._pause_resume_warmup_steps)
-        self._reset_temporal_policy_state()
         if self._pause_reset_alignment_on_resume:
             self._reset_reference_alignment()
         self._last_retarget_qpos = start_qpos.copy()
-        self._last_reference_qpos = start_qpos.copy()
         self._last_commanded_motion_qpos = start_qpos.copy()
         self._arm_qpos_transition(start_qpos, duration_s=self._pause_resume_transition_duration)
         logger.info("Mocap session -> RESUMING")
 
     def _resolve_mocap_hold_qpos(self) -> Float64Array:
-        state = self.robot.get_state()
         if self._last_commanded_motion_qpos is not None:
-            hold_qpos = self._last_commanded_motion_qpos.copy()
-        elif self._last_retarget_qpos is not None:
-            hold_qpos = np.asarray(self._last_retarget_qpos, dtype=np.float64).copy()
-        else:
-            hold_qpos = np.zeros(36, dtype=np.float64)
-
-        base_pos = getattr(state, "base_pos", None)
-        if base_pos is not None:
-            hold_qpos[0:3] = np.asarray(base_pos, dtype=np.float64)[:3]
-        hold_qpos[3:7] = np.asarray(state.quat, dtype=np.float64)[:4]
-        hold_qpos[7:7 + self.num_actions] = np.asarray(state.qpos, dtype=np.float64)[: self.num_actions]
+            return self._last_commanded_motion_qpos.copy()
+        if self._last_retarget_qpos is not None:
+            return np.asarray(self._last_retarget_qpos, dtype=np.float64).copy()
+        state = self.robot.get_state()
+        hold_qpos = np.zeros(36, dtype=np.float64)
+        hold_qpos[3:7] = np.asarray(state.quat, dtype=np.float64)
+        hold_qpos[7:36] = np.asarray(state.qpos, dtype=np.float64)
         return hold_qpos
 
     def _paused_mocap_step(self) -> None:
