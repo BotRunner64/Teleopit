@@ -9,10 +9,15 @@ transition_duration: 2.0  # seconds to interpolate from default pose to motion c
 velcmd_fixed_ref_yaw_alignment: true  # apply one fixed startup yaw offset to VelCmd reference motion
 retarget_buffer_enabled: true
 retarget_buffer_window_s: 0.5
-retarget_buffer_delay_s: null
-realtime_buffer_low_watermark_steps: 0
-realtime_buffer_high_watermark_steps: null
-realtime_buffer_warmup_steps: 0
+retarget_buffer_delay_s: 0.05
+realtime_buffer_low_watermark_steps: 2
+realtime_buffer_high_watermark_steps: 4
+realtime_buffer_warmup_steps: 2
+realtime_catchup_enabled: true
+realtime_catchup_trigger_steps: 6
+realtime_catchup_release_steps: 3
+realtime_catchup_target_delay_s: 0.04
+reference_qpos_smoothing_alpha: 0.4
 reference_velocity_smoothing_alpha: 0.35
 reference_anchor_velocity_smoothing_alpha: 0.25
 reference_steps: [0]

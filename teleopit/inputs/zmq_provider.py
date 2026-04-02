@@ -10,13 +10,13 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections import deque
 from typing import Dict, Tuple
 
 import msgpack
 import numpy as np
 from numpy.typing import NDArray
 
+from teleopit.inputs.realtime_frame_cache import RealtimeFrameCache
 from teleopit.sim.reference_motion import interpolate_human_frames
 
 logger = logging.getLogger(__name__)
@@ -51,31 +51,42 @@ class ZMQInputProvider:
         human_format: str = "xrobot",
         timeout: float = 30.0,
         buffer_size: int = 60,
+        conflate: bool = True,
+        recv_hwm: int = 1,
+        seq_gap_reset_threshold: int = 4,
     ) -> None:
         import zmq
 
         self._human_format = human_format
         self._timeout = timeout
         self._topic = topic
+        self._conflate = bool(conflate)
+        self._recv_hwm = max(int(recv_hwm), 1)
+        self._seq_gap_reset_threshold = max(int(seq_gap_reset_threshold), 1)
 
         # ZMQ SUB socket
         self._ctx = zmq.Context()
         self._sock = self._ctx.socket(zmq.SUB)
         self._sock.setsockopt(zmq.RCVTIMEO, 2000)  # 2s recv timeout for shutdown checks
-        self._sock.setsockopt(zmq.RCVHWM, 5)  # limit receive queue to prevent stale-frame accumulation
+        self._sock.setsockopt(zmq.RCVHWM, 1 if self._conflate else self._recv_hwm)
+        if self._conflate:
+            try:
+                self._sock.setsockopt(zmq.CONFLATE, 1)
+            except (AttributeError, zmq.ZMQError):
+                logger.warning("ZMQ CONFLATE unavailable; falling back to manual queue draining")
         self._sock.connect(f"tcp://{host}:{port}")
         self._sock.subscribe(topic.encode("utf-8"))
 
-        # Thread-safe state: deque buffer of (frame, timestamp) pairs
+        # Thread-safe state
         self._lock = threading.Lock()
         self._frame_ready = threading.Event()
-        self._buffer: deque[tuple[HumanFrame, float]] = deque(maxlen=max(buffer_size, 2))
-        self._fps_timestamps: deque[float] = deque(maxlen=30)  # source timestamps for fps measurement
-        self._frame_seq: int = 0  # mirrors source _seq (only increments on real new frames)
+        self._frame_cache = RealtimeFrameCache[HumanFrame](buffer_size=buffer_size, fps_window=30)
         self._running = True
 
         # Clock offset: maps publisher monotonic → local monotonic (set once on first frame)
         self._clock_offset: float | None = None
+        self._last_source_seq: int | None = None
+        self._last_buffer_ts: float | None = None
 
         # Receiver thread
         self._thread = threading.Thread(target=self._recv_loop, daemon=True, name="zmq_input")
@@ -90,14 +101,7 @@ class ZMQInputProvider:
     def fps(self) -> float:
         """Measured source fps (falls back to 30.0 until enough samples)."""
         with self._lock:
-            if len(self._fps_timestamps) < 2:
-                return 30.0
-            oldest = self._fps_timestamps[0]
-            newest = self._fps_timestamps[-1]
-            dt = newest - oldest
-            if dt <= 0:
-                return 30.0
-            return (len(self._fps_timestamps) - 1) / dt
+            return self._frame_cache.fps()
 
     @property
     def human_format(self) -> str:
@@ -119,9 +123,9 @@ class ZMQInputProvider:
                 f"No ZMQ body data received within {self._timeout}s"
             )
         with self._lock:
-            if not self._buffer:
+            if len(self._frame_cache) <= 0:
                 raise RuntimeError("ZMQ frame buffer signaled ready without a latest frame")
-            return self._buffer[-1][0]
+            return self._frame_cache.latest()
 
     def get_frame_packet(self) -> tuple[HumanFrame, float, int]:
         """Return the latest frame together with timestamp and sequence."""
@@ -130,10 +134,9 @@ class ZMQInputProvider:
                 f"No ZMQ body data received within {self._timeout}s"
             )
         with self._lock:
-            if not self._buffer:
+            if len(self._frame_cache) <= 0:
                 raise RuntimeError("ZMQ frame buffer signaled ready without a latest frame")
-            frame, ts = self._buffer[-1]
-            return frame, ts, self._frame_seq
+            return self._frame_cache.latest_packet()
 
     def sample_frame(self, query_time_s: float, delay_s: float) -> HumanFrame:
         """Sample a delayed interpolated frame from the receive buffer."""
@@ -142,7 +145,7 @@ class ZMQInputProvider:
                 f"No ZMQ body data received within {self._timeout}s"
             )
         with self._lock:
-            buf = list(self._buffer)
+            buf = self._frame_cache.snapshot()
 
         if not buf:
             raise RuntimeError("ZMQ frame buffer signaled ready without a latest frame")
@@ -190,12 +193,12 @@ class ZMQInputProvider:
 
         while self._running:
             try:
-                raw = self._sock.recv()
+                raw, drained_count = self._recv_latest_raw()
                 # Single frame: "<topic> <msgpack payload>"
                 sep = raw.index(b" ")
                 payload = msgpack.unpackb(raw[sep + 1:], raw=False)
-                source_ts = payload.pop("_ts", None)
-                source_seq = payload.pop("_seq", None)
+                source_ts = self._normalize_source_ts(payload.pop("_ts", None))
+                source_seq = self._normalize_source_seq(payload.pop("_seq", None))
                 frame = self._deserialize_frame(payload)
             except zmq.Again:  # recv timeout — check shutdown flag
                 continue
@@ -208,28 +211,99 @@ class ZMQInputProvider:
                 continue
 
             local_ts = time.monotonic()
-
-            # Map publisher timestamp to local clock domain for correct
-            # inter-frame spacing even when ZMQ queues messages.
-            # Offset is set once on first frame; never auto-reset to avoid
-            # masking staleness from queued old packets.
-            if source_ts is not None:
-                if self._clock_offset is None:
-                    self._clock_offset = local_ts - source_ts
-                buffer_ts = source_ts + self._clock_offset
-            else:
-                buffer_ts = local_ts  # fallback for publishers without _ts
-
-            # Only count genuinely new frames (skip heartbeat duplicates)
-            is_new_frame = source_seq is None or source_seq != self._frame_seq
-
-            with self._lock:
-                self._buffer.append((frame, buffer_ts))
-                if is_new_frame:
-                    self._fps_timestamps.append(source_ts if source_ts is not None else local_ts)
-                    self._frame_seq = int(source_seq) if source_seq is not None else self._frame_seq + 1
+            self._process_packet(
+                frame,
+                source_ts=source_ts,
+                source_seq=source_seq,
+                local_ts=local_ts,
+                drained_count=drained_count,
+            )
             if not self._frame_ready.is_set():
                 self._frame_ready.set()
+
+    def _recv_latest_raw(self) -> tuple[bytes, int]:
+        import zmq
+
+        raw = self._sock.recv()
+        drained_count = 0
+        while True:
+            try:
+                raw = self._sock.recv(flags=zmq.NOBLOCK)
+                drained_count += 1
+            except zmq.Again:
+                break
+        return raw, drained_count
+
+    def _process_packet(
+        self,
+        frame: HumanFrame,
+        *,
+        source_ts: float | None,
+        source_seq: int | None,
+        local_ts: float,
+        drained_count: int = 0,
+    ) -> None:
+        buffer_ts = self._map_buffer_timestamp(source_ts, local_ts)
+
+        if drained_count > 0:
+            logger.debug(
+                "ZMQInputProvider drained %d queued packets before processing seq=%s",
+                drained_count,
+                "none" if source_seq is None else source_seq,
+            )
+
+        with self._lock:
+            if source_seq is not None and self._last_source_seq is not None:
+                if source_seq <= self._last_source_seq:
+                    return
+                seq_gap = source_seq - self._last_source_seq
+                if seq_gap > self._seq_gap_reset_threshold:
+                    self._frame_cache.clear()
+                    logger.warning(
+                        "ZMQInputProvider seq-gap catch-up | last_seq=%d | new_seq=%d | gap=%d",
+                        self._last_source_seq,
+                        source_seq,
+                        seq_gap,
+                    )
+            elif self._last_buffer_ts is not None and buffer_ts <= self._last_buffer_ts + 1e-9:
+                return
+
+            if self._last_buffer_ts is not None and buffer_ts <= self._last_buffer_ts + 1e-9:
+                buffer_ts = self._last_buffer_ts + 1e-6
+
+            self._frame_cache.append(
+                frame,
+                buffer_ts,
+                fps_timestamp=source_ts if source_ts is not None else local_ts,
+                source_seq=source_seq,
+            )
+            self._last_buffer_ts = buffer_ts
+            if source_seq is not None:
+                self._last_source_seq = source_seq
+
+    def _map_buffer_timestamp(self, source_ts: float | None, local_ts: float) -> float:
+        if source_ts is None:
+            return float(local_ts)
+        if self._clock_offset is None:
+            self._clock_offset = float(local_ts) - float(source_ts)
+        return float(source_ts) + float(self._clock_offset)
+
+    @staticmethod
+    def _normalize_source_ts(raw_value: object) -> float | None:
+        if raw_value in (None, "", "null"):
+            return None
+        value = float(raw_value)
+        if not np.isfinite(value):
+            return None
+        return value
+
+    @staticmethod
+    def _normalize_source_seq(raw_value: object) -> int | None:
+        if raw_value in (None, "", "null"):
+            return None
+        if isinstance(raw_value, bool):
+            return int(raw_value)
+        return int(raw_value)
 
     @staticmethod
     def _deserialize_frame(payload: dict) -> HumanFrame:

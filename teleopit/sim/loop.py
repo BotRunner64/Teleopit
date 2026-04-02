@@ -341,6 +341,11 @@ class SimulationLoop:
             default=1.0,
             field_name="reference_anchor_velocity_smoothing_alpha",
         )
+        self._reference_qpos_smoothing_alpha = self._parse_alpha(
+            self._try_get_cfg("reference_qpos_smoothing_alpha"),
+            default=1.0,
+            field_name="reference_qpos_smoothing_alpha",
+        )
 
         self._viewers: set[str] = set(viewers or set())
         self._step_runner = PolicyStepRunner(
@@ -358,6 +363,7 @@ class SimulationLoop:
             fixed_ref_yaw_alignment=fixed_ref_yaw_alignment,
             reference_velocity_smoothing_alpha=self._reference_velocity_smoothing_alpha,
             reference_anchor_velocity_smoothing_alpha=self._reference_anchor_velocity_smoothing_alpha,
+            reference_qpos_smoothing_alpha=self._reference_qpos_smoothing_alpha,
         )
         self._publisher = RuntimePublisher(self.bus)
         self._recorder_helper = RunRecorder()
@@ -430,6 +436,20 @@ class SimulationLoop:
                 low_watermark_steps=self._realtime_buffer_low_watermark_steps,
                 high_watermark_steps=self._realtime_buffer_high_watermark_steps,
                 warmup_steps=self._realtime_buffer_warmup_steps,
+                catchup_enabled=bool(self._try_get_cfg("realtime_catchup_enabled", False)),
+                catchup_trigger_steps=self._parse_optional_nonnegative_int(
+                    self._try_get_cfg("realtime_catchup_trigger_steps"),
+                    field_name="realtime_catchup_trigger_steps",
+                ),
+                catchup_release_steps=self._parse_optional_nonnegative_int(
+                    self._try_get_cfg("realtime_catchup_release_steps"),
+                    field_name="realtime_catchup_release_steps",
+                ),
+                catchup_target_delay_s=(
+                    None
+                    if self._try_get_cfg("realtime_catchup_target_delay_s") in (None, "", "null")
+                    else float(self._try_get_cfg("realtime_catchup_target_delay_s"))
+                ),
             )
         last_live_packet_seq = -1
         previous_live_human_frame: dict | None = None
@@ -829,15 +849,16 @@ class SimulationLoop:
                 return value
         raise KeyError(f"Missing required config value. Tried keys: {keys}")
 
-    def _try_get_cfg(self, key: str) -> object | None:
+    def _try_get_cfg(self, key: str, default: object | None = None) -> object | None:
         if "." in key:
             cur: object | None = self.cfg
             for part in key.split("."):
                 cur = self._get_single(cur, part)
                 if cur is None:
-                    return None
-            return cur
-        return self._get_single(self.cfg, key)
+                    return default
+            return default if cur is None else cur
+        value = self._get_single(self.cfg, key)
+        return default if value is None else value
 
     @staticmethod
     def _get_single(obj: object | None, key: str) -> object | None:

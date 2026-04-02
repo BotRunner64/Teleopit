@@ -10,13 +10,13 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections import deque
 from typing import Any, Dict, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation as R
 
+from teleopit.inputs.realtime_frame_cache import RealtimeFrameCache
 from teleopit.inputs.rot_utils import quat_mul_np
 from teleopit.sim.reference_motion import interpolate_human_frames
 
@@ -60,7 +60,14 @@ class Pico4InputProvider:
     so it plugs directly into the Teleopit pipeline.
     """
 
-    def __init__(self, human_format: str = "xrobot", timeout: float = 60.0) -> None:
+    def __init__(
+        self,
+        human_format: str = "xrobot",
+        timeout: float = 60.0,
+        buffer_size: int = 60,
+        timestamp_gap_reset_s: float = 0.15,
+        poll_sleep_s: float = 0.002,
+    ) -> None:
         try:
             import xrobotoolkit_sdk as xrt
         except ImportError as exc:
@@ -76,10 +83,11 @@ class Pico4InputProvider:
         self._closed = False
         self._frame_ready = threading.Event()
         self._lock = threading.Lock()
-        self._buffer: deque[tuple[HumanFrame, float]] = deque(maxlen=60)
-        self._fps_timestamps: deque[float] = deque(maxlen=30)
-        self._frame_seq: int = 0
+        self._frame_cache = RealtimeFrameCache[HumanFrame](buffer_size=buffer_size, fps_window=30)
+        self._timestamp_gap_reset_s = float(timestamp_gap_reset_s)
+        self._poll_sleep_s = max(float(poll_sleep_s), 0.0)
         self._last_raw_body_poses: NDArray[np.float64] | None = None
+        self._last_frame_timestamp: float | None = None
         self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True, name="pico4_input")
         self._poll_thread.start()
         logger.info("Pico4InputProvider initialized (xrobotoolkit_sdk)")
@@ -88,14 +96,7 @@ class Pico4InputProvider:
     def fps(self) -> float:
         """Measured body tracking fps (falls back to 30.0 until enough samples)."""
         with self._lock:
-            if len(self._fps_timestamps) < 2:
-                return 30.0
-            oldest = self._fps_timestamps[0]
-            newest = self._fps_timestamps[-1]
-            dt = newest - oldest
-            if dt <= 0:
-                return 30.0
-            return (len(self._fps_timestamps) - 1) / dt
+            return self._frame_cache.fps()
 
     @property
     def human_format(self) -> str:
@@ -130,9 +131,9 @@ class Pico4InputProvider:
                 f"No Pico4 body data received within {self._timeout:.1f}s timeout"
             )
         with self._lock:
-            if not self._buffer:
+            if len(self._frame_cache) <= 0:
                 raise RuntimeError("Pico4 frame buffer signaled ready without a latest frame")
-            return self._buffer[-1][0]
+            return self._frame_cache.latest()
 
     def get_frame_packet(self) -> tuple[HumanFrame, float, int]:
         """Return the latest cached frame together with timestamp and sequence."""
@@ -141,10 +142,9 @@ class Pico4InputProvider:
                 f"No Pico4 body data received within {self._timeout:.1f}s timeout"
             )
         with self._lock:
-            if not self._buffer:
+            if len(self._frame_cache) <= 0:
                 raise RuntimeError("Pico4 frame buffer signaled ready without a latest frame")
-            frame, ts = self._buffer[-1]
-            return frame, ts, self._frame_seq
+            return self._frame_cache.latest_packet()
 
     def sample_frame(self, query_time_s: float, delay_s: float) -> HumanFrame:
         """Sample a delayed interpolated realtime frame from the polling buffer."""
@@ -153,7 +153,7 @@ class Pico4InputProvider:
                 f"No Pico4 body data received within {self._timeout:.1f}s timeout"
             )
         with self._lock:
-            buf = list(self._buffer)
+            buf = self._frame_cache.snapshot()
 
         if not buf:
             raise RuntimeError("Pico4 frame buffer signaled ready without a latest frame")
@@ -198,19 +198,39 @@ class Pico4InputProvider:
                 time.sleep(0.05)
                 continue
 
-            if self._last_raw_body_poses is not None and np.array_equal(body_poses, self._last_raw_body_poses):
+            if not self._accept_body_poses(body_poses, timestamp=time.monotonic()):
                 time.sleep(0.001)
                 continue
 
-            frame = self._convert_body_poses_to_frame(body_poses)
-            timestamp = time.monotonic()
-            with self._lock:
-                self._buffer.append((frame, timestamp))
-                self._fps_timestamps.append(timestamp)
-                self._frame_seq += 1
-                self._last_raw_body_poses = body_poses.copy()
-            self._frame_ready.set()
-            time.sleep(0.005)  # yield CPU between frames to avoid scheduling jitter
+            time.sleep(self._poll_sleep_s)
+
+    def _accept_body_poses(self, body_poses: NDArray[np.float64], *, timestamp: float) -> bool:
+        if self._last_raw_body_poses is not None and np.array_equal(body_poses, self._last_raw_body_poses):
+            return False
+
+        frame = self._convert_body_poses_to_frame(body_poses)
+        frame_timestamp = float(timestamp)
+
+        with self._lock:
+            if (
+                self._last_frame_timestamp is not None
+                and self._timestamp_gap_reset_s > 0.0
+                and frame_timestamp - self._last_frame_timestamp > self._timestamp_gap_reset_s
+            ):
+                self._frame_cache.clear()
+                logger.warning(
+                    "Pico4InputProvider timestamp-gap reset | gap=%.4fs",
+                    frame_timestamp - self._last_frame_timestamp,
+                )
+            if self._last_frame_timestamp is not None and frame_timestamp <= self._last_frame_timestamp + 1e-9:
+                frame_timestamp = self._last_frame_timestamp + 1e-6
+
+            self._frame_cache.append(frame, frame_timestamp, fps_timestamp=frame_timestamp)
+            self._last_raw_body_poses = body_poses.copy()
+            self._last_frame_timestamp = frame_timestamp
+
+        self._frame_ready.set()
+        return True
 
     @staticmethod
     def _convert_body_poses_to_frame(body_poses: NDArray[np.float64]) -> HumanFrame:

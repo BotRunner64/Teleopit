@@ -6,3 +6,6 @@ zmq_host: "192.168.1.100"   # IP of the upper machine (PC with Pico4)
 zmq_port: 5555
 zmq_topic: "pico4"
 zmq_timeout: 30.0            # seconds to wait for first ZMQ frame
+zmq_conflate: true
+zmq_rcv_hwm: 1
+zmq_seq_gap_reset_threshold: 4

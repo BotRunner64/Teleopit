@@ -229,12 +229,18 @@ def _build_input_provider(
             topic=str(cfg_get(input_cfg, "zmq_topic", "pico4")),
             human_format=str(cfg_get(input_cfg, "human_format", "xrobot")),
             timeout=float(cfg_get(input_cfg, "zmq_timeout", 30.0)),
+            conflate=bool(cfg_get(input_cfg, "zmq_conflate", True)),
+            recv_hwm=int(cfg_get(input_cfg, "zmq_rcv_hwm", 1)),
+            seq_gap_reset_threshold=int(cfg_get(input_cfg, "zmq_seq_gap_reset_threshold", 4)),
         )
 
     if provider_kind == "pico4":
         return pico4_input_cls(
             human_format=str(cfg_get(input_cfg, "human_format", "xrobot")),
             timeout=float(cfg_get(input_cfg, "pico4_timeout", 60.0)),
+            buffer_size=int(cfg_get(input_cfg, "pico4_buffer_size", 60)),
+            timestamp_gap_reset_s=float(cfg_get(input_cfg, "pico4_timestamp_gap_reset_s", 0.15)),
+            poll_sleep_s=float(cfg_get(input_cfg, "pico4_poll_sleep_s", 0.002)),
         )
 
     if provider_kind == "udp_bvh":

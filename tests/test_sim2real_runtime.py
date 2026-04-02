@@ -163,8 +163,8 @@ def test_mode_transitions_reset_stateful_policy(monkeypatch) -> None:
     ctrl._enter_standing()
     ctrl._transition_to_mocap()
 
-    assert policy.reset_calls == 2
-    assert obs_builder.reset_calls == 2
+    assert policy.reset_calls == 1
+    assert obs_builder.reset_calls == 1
 
 
 def test_reset_policy_state_clears_reference_timeline(monkeypatch) -> None:
@@ -436,3 +436,36 @@ def test_sim2real_allows_future_reference_steps_without_explicit_high_watermark(
 
     assert ctrl._realtime_buffer_low_watermark_steps == 0
     assert ctrl._realtime_buffer_high_watermark_steps is None
+
+
+def test_mocap_step_reference_qpos_smoothing_filters_motion_change(monkeypatch) -> None:
+    from teleopit.sim2real.controller import Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    target_qpos = np.zeros(36, dtype=np.float64)
+    target_qpos[3] = 1.0
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
+
+    cfg = _make_cfg(transition_duration=0.0)
+    cfg["retarget_buffer_enabled"] = False
+    cfg["velcmd_fixed_ref_yaw_alignment"] = False
+    cfg["reference_qpos_smoothing_alpha"] = 0.5
+    ctrl = Sim2RealController(cfg)
+    monkeypatch.setattr(
+        ctrl,
+        "_compute_anchor_velocities",
+        lambda _qpos: (
+            np.zeros(3, dtype=np.float32),
+            np.zeros(3, dtype=np.float32),
+        ),
+    )
+
+    ctrl._mocap_step()
+    ctrl.retargeter._qpos[0] = 1.0
+    ctrl._mocap_step()
+
+    assert len(obs_builder.build_calls) == 2
+    np.testing.assert_allclose(obs_builder.build_calls[0]["motion_qpos"][0], 0.0, atol=1e-6)
+    np.testing.assert_allclose(obs_builder.build_calls[1]["motion_qpos"][0], 0.5, atol=1e-6)
+

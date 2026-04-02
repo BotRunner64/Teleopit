@@ -13,6 +13,7 @@ retarget_buffer_delay_s: null  # null = auto use one input-frame delay for timel
 realtime_buffer_low_watermark_steps: 2
 realtime_buffer_high_watermark_steps: 4
 realtime_buffer_warmup_steps: 2
+reference_qpos_smoothing_alpha: 1.0
 reference_velocity_smoothing_alpha: 0.35
 reference_anchor_velocity_smoothing_alpha: 0.25
 reference_steps: [0]

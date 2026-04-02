@@ -78,3 +78,52 @@ def test_realtime_reference_manager_defaults_high_watermark_to_effective_low() -
 
     assert manager._low_watermark_steps == 4
     assert manager._high_watermark_steps == 4
+
+
+def test_realtime_reference_manager_catchup_advances_base_time() -> None:
+    timeline = ReferenceTimeline(window_s=1.0)
+    for idx in range(11):
+        timeline.append(_qpos(float(idx)), idx * 0.02)
+
+    manager = RealtimeReferenceManager(
+        reference_window_builder=ReferenceWindowBuilder(policy_dt_s=0.02, reference_steps=[0]),
+        low_watermark_steps=2,
+        high_watermark_steps=4,
+        warmup_steps=0,
+        catchup_enabled=True,
+        catchup_trigger_steps=6,
+        catchup_release_steps=3,
+        catchup_target_delay_s=0.04,
+    )
+
+    window, diagnostics = manager.sample(timeline, 0.00)
+
+    assert diagnostics.used_catchup is True
+    assert diagnostics.catchup_active is True
+    np.testing.assert_allclose(diagnostics.effective_base_time_s, 0.16, atol=1e-6)
+    np.testing.assert_allclose(window.current_sample().qpos[0], 8.0, atol=1e-6)
+
+
+def test_realtime_reference_manager_catchup_releases_with_hysteresis() -> None:
+    timeline = ReferenceTimeline(window_s=1.0)
+    for idx in range(11):
+        timeline.append(_qpos(float(idx)), idx * 0.02)
+
+    manager = RealtimeReferenceManager(
+        reference_window_builder=ReferenceWindowBuilder(policy_dt_s=0.02, reference_steps=[0]),
+        low_watermark_steps=2,
+        high_watermark_steps=4,
+        warmup_steps=0,
+        catchup_enabled=True,
+        catchup_trigger_steps=6,
+        catchup_release_steps=3,
+        catchup_target_delay_s=0.04,
+    )
+
+    _, first_diag = manager.sample(timeline, 0.00)
+    _, second_diag = manager.sample(timeline, 0.18)
+
+    assert first_diag.catchup_active is True
+    assert second_diag.used_catchup is False
+    assert second_diag.catchup_active is False
+    np.testing.assert_allclose(second_diag.effective_base_time_s, 0.18, atol=1e-6)

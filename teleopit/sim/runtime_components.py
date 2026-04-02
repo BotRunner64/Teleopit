@@ -14,7 +14,7 @@ from teleopit.controllers.observation import (
     compute_fixed_yaw_alignment_quat,
     rotate_motion_qpos_by_yaw,
 )
-from teleopit.controllers.qpos_interpolator import QposInterpolator
+from teleopit.controllers.qpos_interpolator import QposInterpolator, QposLowPassFilter
 from teleopit.interfaces import MessageBus, ObservationBuilder, Recorder, Robot
 from teleopit.retargeting.core import extract_mimic_obs
 from teleopit.sim.reference_timeline import ReferenceSample, ReferenceWindow
@@ -114,6 +114,7 @@ class PolicyStepRunner:
         fixed_ref_yaw_alignment: bool = True,
         reference_velocity_smoothing_alpha: float = 1.0,
         reference_anchor_velocity_smoothing_alpha: float = 1.0,
+        reference_qpos_smoothing_alpha: float = 1.0,
     ) -> None:
         self.robot = robot
         self.controller = controller
@@ -130,6 +131,7 @@ class PolicyStepRunner:
         self._motion_joint_vel_smoother = ExponentialVecSmoother(reference_velocity_smoothing_alpha)
         self._motion_anchor_lin_vel_smoother = ExponentialVecSmoother(reference_anchor_velocity_smoothing_alpha)
         self._motion_anchor_ang_vel_smoother = ExponentialVecSmoother(reference_anchor_velocity_smoothing_alpha)
+        self._reference_qpos_smoother = QposLowPassFilter(reference_qpos_smoothing_alpha)
         self.last_action: Float32Array = np.zeros((self.num_actions,), dtype=np.float32)
         self.last_retarget_qpos: Float64Array | None = None
         self.last_reference_qpos: Float64Array | None = None
@@ -147,12 +149,14 @@ class PolicyStepRunner:
         self._motion_joint_vel_smoother.reset()
         self._motion_anchor_lin_vel_smoother.reset()
         self._motion_anchor_ang_vel_smoother.reset()
+        self._reference_qpos_smoother.reset()
         self.qpos_interpolator.reset()
 
     def prepare_motion_command(self, retargeted: object, state: object) -> MotionPreparation:
         reference_qpos = self._retarget_to_qpos(retargeted)
         if self.fixed_ref_yaw_alignment:
             reference_qpos = self._align_velcmd_reference_yaw(reference_qpos, state)
+        reference_qpos = self._reference_qpos_smoother.apply(reference_qpos)
         self._pending_reference_qpos = reference_qpos.copy()
 
         if self.last_retarget_qpos is None and self.qpos_interpolator.duration > 0:

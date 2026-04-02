@@ -28,7 +28,7 @@ from teleopit.controllers.observation import (
     compute_fixed_yaw_alignment_quat,
     rotate_motion_qpos_by_yaw,
 )
-from teleopit.controllers.qpos_interpolator import QposInterpolator
+from teleopit.controllers.qpos_interpolator import QposInterpolator, QposLowPassFilter
 from teleopit.controllers.rl_policy import RLPolicyController
 from teleopit.inputs.pico4_provider import Pico4InputProvider
 from teleopit.inputs.udp_bvh_provider import UDPBVHInputProvider
@@ -36,7 +36,10 @@ from teleopit.retargeting.core import RetargetingModule
 from teleopit.runtime.common import cfg_get
 from teleopit.runtime.factory import build_sim2real_mocap_components
 from teleopit.sim.reference_timeline import ReferenceSample, ReferenceTimeline, ReferenceWindow, ReferenceWindowBuilder
-from teleopit.sim.realtime_utils import ExponentialVecSmoother, RealtimeReferenceManager
+from teleopit.sim.realtime_utils import (
+    ExponentialVecSmoother,
+    RealtimeReferenceManager,
+)
 from teleopit.sim2real.remote import UnitreeRemote
 from teleopit.sim2real.unitree_g1 import UnitreeG1Robot
 
@@ -134,6 +137,21 @@ class Sim2RealController:
             cfg_get(cfg, "realtime_buffer_warmup_steps", 0),
             field_name="realtime_buffer_warmup_steps",
         )
+        self._realtime_catchup_enabled = bool(cfg_get(cfg, "realtime_catchup_enabled", False))
+        self._realtime_catchup_trigger_steps = self._parse_optional_nonnegative_int(
+            cfg_get(cfg, "realtime_catchup_trigger_steps", None),
+            field_name="realtime_catchup_trigger_steps",
+        )
+        self._realtime_catchup_release_steps = self._parse_optional_nonnegative_int(
+            cfg_get(cfg, "realtime_catchup_release_steps", None),
+            field_name="realtime_catchup_release_steps",
+        )
+        raw_realtime_catchup_target_delay_s = cfg_get(cfg, "realtime_catchup_target_delay_s", None)
+        self._realtime_catchup_target_delay_s = (
+            None
+            if raw_realtime_catchup_target_delay_s in (None, "", "null")
+            else float(raw_realtime_catchup_target_delay_s)
+        )
         self._reference_velocity_smoothing_alpha = self._parse_alpha(
             cfg_get(cfg, "reference_velocity_smoothing_alpha", 1.0),
             field_name="reference_velocity_smoothing_alpha",
@@ -141,6 +159,10 @@ class Sim2RealController:
         self._reference_anchor_velocity_smoothing_alpha = self._parse_alpha(
             cfg_get(cfg, "reference_anchor_velocity_smoothing_alpha", 1.0),
             field_name="reference_anchor_velocity_smoothing_alpha",
+        )
+        self._reference_qpos_smoothing_alpha = self._parse_alpha(
+            cfg_get(cfg, "reference_qpos_smoothing_alpha", 1.0),
+            field_name="reference_qpos_smoothing_alpha",
         )
         if self._retarget_buffer_enabled:
             self._reference_window_builder.validate_runtime_support(
@@ -159,6 +181,10 @@ class Sim2RealController:
                 low_watermark_steps=self._realtime_buffer_low_watermark_steps,
                 high_watermark_steps=self._realtime_buffer_high_watermark_steps,
                 warmup_steps=self._realtime_buffer_warmup_steps,
+                catchup_enabled=self._realtime_catchup_enabled,
+                catchup_trigger_steps=self._realtime_catchup_trigger_steps,
+                catchup_release_steps=self._realtime_catchup_release_steps,
+                catchup_target_delay_s=self._realtime_catchup_target_delay_s,
             )
             if self._reference_timeline is not None
             else None
@@ -166,6 +192,7 @@ class Sim2RealController:
         self._motion_joint_vel_smoother = ExponentialVecSmoother(self._reference_velocity_smoothing_alpha)
         self._motion_anchor_lin_vel_smoother = ExponentialVecSmoother(self._reference_anchor_velocity_smoothing_alpha)
         self._motion_anchor_ang_vel_smoother = ExponentialVecSmoother(self._reference_anchor_velocity_smoothing_alpha)
+        self._reference_qpos_smoother = QposLowPassFilter(self._reference_qpos_smoothing_alpha)
         self._last_live_packet_seq = -1
 
         # Default standing pose (29-DOF)
@@ -359,6 +386,14 @@ class Sim2RealController:
                     reference_diag.future_horizon_steps,
                     list(reference_window.reference_steps),
                 )
+            if self._reference_debug_log and reference_diag.used_catchup:
+                logger.warning(
+                    "Reference timeline catch-up | requested_base=%.6f | effective_base=%.6f | latest=%.6f | future_horizon_steps=%d",
+                    reference_diag.requested_base_time_s,
+                    reference_diag.effective_base_time_s,
+                    -1.0 if reference_diag.latest_timestamp_s is None else reference_diag.latest_timestamp_s,
+                    reference_diag.future_horizon_steps,
+                )
             reference_qpos = reference_window.current_sample().qpos
         else:
             retargeted = self.retargeter.retarget(human_frame)
@@ -368,6 +403,8 @@ class Sim2RealController:
         robot_state = self.robot.get_state()
         if self._fixed_ref_yaw_alignment:
             reference_qpos = self._align_velcmd_reference_yaw(reference_qpos, robot_state=robot_state)
+        raw_reference_qpos = np.asarray(reference_qpos, dtype=np.float64).copy()
+        reference_qpos = self._reference_qpos_smoother.apply(reference_qpos)
         qpos = self._qpos_interpolator.apply(reference_qpos)
 
         anchor_lin_vel_w = np.zeros(3, dtype=np.float32)
@@ -894,6 +931,7 @@ class Sim2RealController:
         self._motion_joint_vel_smoother.reset()
         self._motion_anchor_lin_vel_smoother.reset()
         self._motion_anchor_ang_vel_smoother.reset()
+        self._reference_qpos_smoother.reset()
         self._last_live_packet_seq = -1
 
     @staticmethod
