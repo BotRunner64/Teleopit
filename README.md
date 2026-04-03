@@ -23,6 +23,8 @@ pip install -e '.[train]'     # 训练
 pip install -e '.[sim2real]'  # 真机部署
 ```
 
+核心 mocap 可视化与离线渲染现已统一为 MuJoCo 后端，不再依赖 `matplotlib`；旧的 `bvh` 可视化命名已废弃。
+
 ## 下载模型和数据
 
 一键下载所有资源（模型、数据、GMR retargeting assets）：

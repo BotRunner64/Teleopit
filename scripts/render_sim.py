@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Render MuJoCo verification videos from BVH input.
 
-Produces THREE videos per BVH file, all at the BVH native frame rate
+Produces THREE videos per input clip, all at the input native frame rate
 with ALL frames rendered, so they have identical duration:
-  1. *_bvh.mp4      — Raw BVH skeleton (matplotlib 3D)
+  1. *_mocap.mp4    — Retargeting input skeleton (MuJoCo custom geoms)
   2. *_retarget.mp4  — GMR kinematic retargeting (qpos set directly, no physics)
-  3. *_sim2sim.mp4   — Full RL policy pipeline (BVH → GMR → obs → ONNX → PD → MuJoCo)
+  3. *_sim2sim.mp4   — Full RL policy pipeline (mocap input → GMR → obs → ONNX → PD → MuJoCo)
 
 Usage:
     MUJOCO_GL=egl python scripts/render_sim.py \
@@ -31,6 +31,13 @@ import imageio  # noqa: E402
 import mujoco  # noqa: E402
 
 from teleopit.debug.rollout_trace import RolloutTraceWriter  # noqa: E402
+from teleopit.sim.mocap_mujoco import (  # noqa: E402
+    MocapSkeletonSceneDrawer,
+    fit_mocap_camera,
+    create_mocap_viewer_model,
+    frame_positions_from_human_frame,
+    lift_positions_above_ground,
+)
 from teleopit.sim.reference_motion import OfflineReferenceMotion  # noqa: E402
 
 
@@ -116,7 +123,7 @@ def _load_configs(
     }
 
 
-def render_bvh(
+def render_mocap(
     bvh_path: Path,
     output_path: Path,
     width: int,
@@ -125,92 +132,49 @@ def render_bvh(
     max_frames: int = 0,
     bvh_format: str = "lafan1",
 ) -> None:
-    """Render raw BVH skeleton as 3D matplotlib animation."""
-    import matplotlib
+    """Render retargeting input skeleton with the same MuJoCo backend as live viewers."""
+    from teleopit.inputs import BVHInputProvider
 
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+    input_prov = BVHInputProvider(bvh_path=str(bvh_path), human_format=bvh_format)
+    model = create_mocap_viewer_model()
+    data = mujoco.MjData(model)
+    model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
+    model.vis.global_.offheight = max(model.vis.global_.offheight, height)
+    renderer = mujoco.Renderer(model, height=height, width=width)
+    cam = _make_camera()
+    drawer = MocapSkeletonSceneDrawer(input_prov.bone_parents)
 
-    from teleopit.retargeting.gmr.utils.lafan_vendor.extract import read_bvh
-    from teleopit.retargeting.gmr.utils.lafan_vendor import utils
-
-    data = read_bvh(str(bvh_path))
-    rotation_matrix = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]])
-    global_quats, global_pos = utils.quat_fk(data.quats, data.pos, data.parents)
-    scale_divisor = 1.0 if bvh_format == "hc_mocap" else 100.0
-    positions = np.einsum("fbi,ji->fbj", global_pos, rotation_matrix) / scale_divisor
-    # hc_mocap: lift skeleton to ground level (BVH root at Y=0, feet at Y≈-0.95)
-    if bvh_format == "hc_mocap":
-        positions[:, :, 2] += 0.9526
-    # hc_mocap 60fps is downsampled to 30fps by BVHInputProvider — match here
-    if bvh_format == "hc_mocap" and positions.shape[0] > 0:
-        raw_fps = round(1.0 / data.frametime) if data.frametime else 30
-        if raw_fps == 60:
-            positions = positions[::2]
-            global_quats = global_quats[::2]
-    parents = data.parents
-
-    num_frames = positions.shape[0]
+    num_frames = len(input_prov)
     if max_frames > 0:
         num_frames = min(num_frames, max_frames)
     duration = num_frames / fps
-    print(f"  [bvh] Rendering {num_frames} frames @ {fps}fps -> {duration:.1f}s video")
-
-    dpi = 100
-    fig_w, fig_h = width / dpi, height / dpi
-    fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi)
-    ax = fig.add_subplot(111, projection="3d")
-    ax.set_zlim(0.0, 2.0)
-    ax.set_xlabel("X")
-    ax.set_ylabel("Y")
-    ax.set_zlabel("Z")
-    ax.view_init(elev=20, azim=135)
+    print(f"  [mocap] Rendering {num_frames} frames @ {fps}fps -> {duration:.1f}s video")
 
     frames: list[np.ndarray] = []
     t0 = time.time()
-    dynamic_artists: list[Any] = []
 
     for step in range(num_frames):
-        for artist in dynamic_artists:
-            artist.remove()
-        dynamic_artists.clear()
+        human_frame = input_prov.get_frame()
+        positions = frame_positions_from_human_frame(input_prov.bone_names, human_frame)
+        positions = lift_positions_above_ground(positions)
 
-        pos = positions[step]
-        root = pos[0]
-
-        ax.set_xlim(root[0] - 1.0, root[0] + 1.0)
-        ax.set_ylim(root[1] - 1.0, root[1] + 1.0)
-        ax.set_title(f"BVH Skeleton — frame {step}")
-
-        for j in range(len(parents)):
-            p = parents[j]
-            if p < 0:
-                continue
-            xs = [pos[p, 0], pos[j, 0]]
-            ys = [pos[p, 1], pos[j, 1]]
-            zs = [pos[p, 2], pos[j, 2]]
-            dynamic_artists.extend(ax.plot(xs, ys, zs, "b-", linewidth=2))
-
-        dynamic_artists.append(
-            ax.scatter(pos[:, 0], pos[:, 1], pos[:, 2], c="red", s=15, depthshade=True)
-        )
-
-        fig.canvas.draw()
-        buf = fig.canvas.buffer_rgba()
-        img = np.asarray(buf)[:, :, :3].copy()
-        frames.append(img)
+        data.qvel[:] = 0
+        mujoco.mj_forward(model, data)
+        fit_mocap_camera(cam, positions)
+        renderer.update_scene(data, camera=cam)
+        drawer.draw(renderer.scene, positions)
+        frames.append(renderer.render().copy())
 
         if (step + 1) % 100 == 0:
             print(f"    Step {step + 1}/{num_frames} ({time.time() - t0:.1f}s)")
 
-    plt.close(fig)
+    renderer.close()
 
     if not frames:
         print("  WARNING: No frames rendered!")
         return
 
-    print(f"  [bvh] Done: {len(frames)} frames in {time.time() - t0:.1f}s")
+    print(f"  [mocap] Done: {len(frames)} frames in {time.time() - t0:.1f}s")
     _write_video(frames, output_path, fps)
 
 
@@ -480,9 +444,9 @@ def render_sim2sim(
 
 
 def main() -> None:
-    available_passes = ("bvh", "retarget", "sim2sim")
+    available_passes = ("mocap", "retarget", "sim2sim")
     parser = argparse.ArgumentParser(
-        description="Render BVH + retarget + sim2sim verification videos"
+        description="Render mocap-input + retarget + sim2sim verification videos"
     )
     parser.add_argument("--bvh", required=True, help="Path to a single BVH file")
     parser.add_argument(
@@ -517,7 +481,6 @@ def main() -> None:
         help="Render only the selected outputs (default: all)",
     )
     args = parser.parse_args()
-
     project_root = _find_project_root()
     bvh_path = Path(args.bvh)
     if not bvh_path.is_absolute():
@@ -544,19 +507,19 @@ def main() -> None:
 
     rendered_outputs: list[tuple[str, Path]] = []
 
-    if "bvh" in args.render:
-        bvh_out = output_dir / f"{stem}_bvh.mp4"
-        print(f"\n=== Pass 1: BVH Skeleton ===")
-        render_bvh(
+    if "mocap" in args.render:
+        mocap_out = output_dir / f"{stem}_mocap.mp4"
+        print(f"\n=== Pass 1: Mocap Input ===")
+        render_mocap(
             bvh_path=bvh_path,
-            output_path=bvh_out,
+            output_path=mocap_out,
             width=args.width,
             height=args.height,
             fps=fps,
             max_frames=max_frames,
             bvh_format=args.format,
         )
-        rendered_outputs.append(("BVH", bvh_out))
+        rendered_outputs.append(("Mocap", mocap_out))
 
     if "retarget" in args.render:
         retarget_out = output_dir / f"{stem}_retarget.mp4"

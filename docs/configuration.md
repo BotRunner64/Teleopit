@@ -23,7 +23,7 @@ Teleopit 使用 Hydra 组合配置。大多数运行入口都会从一个顶层 
 
 - `policy_hz`：策略推理频率
 - `pd_hz`：PD 控制频率
-- `viewers`：viewer 集合，支持 `bvh`、`retarget`、`sim2sim`、`all`、`none`
+- `viewers`：viewer 集合，支持 `mocap`、`retarget`、`sim2sim`、`all`、`none`
 - `realtime`：是否按 wall clock 限速
 - `num_steps`：运行步数；online 模式常用 `0` 表示无限循环
 - `transition_duration`：从当前姿态平滑过渡到 retarget 命令的时间（秒）
@@ -97,7 +97,12 @@ python scripts/run_sim.py controller.policy_path=policy.onnx viewers=none
 python scripts/run_sim.py \
     controller.policy_path=policy.onnx \
     'viewers=[retarget,sim2sim]'
+python scripts/run_sim.py \
+    controller.policy_path=policy.onnx \
+    'viewers=[mocap,retarget,sim2sim]'
 ```
+
+其中 `mocap` viewer 使用 MuJoCo 渲染，显示 retargeting 输入骨架。`bvh` 可视化命名已废弃，不再支持。
 
 ### 改 UDP 端口
 

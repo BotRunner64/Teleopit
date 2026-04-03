@@ -13,6 +13,12 @@ from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.inputs.realtime_packet import ControlEventType, RealtimeInputPacket
 from teleopit.debug.rollout_trace import RolloutTraceWriter
 from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Recorder, Retargeter, Robot
+from teleopit.sim.mocap_mujoco import (
+    MocapSkeletonSceneDrawer,
+    fit_mocap_camera,
+    create_mocap_viewer_model,
+    lift_positions_above_ground,
+)
 from teleopit.sim.reference_motion import (
     OfflineReferenceMotion,
     interpolate_human_frames,
@@ -133,7 +139,7 @@ def _robot_viewer_proc(
             pass
 
 
-def _bvh_viewer_proc(
+def _mocap_viewer_proc(
     parents_list: list[int],
     pos_arr: mp.Array,
     n_bones: int,
@@ -142,68 +148,48 @@ def _bvh_viewer_proc(
     win_x: int = -1,
     win_y: int = -1,
 ) -> None:
-    """Subprocess: BVH skeleton viewer using matplotlib 3D (matches render_sim.py)."""
-    import matplotlib
-    matplotlib.use("TkAgg")
-    import matplotlib.pyplot as plt
+    """Subprocess: mocap input viewer rendered with MuJoCo custom geoms."""
+    import mujoco
+    import mujoco.viewer
     import numpy as np
 
-    parents = parents_list
+    model = create_mocap_viewer_model()
+    data = mujoco.MjData(model)
+    drawer = MocapSkeletonSceneDrawer(parents_list)
 
-    fig = plt.figure(figsize=(6.4, 4.8))
-    ax = fig.add_subplot(111, projection="3d")
-    fig.canvas.manager.set_window_title("BVH Skeleton")
-
-    # Set window position via Tk geometry
     if win_x >= 0 and win_y >= 0:
         try:
-            fig.canvas.manager.window.wm_geometry(f"+{win_x}+{win_y}")
+            import glfw
+            glfw.init()
+            glfw.window_hint(glfw.POSITION_X, win_x)
+            glfw.window_hint(glfw.POSITION_Y, win_y)
         except Exception:
             pass
 
-    plt.ion()
-    plt.show(block=False)
+    viewer = mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False)
+    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = 0
+    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 0
+    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 0
+    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_COM] = 0
     alive.value = 1
 
     try:
-        while not shutdown.is_set():
-            # Check if window was closed
-            if not plt.fignum_exists(fig.number):
-                break
-
+        while viewer.is_running() and not shutdown.is_set():
             with pos_arr.get_lock():
                 pos = np.array(pos_arr[:n_bones * 3], dtype=np.float64).reshape(n_bones, 3)
+            pos = lift_positions_above_ground(pos)
 
-            ax.cla()
-            root = pos[0]
-            ax.set_xlim(root[0] - 1.0, root[0] + 1.0)
-            ax.set_ylim(root[1] - 1.0, root[1] + 1.0)
-            ax.set_zlim(0.0, 2.0)
-            ax.set_xlabel("X")
-            ax.set_ylabel("Y")
-            ax.set_zlabel("Z")
-            ax.set_title("BVH Skeleton")
-            ax.view_init(elev=20, azim=135)
-
-            for j in range(n_bones):
-                p = parents[j]
-                if p < 0:
-                    continue
-                ax.plot(
-                    [pos[p, 0], pos[j, 0]],
-                    [pos[p, 1], pos[j, 1]],
-                    [pos[p, 2], pos[j, 2]],
-                    "b-", linewidth=2,
-                )
-            ax.scatter(pos[:, 0], pos[:, 1], pos[:, 2], c="red", s=15, depthshade=True)
-
-            fig.canvas.draw_idle()
-            fig.canvas.flush_events()
-            plt.pause(0.03)
+            data.qvel[:] = 0
+            mujoco.mj_forward(model, data)
+            viewer.user_scn.ngeom = 0
+            drawer.draw(viewer.user_scn, pos)
+            fit_mocap_camera(viewer.cam, pos)
+            viewer.sync()
+            time.sleep(0.03)
     finally:
         alive.value = 0
         try:
-            plt.close(fig)
+            viewer.close()
         except Exception:
             pass
 
@@ -385,7 +371,7 @@ class SimulationLoop:
             robot=self.robot,
             viewers=self._viewers,
             start_robot_viewer=_start_robot_viewer,
-            bvh_viewer_proc=_bvh_viewer_proc,
+            mocap_viewer_proc=_mocap_viewer_proc,
         )
 
     def run(
@@ -396,7 +382,7 @@ class SimulationLoop:
         recorder: Recorder | None = None,
     ) -> dict[str, float | int]:
         self._step_runner.reset()
-        self._viewer_manager.ensure_bvh_viewer(cast(object, input_provider))
+        self._viewer_manager.ensure_mocap_viewer(cast(object, input_provider))
 
         steps_done = 0
         has_viewers = self._viewer_manager.has_viewers()
@@ -674,7 +660,7 @@ class SimulationLoop:
                 if cached_human_frame is not None and (
                     offline_reference is not None or new_bvh_frame or realtime_interpolated_input
                 ):
-                    self._viewer_manager.write_bvh(cast(object, input_provider), cached_human_frame)
+                    self._viewer_manager.write_mocap(cast(object, input_provider), cached_human_frame)
 
                 if debug_writer is not None:
                     controller_debug_inputs = {}

@@ -364,19 +364,11 @@ class BVHParser:
         return quats, positions, offsets, parents
 
     def bias_edit(self, rotations, positions):
-        import sys
-        from PyQt6.QtWidgets import QApplication
-        from .bvh_edit.CurveEditor import (
-            CurveEditorWindow,
+        del rotations, positions
+        raise RuntimeError(
+            "The matplotlib-based BVH curve editor has been removed. "
+            "Use the MuJoCo mocap viewers instead."
         )
-
-        # 示例数据：假设解析了BVH数据
-        app = QApplication(sys.argv)
-        window = CurveEditorWindow(self.names, rotations, parser=self)
-        window.show()
-        # app.exec()
-        # sys.exit(app.exec())
-        return window
 
     def compensate_displacements(self, quaternions, displacements):
         """

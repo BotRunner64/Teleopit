@@ -17,6 +17,7 @@ import msgpack
 import numpy as np
 from numpy.typing import NDArray
 
+from teleopit.inputs.pico4_provider import BODY_JOINT_NAMES, BODY_JOINT_PARENTS
 from teleopit.inputs.realtime_frame_cache import RealtimeFrameCache
 from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType, RealtimeInputPacket
 from teleopit.sim.reference_motion import interpolate_human_frames
@@ -109,6 +110,14 @@ class ZMQInputProvider:
     @property
     def human_format(self) -> str:
         return self._human_format
+
+    @property
+    def bone_names(self) -> list[str]:
+        return list(BODY_JOINT_NAMES)
+
+    @property
+    def bone_parents(self) -> NDArray[np.int32]:
+        return BODY_JOINT_PARENTS.copy()
 
     def is_available(self) -> bool:
         """True while the receiver thread is alive."""

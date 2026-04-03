@@ -31,6 +31,7 @@ python scripts/run_sim.py \
 python scripts/run_sim.py controller.policy_path=policy.onnx viewers=none
 python scripts/run_sim.py controller.policy_path=policy.onnx viewers=all
 python scripts/run_sim.py controller.policy_path=policy.onnx 'viewers=[retarget,sim2sim]'
+python scripts/run_sim.py controller.policy_path=policy.onnx 'viewers=[mocap,retarget,sim2sim]'
 python scripts/run_sim.py \
     controller.policy_path=policy.onnx \
     +num_steps=5000 \
@@ -74,7 +75,7 @@ python scripts/run_sim.py --config-name online \
 
 - `sim2sim`
 - `retarget`
-- `bvh`
+- `mocap`（retargeting 输入骨架，MuJoCo 自定义几何）
 - `all`
 - `none`
 
@@ -115,6 +116,8 @@ MUJOCO_GL=egl python scripts/render_sim.py \
     --format hc_mocap \
     --policy policy.onnx
 ```
+
+`render_sim.py` 的三路输出现在都走 MuJoCo 渲染链路；第一个 pass 是 `mocap` 输入骨架。旧的 `bvh` 可视化命名已移除。
 
 ## 继续阅读
 

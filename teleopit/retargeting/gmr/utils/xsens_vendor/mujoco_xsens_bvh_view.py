@@ -213,12 +213,12 @@ if __name__ == "__main__":
         rotations, positions = parser.parse(
             bvh_text, start=args.start, end=args.end, reset_to_zero=args.reset_to_zero
         )
-    from PyQt6.QtWidgets import QApplication
-    import sys
-
-    app = QApplication(sys.argv)
-    window = parser.bias_edit(rotations, positions)  # 假设rotations/positions预计算
-    window.show()
-    sys.exit(app.exec())
-    # d = mujoco_displayanimanim(bvh_file_name, scale)
-    # d.animate_bvh()
+    quats, positions, offsets, parents = parser._MOTION_data_post_processing(
+        rotations,
+        positions,
+        reset_to_zero=args.reset_to_zero,
+    )
+    anim = Anim(quats, positions, offsets, parents, parser.names)
+    viewer = mujoco_displayanimanim(parser, anim)
+    viewer._init_xml_data(save_flag=True)
+    viewer.animate_bvh(scale=scale)

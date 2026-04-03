@@ -59,7 +59,7 @@ scripts/
 ├── run_sim.py            # Offline / online sim2sim pipeline
 ├── run_sim2real.py       # G1 sim2real control; supports Pico4 via dedicated config names
 ├── send_bvh_udp.py       # UDP BVH test sender
-├── render_sim.py         # Render single BVH → 3 videos (bvh skeleton, retarget, sim2sim)
+├── render_sim.py         # Render single BVH → 3 MuJoCo videos (mocap input, retarget, sim2sim)
 ├── compute_ik_offsets.py # Compute IK quaternion offsets for new BVH formats
 └── setup_pico4.sh        # Pico4 environment setup helper
 train_mimic/              # Training package
@@ -92,7 +92,7 @@ train_mimic/              # Training package
 
 ```bash
 python scripts/run_sim.py controller.policy_path=policy.onnx viewers=sim2sim
-python scripts/run_sim.py controller.policy_path=policy.onnx 'viewers=[bvh,retarget,sim2sim]'
+python scripts/run_sim.py controller.policy_path=policy.onnx 'viewers=[mocap,retarget,sim2sim]'
 python scripts/run_sim.py controller.policy_path=policy.onnx viewers=all
 python scripts/run_sim.py controller.policy_path=policy.onnx 'viewers=[retarget,sim2sim]'
 python scripts/run_sim.py controller.policy_path=policy.onnx viewers=none
@@ -100,7 +100,8 @@ python scripts/run_sim.py controller.policy_path=policy.onnx viewers=none
 
 - `sim2sim`: MuJoCo physics result
 - `retarget`: kinematic retarget result
-- `bvh`: source BVH skeleton
+- `mocap`: retargeting input skeleton rendered by MuJoCo custom geoms
+- `bvh` viewer naming is removed; use `mocap`
 - All viewers run in separate subprocesses because GLFW/GLX only supports one window per process
 - Simulation exits when all active viewer windows are closed
 - `viewers` is the only supported viewer key; legacy `viewer` alias is removed

@@ -1,9 +1,33 @@
 from .lafan_vendor import utils
 from .xsens_vendor.BVHParser import BVHParser, Anim
 import numpy as np
-from .xsens_vendor.bvh_edit.CurveEditor import (
-    OffsetManager,
-)
+import json
+import os
+
+
+class OffsetManager:
+    def __init__(self, default_path="offsets.json"):
+        self.default_path = default_path
+
+    def load_offsets(self, path=None):
+        path = path or self.default_path
+        if os.path.exists(path):
+            try:
+                with open(path, "r") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    @staticmethod
+    def parse_to_window_format(joint_names, offsets_dict):
+        channel_names = ("X", "Y", "Z")
+        offsets = {}
+        for joint_index, joint_name in enumerate(joint_names):
+            joint_data = offsets_dict.get(joint_name, {})
+            for channel_index, channel_name in enumerate(channel_names):
+                offsets[(joint_index, channel_index)] = joint_data.get(channel_name, 0.0)
+        return offsets
 
 
 def bvh_parse(args):

@@ -231,12 +231,16 @@ class Sim2RealController:
         self._mocap_session = MocapSessionManager()
         self._last_commanded_motion_qpos: Float64Array | None = None
 
-        # ---- Startup ramp (matching GR00T JointSafetyMonitor pattern) ----
-        ramp_dur = float(cfg_get(cfg, "startup_ramp_duration", cfg_get(real_cfg, "startup_ramp_duration", 2.0)))
-        self._ramp_duration_steps: int = max(1, int(ramp_dur * self.policy_hz))
-        self._ramp_step: int = 0
-        self._ramp_start_positions: Float32Array | None = None
-        self._ramp_active: bool = False
+        # ---- Kp ramp (gradually increase PD gains after episode-reset) ----
+        # Fall back to legacy startup_ramp_duration for backward compatibility.
+        _legacy_ramp_dur = cfg_get(cfg, "startup_ramp_duration", cfg_get(real_cfg, "startup_ramp_duration", 2.0))
+        kp_ramp_dur = float(cfg_get(cfg, "kp_ramp_duration", _legacy_ramp_dur))
+        self._kp_ramp_duration_steps: int = max(1, int(kp_ramp_dur * self.policy_hz))
+        self._kp_ramp_step: int = 0
+        self._kp_ramp_active: bool = False
+        self._kp_nominal = np.asarray(cfg_get(real_cfg, "kp_real", [100] * self.num_actions), dtype=np.float32)
+        self._kd_nominal = np.asarray(cfg_get(real_cfg, "kd_real", [2] * self.num_actions), dtype=np.float32)
+        self._kp_ramp_floor_ratio: float = float(cfg_get(cfg, "kp_ramp_floor_ratio", 0.1))
 
         # ---- Joint safety (inspired by GR00T JointSafetyMonitor) ----
         self._joint_vel_limit: float = float(
@@ -338,14 +342,9 @@ class Sim2RealController:
 
         action = self.policy.compute_action(obs)
         target_dof_pos = self.policy.get_target_dof_pos(action)
-
-        # Apply startup ramp: smoothly blend from locked position to policy output
-        target_dof_pos = self._apply_startup_ramp(target_dof_pos)
-
-        # Clip to joint limits if configured
         target_dof_pos = self._clip_to_joint_limits(target_dof_pos)
 
-        self.robot.send_positions(target_dof_pos)
+        self._send_positions_with_kp_ramp(target_dof_pos)
 
         self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
         self._last_retarget_qpos = qpos.copy()
@@ -470,13 +469,9 @@ class Sim2RealController:
 
         action = self.policy.compute_action(obs)
         target_dof_pos = self.policy.get_target_dof_pos(action)
-
-        # Apply startup ramp and joint limits
-        target_dof_pos = self._apply_startup_ramp(target_dof_pos)
         target_dof_pos = self._clip_to_joint_limits(target_dof_pos)
 
-        # Update position targets (250Hz thread handles publishing)
-        self.robot.send_positions(target_dof_pos)
+        self._send_positions_with_kp_ramp(target_dof_pos)
 
         # Update state
         self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
@@ -535,33 +530,47 @@ class Sim2RealController:
     # Startup ramp and safety
     # ------------------------------------------------------------------
 
-    def _apply_startup_ramp(self, target_dof_pos: Float32Array) -> Float32Array:
-        """Smoothly ramp from locked position to policy output (matching GR00T pattern).
+    def _compute_kp_ramp_gains(self) -> tuple[Float32Array, Float32Array] | None:
+        """Return (kp, kd) for current Kp-ramp step, or None if ramp inactive.
 
-        During the first ``_ramp_duration_steps`` after entering STANDING,
-        linearly interpolate between the initial joint positions and the
-        policy-commanded targets.  This prevents the step discontinuity
-        that causes violent shaking on the NX board.
+        Linearly ramps Kp from ``floor_ratio * kp_nominal`` to ``kp_nominal``
+        over ``_kp_ramp_duration_steps``.  Kd stays at nominal throughout to
+        provide damping from the first step.  Unlike the old position ramp this
+        does NOT modify the policy's target position, so the action-state
+        causal chain seen by the TemporalCNN stays consistent with training.
         """
-        if not self._ramp_active:
-            return target_dof_pos
+        if not self._kp_ramp_active:
+            return None
 
-        if self._ramp_start_positions is None:
-            # Should not happen, but be safe
-            self._ramp_active = False
-            return target_dof_pos
+        factor = min(1.0, self._kp_ramp_step / self._kp_ramp_duration_steps)
+        kp = self._kp_nominal * (self._kp_ramp_floor_ratio + (1.0 - self._kp_ramp_floor_ratio) * factor)
 
-        ramp_factor = min(1.0, self._ramp_step / self._ramp_duration_steps)
-        ramped = self._ramp_start_positions + ramp_factor * (
-            target_dof_pos - self._ramp_start_positions
+        self._kp_ramp_step += 1
+        if self._kp_ramp_step >= self._kp_ramp_duration_steps:
+            self._kp_ramp_active = False
+            logger.info("Kp ramp complete (%d steps)", self._kp_ramp_duration_steps)
+
+        return np.asarray(kp, dtype=np.float32), self._kd_nominal.copy()
+
+    def _start_kp_ramp(self) -> None:
+        """Arm the Kp ramp for gradual PD gain increase."""
+        self._kp_ramp_step = 0
+        self._kp_ramp_active = True
+        logger.info(
+            "Kp ramp armed: %d steps (%.1fs), floor_ratio=%.2f",
+            self._kp_ramp_duration_steps,
+            self._kp_ramp_duration_steps / self.policy_hz,
+            self._kp_ramp_floor_ratio,
         )
 
-        self._ramp_step += 1
-        if self._ramp_step >= self._ramp_duration_steps:
-            self._ramp_active = False
-            logger.info("Startup ramp complete (%d steps)", self._ramp_duration_steps)
-
-        return np.asarray(ramped, dtype=np.float32)
+    def _send_positions_with_kp_ramp(self, target_dof_pos: Float32Array) -> None:
+        """Send position targets, applying Kp ramp gains if active."""
+        gains = self._compute_kp_ramp_gains()
+        if gains is not None:
+            kp, kd = gains
+            self.robot.send_positions(target_dof_pos, kp=kp, kd=kd)
+        else:
+            self.robot.send_positions(target_dof_pos)
 
     def _clip_to_joint_limits(self, target_dof_pos: Float32Array) -> Float32Array:
         """Clip target positions to configured joint limits."""
@@ -644,32 +653,25 @@ class Sim2RealController:
         self.robot.lock_all_joints()
         time.sleep(0.3)
 
-        # Initialize policy state
+        # Episode-reset semantics: reference = current robot state, full policy reset.
+        # This matches training where robot is teleported to reference position at
+        # episode start, so policy sees reference ≈ robot state with clean history.
         state = self.robot.get_state()
         init_qpos = np.zeros(36, dtype=np.float64)
         init_qpos[3:7] = state.quat.astype(np.float64)
         init_qpos[7:36] = state.qpos.astype(np.float64)
         self._last_retarget_qpos = init_qpos
         self._last_reference_qpos = None
-
-        # Activate startup ramp: smoothly blend from current to policy targets
-        self._ramp_start_positions = state.qpos.copy().astype(np.float32)
-        self._ramp_step = 0
-        self._ramp_active = True
-        logger.info(
-            "Startup ramp armed: %d steps (%.1fs)",
-            self._ramp_duration_steps, self._ramp_duration_steps / self.policy_hz,
-        )
         self._mocap_session.reset()
         self._last_commanded_motion_qpos = None
 
-        if prev_mode == RobotMode.MOCAP:
-            # Returning from MOCAP: soft reset to keep policy observation
-            # continuity (history buffer, _last_action unchanged).
-            self._reset_mocap_reference_state()
-        else:
-            # First entry from IDLE or recovery from DAMPING: hard reset.
-            self._reset_policy_state()
+        # Always do a full policy reset (episode-reset semantics) to ensure
+        # the TemporalCNN history is clean and action-state causality holds.
+        self._reset_policy_state()
+
+        # Kp ramp: gradually increase PD gains to avoid torque spike.
+        # Unlike the old position ramp, this does NOT break action-state causality.
+        self._start_kp_ramp()
 
         self._mocap_reentry_armed = prev_mode == RobotMode.MOCAP
 
@@ -735,25 +737,27 @@ class Sim2RealController:
     def _transition_to_mocap(self) -> None:
         """Switch from STANDING -> MOCAP.
 
-        Already in debug mode from STANDING, so just read current state
-        and start interpolation for smooth transition.
+        Episode-reset + reference-side interpolation.  The policy state is
+        fully reset (clean history, zero last_action) so the TemporalCNN
+        starts fresh.  A QposInterpolator smoothly blends the *reference*
+        from the current robot state toward incoming live mocap so the policy
+        never sees a large instantaneous tracking error.
         """
-        # Read current state as initial reference for interpolation
         state = self.robot.get_state()
         init_qpos = np.zeros(36, dtype=np.float64)
         init_qpos[3:7] = state.quat.astype(np.float64)
         init_qpos[7:36] = state.qpos.astype(np.float64)
         self._last_retarget_qpos = init_qpos
-        self._last_reference_qpos = None
-        self._reset_reference_alignment()
-        self._arm_qpos_transition(init_qpos, duration_s=self._mocap_transition_duration)
-        # Soft reset: only clear mocap reference state, keep policy history and
-        # _last_action intact so that the TemporalCNN sees a continuous
-        # observation stream across the Standing -> Mocap transition.
-        self._reset_mocap_reference_state()
-        self._mocap_session.reset()
         self._last_commanded_motion_qpos = init_qpos.copy()
         self._mocap_reentry_armed = False
+
+        # Full episode reset: clean policy state, alignment, timeline.
+        self._reset_policy_state()
+
+        # Reference-side interpolation: smoothly blend reference from current
+        # robot state toward incoming live mocap.  This is done AFTER the
+        # episode reset so the interpolator starts with a clean slate.
+        self._arm_qpos_transition(init_qpos, duration_s=self._mocap_transition_duration)
 
         self.mode = RobotMode.MOCAP
         logger.info("Mode -> MOCAP (tracking motion commands)")
@@ -939,7 +943,10 @@ class Sim2RealController:
         return obs
 
     def _reset_policy_state(self) -> None:
+        """Full episode-reset: clear all policy state so the TemporalCNN sees
+        a clean start identical to training episode reset."""
         self._last_action = np.zeros(self.num_actions, dtype=np.float32)
+        self._qpos_interpolator.reset()
         self._reset_mocap_reference_state()
         self._reset_reference_alignment()
         self._mocap_session.reset()
@@ -1012,23 +1019,54 @@ class Sim2RealController:
                 self._pause_active_mocap()
 
     def _pause_active_mocap(self) -> None:
+        # Episode-reset semantics: treat pause as a new episode starting at
+        # the hold pose.  Full policy reset ensures TemporalCNN history is
+        # clean -- no stale frames from the previous motion that would create
+        # an OOD discontinuity (reference jumps from motion to static).
         hold_qpos = self._resolve_mocap_hold_qpos()
-        self._mocap_session.pause(hold_qpos)
-        self._qpos_interpolator.reset()
         self._last_retarget_qpos = hold_qpos.copy()
         self._last_reference_qpos = hold_qpos.copy()
         self._last_commanded_motion_qpos = hold_qpos.copy()
-        logger.info("Mocap session -> PAUSED")
+
+        # Reset policy state (clears last_action, history, smoothers, etc.)
+        # Note: _reset_policy_state resets _mocap_session to ACTIVE, so we
+        # must call pause() *after* it to set the correct PAUSED state.
+        self._reset_policy_state()
+        self._mocap_session.pause(hold_qpos)
+        logger.info("Mocap session -> PAUSED (episode-reset)")
 
     def _resume_paused_mocap(self) -> None:
-        start_qpos = self._mocap_session.begin_resume()
-        self._reset_mocap_reference_state(warmup_steps=self._pause_resume_warmup_steps)
-        if self._pause_reset_alignment_on_resume:
-            self._reset_reference_alignment()
-        self._last_retarget_qpos = start_qpos.copy()
-        self._last_commanded_motion_qpos = start_qpos.copy()
-        self._arm_qpos_transition(start_qpos, duration_s=self._pause_resume_transition_duration)
-        logger.info("Mocap session -> RESUMING")
+        # Episode-reset + reference-side interpolation.
+        #
+        # 1. Reference starts at current robot state (not hold_qpos) so there
+        #    is no reference-state mismatch at the moment of resume.
+        # 2. Full policy reset ensures clean TemporalCNN history.
+        # 3. QposInterpolator smoothly blends reference from robot state
+        #    toward incoming live mocap so the policy never sees a large
+        #    instantaneous tracking error.
+
+        state = self.robot.get_state()
+        resume_qpos = np.zeros(36, dtype=np.float64)
+        resume_qpos[3:7] = state.quat.astype(np.float64)
+        resume_qpos[7:36] = state.qpos.astype(np.float64)
+
+        self._last_retarget_qpos = resume_qpos.copy()
+        self._last_commanded_motion_qpos = resume_qpos.copy()
+
+        # Full policy reset -- clean history, zero last_action, smoothers,
+        # timeline, alignment.  Also resets _mocap_session to ACTIVE.
+        self._reset_policy_state()
+
+        # Override warmup steps for the resume-specific buffer warmup.
+        if self._reference_manager is not None:
+            self._reference_manager.set_warmup_steps(self._pause_resume_warmup_steps)
+            self._reference_manager.reset()
+
+        # Reference-side interpolation: smoothly blend from current robot
+        # state toward incoming live mocap.
+        self._arm_qpos_transition(resume_qpos, duration_s=self._pause_resume_transition_duration)
+
+        logger.info("Mocap session -> ACTIVE (episode-reset + reference interpolation)")
 
     def _resolve_mocap_hold_qpos(self) -> Float64Array:
         if self._last_commanded_motion_qpos is not None:
@@ -1067,10 +1105,9 @@ class Sim2RealController:
 
         action = self.policy.compute_action(obs)
         target_dof_pos = self.policy.get_target_dof_pos(action)
-        target_dof_pos = self._apply_startup_ramp(target_dof_pos)
         target_dof_pos = self._clip_to_joint_limits(target_dof_pos)
 
-        self.robot.send_positions(target_dof_pos)
+        self._send_positions_with_kp_ramp(target_dof_pos)
         self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
         self._last_retarget_qpos = qpos.copy()
         self._last_reference_qpos = qpos.copy()

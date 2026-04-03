@@ -493,19 +493,19 @@ class ViewerManager:
         robot: Robot,
         viewers: set[str],
         start_robot_viewer: Callable[[str, int, bool, str, int, int], tuple[mp.Process, mp.Array, mp.Value, mp.Event]],
-        bvh_viewer_proc: Callable[[list[int], mp.Array, int, mp.Event, mp.Value, int, int], None],
+        mocap_viewer_proc: Callable[[list[int], mp.Array, int, mp.Event, mp.Value, int, int], None],
     ) -> None:
         self._robot = robot
         self._viewers = set(viewers)
         self._start_robot_viewer = start_robot_viewer
-        self._bvh_viewer_proc = bvh_viewer_proc
+        self._mocap_viewer_proc = mocap_viewer_proc
         self._sub_viewers: dict[str, tuple[mp.Process, mp.Array, mp.Value, mp.Event]] = {}
-        self._bvh_pos_arr: mp.Array | None = None
-        self._bvh_n_bones = 0
+        self._mocap_pos_arr: mp.Array | None = None
+        self._mocap_n_bones = 0
 
         xml_path = getattr(self._robot, "xml_path", None)
         model = getattr(self._robot, "model", None)
-        win_positions = {"bvh": (50, 50), "retarget": (900, 50), "sim2sim": (1750, 50)}
+        win_positions = {"mocap": (50, 50), "retarget": (900, 50), "sim2sim": (1750, 50)}
 
         if xml_path is None or model is None:
             return
@@ -551,8 +551,8 @@ class ViewerManager:
                 break
             time.sleep(0.1)
 
-    def ensure_bvh_viewer(self, input_provider: object) -> None:
-        if "bvh" not in self._viewers or "bvh" in self._sub_viewers:
+    def ensure_mocap_viewer(self, input_provider: object) -> None:
+        if "mocap" not in self._viewers or "mocap" in self._sub_viewers:
             return
 
         bone_names: list[str] | None = getattr(input_provider, "bone_names", None)
@@ -565,14 +565,14 @@ class ViewerManager:
         shutdown = mp.Event()
         alive = mp.Value("i", 0)
         proc = mp.Process(
-            target=self._bvh_viewer_proc,
+            target=self._mocap_viewer_proc,
             args=(list(bone_parents.astype(int)), pos_arr, n_bones, shutdown, alive, 50, 50),
             daemon=True,
         )
         proc.start()
-        self._sub_viewers["bvh"] = (proc, pos_arr, alive, shutdown)
-        self._bvh_pos_arr = pos_arr
-        self._bvh_n_bones = n_bones
+        self._sub_viewers["mocap"] = (proc, pos_arr, alive, shutdown)
+        self._mocap_pos_arr = pos_arr
+        self._mocap_n_bones = n_bones
 
     def write_sim2sim(self, robot: Robot) -> None:
         sim2sim_entry = self._sub_viewers.get("sim2sim")
@@ -594,22 +594,22 @@ class ViewerManager:
         with arr.get_lock():
             arr[:len(retarget_viewer_qpos)] = retarget_viewer_qpos.tolist()
 
-    def write_bvh(self, input_provider: object, human_frame: dict[str, tuple[Any, Any]]) -> None:
-        bvh_entry = self._sub_viewers.get("bvh")
-        if bvh_entry is None or not bvh_entry[2].value or self._bvh_pos_arr is None:
+    def write_mocap(self, input_provider: object, human_frame: dict[str, tuple[Any, Any]]) -> None:
+        mocap_entry = self._sub_viewers.get("mocap")
+        if mocap_entry is None or not mocap_entry[2].value or self._mocap_pos_arr is None:
             return
 
         bone_names_attr: list[str] | None = getattr(input_provider, "bone_names", None)
         if bone_names_attr is None:
             return
 
-        n = self._bvh_n_bones
+        n = self._mocap_n_bones
         pos_flat = np.zeros(n * 3, dtype=np.float64)
         for i, bname in enumerate(bone_names_attr):
             if bname in human_frame:
                 pos_flat[i * 3:(i + 1) * 3] = human_frame[bname][0]
-        with self._bvh_pos_arr.get_lock():
-            self._bvh_pos_arr[:n * 3] = pos_flat.tolist()
+        with self._mocap_pos_arr.get_lock():
+            self._mocap_pos_arr[:n * 3] = pos_flat.tolist()
 
     def shutdown(self) -> None:
         for _, _, _, shutdown in self._sub_viewers.values():

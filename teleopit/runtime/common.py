@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 
-_VALID_VIEWERS = frozenset({"bvh", "retarget", "sim2sim"})
+_VALID_VIEWERS = frozenset({"mocap", "retarget", "sim2sim"})
 
 
 def cfg_get(cfg: Any, key: str, default: Any = None) -> Any:

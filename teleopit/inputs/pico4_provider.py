@@ -35,6 +35,16 @@ BODY_JOINT_NAMES = [
     "Neck", "Left_Collar", "Right_Collar", "Head", "Left_Shoulder", "Right_Shoulder",
     "Left_Elbow", "Right_Elbow", "Left_Wrist", "Right_Wrist", "Left_Hand", "Right_Hand",
 ]
+BODY_JOINT_PARENTS = np.array(
+    [
+        -1,
+        0, 0, 0, 1, 2,
+        3, 4, 5, 6, 7, 8,
+        9, 12, 12, 12, 13, 14,
+        16, 17, 18, 19, 20, 21,
+    ],
+    dtype=np.int32,
+)
 
 HumanFrame = Dict[str, Tuple[NDArray[np.float64], NDArray[np.float64]]]
 
@@ -127,6 +137,14 @@ class Pico4InputProvider:
     @property
     def human_format(self) -> str:
         return self._human_format
+
+    @property
+    def bone_names(self) -> list[str]:
+        return list(BODY_JOINT_NAMES)
+
+    @property
+    def bone_parents(self) -> NDArray[np.int32]:
+        return BODY_JOINT_PARENTS.copy()
 
     def is_available(self) -> bool:
         """Whether the provider is healthy and can be polled.
