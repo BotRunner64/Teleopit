@@ -81,7 +81,7 @@ sources:
 - `val_percent`: 基于 `clip_id` hash 的验证集比例
 - `hash_salt`: 可选 split salt
 - `preprocess.normalize_root_xy`: 是否把根 body 首帧 `xy` 平移到原点
-- `preprocess.ground_align`: `none` / `clip_min_foot` / `frame_min_foot`
+- `preprocess.ground_align`: `none` / `clip_min_foot`
 - `preprocess.min_frames`: clip 最短长度约束
 - `preprocess.max_root_lin_vel` / `min_peak_body_height` / `max_all_off_ground_s`: 基础过滤阈值
 - `sources[].name`: source 名称；在会生成 clip 中间产物的路径里，它也会成为 `clips/<source>/` 子目录名

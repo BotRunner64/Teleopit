@@ -9,7 +9,7 @@ import numpy as np
 
 from train_mimic.data.dataset_lib import inspect_clip_dict
 
-GROUND_ALIGN_MODES = {"none", "clip_min_foot", "frame_min_foot"}
+GROUND_ALIGN_MODES = {"none", "clip_min_foot"}
 
 
 @dataclass(frozen=True)
@@ -129,8 +129,6 @@ def preprocess_clip_dict(
         foot_z = body_pos_w[:, foot_indices, 2]
         if spec.ground_align == "clip_min_foot":
             body_pos_w[..., 2] -= float(np.min(foot_z))
-        elif spec.ground_align == "frame_min_foot":
-            body_pos_w[..., 2] -= np.min(foot_z, axis=1, keepdims=True)
 
     if spec.max_root_lin_vel is not None:
         assert root_index is not None

@@ -955,6 +955,12 @@ class Sim2RealController:
         if callable(reset_policy):
             reset_policy()
         self.obs_builder.reset()
+        # Reset the IK solver so the warm-start configuration does not get
+        # stuck in a local minimum far from the new target after a
+        # discontinuity (pause/resume, mode switch).
+        reset_retargeter = getattr(self.retargeter, "reset", None)
+        if callable(reset_retargeter):
+            reset_retargeter()
 
     def _reset_mocap_reference_state(self, *, warmup_steps: int | None = None) -> None:
         """Reset mocap-specific reference state without disrupting policy observation continuity.

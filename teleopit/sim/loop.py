@@ -15,8 +15,9 @@ from teleopit.debug.rollout_trace import RolloutTraceWriter
 from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Recorder, Retargeter, Robot
 from teleopit.sim.mocap_mujoco import (
     MocapSkeletonSceneDrawer,
-    fit_mocap_camera,
+    compute_ground_lift_offset,
     create_mocap_viewer_model,
+    fit_mocap_camera,
     lift_positions_above_ground,
 )
 from teleopit.sim.reference_motion import (
@@ -172,12 +173,15 @@ def _mocap_viewer_proc(
     viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 0
     viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_COM] = 0
     alive.value = 1
+    ground_lift_offset: float | None = None
 
     try:
         while viewer.is_running() and not shutdown.is_set():
             with pos_arr.get_lock():
                 pos = np.array(pos_arr[:n_bones * 3], dtype=np.float64).reshape(n_bones, 3)
-            pos = lift_positions_above_ground(pos)
+            if ground_lift_offset is None:
+                ground_lift_offset = compute_ground_lift_offset(pos)
+            pos = lift_positions_above_ground(pos, lift_offset=ground_lift_offset)
 
             data.qvel[:] = 0
             mujoco.mj_forward(model, data)
@@ -516,6 +520,11 @@ class SimulationLoop:
                                 start_qpos,
                                 duration_s=self._pause_resume_transition_duration,
                             )
+                            # Reset IK solver so the warm-start configuration
+                            # does not get stuck after the pose discontinuity.
+                            _reset_retargeter = getattr(retargeter, "reset", None)
+                            if callable(_reset_retargeter):
+                                _reset_retargeter()
                             previous_live_human_frame = None
                             previous_live_retargeted = None
                             previous_live_timestamp = None

@@ -97,18 +97,29 @@ def frame_positions_from_human_frame(
     return positions
 
 
-def lift_positions_above_ground(positions: Float64Array) -> Float64Array:
-    """Shift all positions up so the lowest joint sits at Z=0."""
+def compute_ground_lift_offset(positions: Float64Array) -> float:
+    """Compute a non-negative Z lift so the lowest joint sits at Z=0."""
     pos = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
     if pos.size == 0:
-        return pos
+        return 0.0
     finite_mask = np.all(np.isfinite(pos), axis=1)
     if not np.any(finite_mask):
-        return pos
+        return 0.0
     min_z = float(np.min(pos[finite_mask, 2]))
-    if min_z < 0.0:
+    return max(-min_z, 0.0)
+
+
+def lift_positions_above_ground(
+    positions: Float64Array,
+    *,
+    lift_offset: float | None = None,
+) -> Float64Array:
+    """Shift all positions up by a fixed lift offset or the current-frame minimum."""
+    pos = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    offset = compute_ground_lift_offset(pos) if lift_offset is None else float(lift_offset)
+    if offset > 0.0:
         pos = pos.copy()
-        pos[:, 2] -= min_z
+        pos[:, 2] += offset
     return pos
 
 
