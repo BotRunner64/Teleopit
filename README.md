@@ -85,6 +85,7 @@ python train_mimic/scripts/save_onnx.py \
 |------|------|------|
 | **Pico 4 VR 遥操作** | `python scripts/run_sim.py --config-name pico4_sim ...` | **[Pico VR 部署](docs/pico4.md)** |
 | **Pico 4 真机部署** | `python scripts/run_sim2real.py --config-name pico4_sim2real ...` | **[Pico VR 部署](docs/pico4.md)** |
+| **G1 Onboard（NX 机载）** | `python scripts/run_onboard_sim2real.py ...` | [sim2real.md](docs/sim2real.md) |
 | UDP 实时 sim2sim | `python scripts/run_sim.py --config-name online ...` | [inference.md](docs/inference.md) |
 | G1 真机部署（UDP） | `python scripts/run_sim2real.py ...` | [sim2real.md](docs/sim2real.md) |
 | 训练与导出 | `python train_mimic/scripts/train.py ...` | [training.md](docs/training.md) |
@@ -95,6 +96,7 @@ Pico 真机遥操作支持手柄暂停/恢复：默认按 `A` 冻结当前跟踪
 
 - **[Pico VR 部署](docs/pico4.md)**：Pico 4 / Pico 4 Ultra 全身追踪遥操作完整指南
 - [真机部署](docs/sim2real.md)：Unitree G1 部署、状态机、UDP 输入
+- [G1 Bridge SDK](docs/g1_bridge_sdk.md)：C++ DDS 桥接库安装与 API 说明
 - [推理与运行](docs/inference.md)：离线/在线推理、viewer、录制
 - [训练](docs/training.md)：训练、评估、导出 ONNX
 - [数据集](docs/dataset.md)：数据下载与自定义构建
@@ -103,6 +105,10 @@ Pico 真机遥操作支持手柄暂停/恢复：默认按 `A` 冻结当前跟踪
 - [架构](docs/architecture.md)：系统边界与技术规格
 
 ## 更新日志
+
+### v0.2.0 (2026-04-03)
+
+机载 Onboard Sim2Real（G1 NX + ZMQ Pico4）、G1 Bridge SDK（C++ DDS pybind11）、独立 Standing 控制器（RL policy + timing 诊断）、实时 mocap 缓冲与 catch-up 优化。
 
 ### v0.1.1 (2025-03-28)
 

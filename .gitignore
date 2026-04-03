@@ -62,6 +62,7 @@ venv.bak/
 *.h5
 *.onnx
 track.pt
+track_*.pt
 assets/demo.gif
 assets/demo.mp4
 /data/
