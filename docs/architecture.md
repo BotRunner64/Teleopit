@@ -5,7 +5,7 @@
 ## 运行主线
 
 ```text
-InputProvider (BVH file / UDP realtime / Pico4)
+InputProvider (BVH file / Pico4)
     -> Retargeter (GMR)
     -> ObservationBuilder (166D)
     -> Controller (dual-input TemporalCNN ONNX)
@@ -36,7 +36,7 @@ train_mimic/scripts/data
 
 - `teleopit/interfaces.py` — 稳定协议：`InputProvider`、`Retargeter`、`Controller`、`Robot`、`ObservationBuilder`、`Recorder`
 - `teleopit/runtime/` — 配置解析、路径归一、组件装配、CLI 公共校验
-- `teleopit/pipeline.py` — offline / online sim 的轻量 façade
+- `teleopit/pipeline.py` — offline sim 的轻量 façade
 - `teleopit/sim2real/controller.py` — 真机状态机与控制行为
 - `teleopit/controllers/observation.py` — `ObservationBuilder`
 - `teleopit/controllers/rl_policy.py` — 只接受 166D 双输入 ONNX
@@ -56,7 +56,7 @@ train_mimic/scripts/data
 
 ## Realtime 配置
 
-在线 realtime 路径会先把 retarget 后的 `qpos` 写入短时 reference timeline，再按控制时刻从 timeline 采样 reference window。相关配置入口：
+Pico4 / ZMQ realtime 路径会先把 retarget 后的 `qpos` 写入短时 reference timeline，再按控制时刻从 timeline 采样 reference window。相关配置入口：
 
 - `retarget_buffer_enabled` / `retarget_buffer_window_s` / `retarget_buffer_delay_s`
 - `reference_steps`
@@ -73,6 +73,6 @@ train_mimic/scripts/data
 
 ## 当前公共面
 
-- 稳定运行模式：offline sim2sim、UDP online sim2sim、Pico4 sim2sim、G1 sim2real
+- 稳定运行模式：offline sim2sim、离线 sim2real 播放、Pico4 sim2sim、G1 sim2real
 - 稳定训练入口：`train.py`、`play.py`、`benchmark.py`、`save_onnx.py`
 - 稳定数据入口：`build_dataset.py`、`split_shards.py`

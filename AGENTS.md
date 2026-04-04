@@ -11,7 +11,7 @@ Config: Hydra/OmegaConf YAML files in `teleopit/configs/`
 ## Architecture
 
 ```
-InputProvider (BVH file / UDP realtime / Pico4 VR) → Retargeter (GMR) → ObservationBuilder (166D) → Controller (dual-input TemporalCNN ONNX) → Robot (MuJoCo + PD / Unitree SDK)
+InputProvider (BVH file / Pico4 VR) → Retargeter (GMR) → ObservationBuilder (166D) → Controller (dual-input TemporalCNN ONNX) → Robot (MuJoCo + PD / Unitree SDK)
 ```
 
 Module-internal isolation: all modules run in-process and communicate via `InProcessBus` (zero-copy). Core interfaces are defined as `typing.Protocol` in `teleopit/interfaces.py`.
@@ -33,12 +33,11 @@ teleopit/                 # Core inference package
 ├── bus/                  # InProcessBus message pub/sub
 ├── configs/              # Hydra YAML configs
 │   ├── default.yaml      # Offline sim2sim
-│   ├── online.yaml       # Online sim2sim
 │   ├── sim2real.yaml     # sim2real
 │   ├── robot/g1.yaml     # G1 robot: XML path, PD gains, default angles, action dims
 │   ├── controller/rl_policy.yaml
 │   ├── input/bvh.yaml    # Offline BVH file input
-│   └── input/udp_bvh.yaml # UDP realtime BVH input (reference_bvh, port, timeout)
+│   └── input/pico4.yaml  # Pico4 realtime input
 ├── controllers/
 │   ├── rl_policy.py      # RLPolicyController — single-input or dual-input ONNX inference with fail-fast dim checks
 │   └── observation.py    # VelCmdObservationBuilder
@@ -46,7 +45,7 @@ teleopit/                 # Core inference package
 │   ├── bvh_provider.py       # BVHInputProvider — offline BVH file
 │   ├── pico4_provider.py     # Pico4InputProvider — xrobotoolkit_sdk realtime body tracking input
 │   ├── rot_utils.py          # Quaternion helpers for input-space transforms
-│   └── udp_bvh_provider.py   # UDPBVHInputProvider — realtime UDP BVH receiver
+│   └── zmq_provider.py       # ZMQInputProvider — onboard Pico4 realtime receiver
 ├── retargeting/
 │   ├── core.py           # RetargetingModule + extract_mimic_obs()
 │   └── gmr/              # Self-contained GMR code; heavyweight assets are downloaded into an ignored path
@@ -56,9 +55,8 @@ teleopit/                 # Core inference package
 │   └── loop.py           # SimulationLoop — PD control at 1000Hz, policy at 50Hz
 └── recording/            # HDF5Recorder
 scripts/
-├── run_sim.py            # Offline / online sim2sim pipeline
-├── run_sim2real.py       # G1 sim2real control; supports Pico4 via dedicated config names
-├── send_bvh_udp.py       # UDP BVH test sender
+├── run_sim.py            # Offline sim2sim pipeline
+├── run_sim2real.py       # G1 sim2real control; supports offline BVH playback and Pico4
 ├── render_sim.py         # Render single BVH → 3 MuJoCo videos (mocap input, retarget, sim2sim)
 ├── compute_ik_offsets.py # Compute IK quaternion offsets for new BVH formats
 └── setup_pico4.sh        # Pico4 environment setup helper
@@ -115,21 +113,20 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 
 `default_dof_pos` comes from `robot/g1.yaml` `default_angles`. `TeleopPipeline` automatically propagates `robot_cfg.default_angles` into `controller_cfg.default_dof_pos`. If this propagation is missing, knees and elbows lose their standing offset and the robot cannot balance.
 
-### Online Sim2Sim (UDP realtime input)
-- Realtime BVH arrives as one BVH motion line per UDP packet
-- `UDPBVHInputProvider` parses skeleton metadata from `reference_bvh`
-- A daemon thread receives packets and stores only the latest processed frame
-- `get_frame()` always returns the newest frame; `is_available()` stays `True`
-- `fps=30` is fixed for the UDP provider
-- Realtime control writes retargeted `qpos` into a short reference timeline and samples from that timeline at `time.monotonic() - retarget_buffer_delay_s`
-- `reference_steps=[0]` is the default production path
+### Offline Playback
+- Offline sim2sim and default sim2real both read `input.bvh_file` directly; no UDP relay path remains
+- Offline sim2sim playback can be keyboard-controlled: `Space/P` pause/resume, `R` replay from frame 0, `Q` stop
+- Pause/resume now includes a short hold window; users should stay still during resume and pause again if visible distortion appears
+- sim2sim keyboard playback is optional via `playback.keyboard.enabled=true`
+- sim2real reuses the Unitree remote: `Start` → `STANDING`, `Y` → playback, `X` → back to `STANDING`, `L1+R1` → `DAMPING`
+- `playback.pause_on_end=true` keeps the final pose and waits for manual replay
 
 ### Pico4 Realtime Input
 - `Pico4InputProvider` reads realtime body tracking from `xrobotoolkit_sdk`
 - Bone naming follows `xrobot_to_g1.json`
 - The provider applies an input-space transform to match the current retarget config
 - Do not hardcode that transform as a public coordinate-system contract; validate against actual retarget/sim2sim behavior when SDK or firmware changes
-- Pico4 realtime control uses the same retargeted-reference timeline path as UDP realtime input
+- Pico4 realtime control uses the same retargeted-reference timeline path as the shared realtime input stack
 - Pico4 sim2real pause/resume is handled as a mocap-session control event (`toggle_pause`), not as a mode switch to `STANDING`
 - Default Pico pause button is `A`; restore tracking by rebuilding realtime buffer + yaw/pivot alignment and blending back into live mocap
 

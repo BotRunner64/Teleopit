@@ -42,6 +42,8 @@ class DummyRemote:
         self.LB = SimpleNamespace(pressed=False, on_pressed=False)
         self.RB = SimpleNamespace(pressed=False, on_pressed=False)
         self.start = SimpleNamespace(pressed=False, on_pressed=False)
+        self.A = SimpleNamespace(pressed=False, on_pressed=False)
+        self.B = SimpleNamespace(pressed=False, on_pressed=False)
         self.Y = SimpleNamespace(pressed=False, on_pressed=False)
         self.X = SimpleNamespace(pressed=False, on_pressed=False)
 

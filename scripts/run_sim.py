@@ -13,11 +13,10 @@ def main(cfg: DictConfig) -> None:
     pipeline = TeleopPipeline(cfg)
     num_steps = int(cfg.get("num_steps", 0))
     record = bool(cfg.get("record", False))
-    if cfg.input.get("provider") == "udp_bvh":
-        udp_port = cfg.input.get("udp_port", 1118)
-        print(f"Waiting for UDP data on port {udp_port}...")
-    elif cfg.input.get("provider") == "pico4":
+    if cfg.input.get("provider") == "pico4":
         print("Waiting for Pico4 body tracking data...")
+    if bool(cfg.get("playback", {}).get("keyboard", {}).get("enabled", False)):
+        print("Keyboard playback enabled: Space/P pause-resume, R replay, Q stop.")
     result = pipeline.run(num_steps=num_steps, record=record)
     print(result)
 

@@ -7,7 +7,6 @@ Teleopit 使用 Hydra 组合配置。大多数运行入口都会从一个顶层 
 ## 顶层配置
 
 - `teleopit/configs/default.yaml`：离线 sim2sim
-- `teleopit/configs/online.yaml`：UDP 实时 online sim2sim
 - `teleopit/configs/sim2real.yaml`：Unitree G1 真机控制
 
 这三个文件都会组合若干子配置：
@@ -15,7 +14,6 @@ Teleopit 使用 Hydra 组合配置。大多数运行入口都会从一个顶层 
 - `teleopit/configs/robot/g1.yaml`
 - `teleopit/configs/controller/rl_policy.yaml`
 - `teleopit/configs/input/bvh.yaml`
-- `teleopit/configs/input/udp_bvh.yaml`
 
 ## 最常改的字段
 
@@ -25,8 +23,9 @@ Teleopit 使用 Hydra 组合配置。大多数运行入口都会从一个顶层 
 - `pd_hz`：PD 控制频率
 - `viewers`：viewer 集合，支持 `mocap`、`retarget`、`sim2sim`、`all`、`none`
 - `realtime`：是否按 wall clock 限速
-- `num_steps`：运行步数；online 模式常用 `0` 表示无限循环
+- `num_steps`：运行步数；`0` 表示无限循环
 - `transition_duration`：从当前姿态平滑过渡到 retarget 命令的时间（秒）
+- `playback.pause_on_end`：离线动作结束后是否停在最后一帧
 
 ### `robot`
 
@@ -49,18 +48,14 @@ Teleopit 使用 Hydra 组合配置。大多数运行入口都会从一个顶层 
 
 离线 BVH：
 
+- `provider=bvh`
 - `bvh_file`
 - `bvh_format`
 - `human_format`
 
-UDP 实时输入：
+离线播放键盘控制：
 
-- `provider=udp_bvh`
-- `reference_bvh`
-- `udp_host`
-- `udp_port`
-- `udp_timeout`
-- `bvh_format`
+- `playback.keyboard.enabled`
 
 ## 最关键的一条：`default_dof_pos`
 
@@ -104,12 +99,13 @@ python scripts/run_sim.py \
 
 其中 `mocap` viewer 使用 MuJoCo 渲染，显示 retargeting 输入骨架。`bvh` 可视化命名已废弃，不再支持。
 
-### 改 UDP 端口
+### 开启离线播放键盘控制
 
 ```bash
-python scripts/run_sim.py --config-name online \
+python scripts/run_sim.py \
     controller.policy_path=policy.onnx \
-    input.udp_port=1119
+    input.bvh_file=data/sample_bvh/aiming1_subject1.bvh \
+    playback.keyboard.enabled=true
 ```
 
 ### 改真机网络接口
@@ -138,7 +134,7 @@ Teleopit 当前配置与运行时逻辑遵循 fail-fast 原则：
 
 - 先确认文件存在
 - 再确认它不是旧的 1402D / TWIST2 ONNX
-- 再确认输入维度是 `160`
+- 再确认输入维度是 `166`，并且是双输入 `obs + obs_history`
 
 ### 为什么现在必须显式指定 `input.bvh_file`？
 

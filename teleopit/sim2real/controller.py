@@ -30,13 +30,15 @@ from teleopit.controllers.observation import (
 )
 from teleopit.controllers.qpos_interpolator import QposInterpolator, QposLowPassFilter
 from teleopit.controllers.rl_policy import RLPolicyController
+from teleopit.inputs.bvh_provider import BVHInputProvider
 from teleopit.inputs.pico4_provider import Pico4InputProvider
 from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType, RealtimeInputPacket
-from teleopit.inputs.udp_bvh_provider import UDPBVHInputProvider
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.runtime.common import cfg_get
 from teleopit.runtime.factory import build_sim2real_mocap_components
 from teleopit.runtime.mocap_session import MocapSessionManager, MocapSessionState
+from teleopit.runtime.offline_playback import OfflinePlaybackController
+from teleopit.sim.reference_motion import OfflineReferenceMotion
 from teleopit.sim.reference_timeline import ReferenceSample, ReferenceTimeline, ReferenceWindow, ReferenceWindowBuilder
 from teleopit.sim.realtime_utils import (
     ExponentialVecSmoother,
@@ -94,14 +96,24 @@ class Sim2RealController:
             self._project_root,
             controller_cls=RLPolicyController,
             obs_builder_cls=VelCmdObservationBuilder,
+            bvh_input_cls=BVHInputProvider,
             pico4_input_cls=Pico4InputProvider,
-            udp_bvh_input_cls=UDPBVHInputProvider,
             retargeter_cls=RetargetingModule,
         )
         self.input_provider = mocap_components.input_provider
         self.retargeter = mocap_components.retargeter
         self.policy = mocap_components.controller
         self.obs_builder = mocap_components.obs_builder
+        self._offline_reference: OfflineReferenceMotion | None = None
+        self._offline_playback: OfflinePlaybackController | None = None
+        if hasattr(self.input_provider, "__len__") and hasattr(self.input_provider, "get_frame_by_index"):
+            playback_cfg = cfg_get(cfg, "playback", {})
+            self._offline_reference = OfflineReferenceMotion(self.input_provider, self.retargeter)
+            self._offline_playback = OfflinePlaybackController(
+                duration_s=self._offline_reference.duration_s,
+                step_dt_s=1.0 / self.policy_hz,
+                pause_on_end=bool(cfg_get(playback_cfg, "pause_on_end", True)),
+            )
         if not bool(getattr(self.policy, "_multi_input", False)):
             raise ValueError(
                 "Sim2real requires an ONNX policy with dual inputs ('obs' and 'obs_history')."
@@ -352,6 +364,10 @@ class Sim2RealController:
 
     def _mocap_step(self) -> None:
         """Mocap mode: input provider -> retarget -> policy -> update LowCmd targets."""
+        if self._offline_reference is not None:
+            self._offline_mocap_step()
+            return
+
         if not self.input_provider.is_available():
             logger.warning("Input provider unavailable -- entering damping")
             self._enter_damping()
@@ -478,6 +494,85 @@ class Sim2RealController:
         self._last_retarget_qpos = qpos.copy()
         self._last_reference_qpos = reference_qpos.copy()
         self._last_commanded_motion_qpos = qpos.copy()
+
+    def _offline_mocap_step(self) -> None:
+        if self._offline_reference is None or self._offline_playback is None:
+            raise RuntimeError("Offline playback step requires an offline reference motion")
+
+        if self._mocap_session.state == MocapSessionState.PAUSED:
+            self._paused_mocap_step()
+            return
+
+        sample_time_s = self._offline_playback.current_time_s
+        sampled = self._offline_reference.sample(sample_time_s)
+        if sampled is None:
+            self._hold_completed_offline_playback(self._resolve_mocap_hold_qpos())
+            self._paused_mocap_step()
+            return
+
+        reference_window: ReferenceWindow | None = None
+        if self._obs_builder_requires_reference_window():
+            reference_window = self._build_offline_reference_window(
+                self._offline_reference,
+                sample_time_s,
+            )
+
+        reference_qpos = np.asarray(sampled.qpos, dtype=np.float64).copy()
+        robot_state = self.robot.get_state()
+        if self._fixed_ref_yaw_alignment:
+            reference_qpos = self._align_velcmd_reference_yaw(reference_qpos, robot_state=robot_state)
+        reference_qpos = self._reference_qpos_smoother.apply(reference_qpos)
+        qpos = self._qpos_interpolator.apply(reference_qpos)
+        if self._mocap_session.state == MocapSessionState.RESUMING and not self._qpos_interpolator.is_active:
+            self._mocap_session.finish_resume()
+            logger.info("Mocap session -> ACTIVE")
+
+        if qpos.shape[0] < 7 + self.num_actions:
+            raise ValueError(
+                f"Retargeted qpos too short: {qpos.shape[0]} (need >= {7 + self.num_actions})"
+            )
+        motion_joint_pos = np.asarray(qpos[7:7 + self.num_actions], dtype=np.float32)
+        if self._last_retarget_qpos is None:
+            raw_motion_joint_vel = np.zeros((self.num_actions,), dtype=np.float32)
+        else:
+            prev_joint_pos = np.asarray(self._last_retarget_qpos[7:7 + self.num_actions], dtype=np.float32)
+            raw_motion_joint_vel = (motion_joint_pos - prev_joint_pos) * np.float32(self.policy_hz)
+        motion_joint_vel = self._motion_joint_vel_smoother.apply(raw_motion_joint_vel)
+
+        if self._qpos_interpolator.is_active:
+            true_lin_vel_w, true_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
+            blend = np.float32(self._qpos_interpolator.last_alpha)
+            raw_anchor_lin_vel_w = np.asarray(true_lin_vel_w * blend, dtype=np.float32)
+            raw_anchor_ang_vel_w = np.asarray(true_ang_vel_w * blend, dtype=np.float32)
+        else:
+            raw_anchor_lin_vel_w, raw_anchor_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
+        anchor_lin_vel_w = self._motion_anchor_lin_vel_smoother.apply(raw_anchor_lin_vel_w)
+        anchor_ang_vel_w = self._motion_anchor_ang_vel_smoother.apply(raw_anchor_ang_vel_w)
+
+        motion_qpos = np.asarray(qpos[:7 + self.num_actions], dtype=np.float32)
+        obs = self._build_policy_observation(
+            robot_state=robot_state,
+            motion_qpos=motion_qpos,
+            motion_joint_vel=motion_joint_vel,
+            last_action=self._last_action,
+            anchor_lin_vel_w=anchor_lin_vel_w,
+            anchor_ang_vel_w=anchor_ang_vel_w,
+            reference_window=reference_window,
+        )
+        obs = self._validate_observation_for_policy(obs)
+
+        action = self.policy.compute_action(obs)
+        target_dof_pos = self.policy.get_target_dof_pos(action)
+        target_dof_pos = self._clip_to_joint_limits(target_dof_pos)
+        self._send_positions_with_kp_ramp(target_dof_pos)
+
+        self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
+        self._last_retarget_qpos = qpos.copy()
+        self._last_reference_qpos = reference_qpos.copy()
+        self._last_commanded_motion_qpos = qpos.copy()
+
+        if self._offline_playback.advance():
+            self._hold_completed_offline_playback(qpos)
 
     def _compute_anchor_velocities(
         self, qpos: Float64Array,
@@ -619,6 +714,21 @@ class Sim2RealController:
                     logger.warning("Cannot switch to MOCAP -- input check failed")
 
         elif self.mode == RobotMode.MOCAP:
+            if self.remote.B.on_pressed and self._offline_playback is not None:
+                logger.info("B pressed -> replaying offline motion from start")
+                self._restart_offline_playback()
+                return
+            if self.remote.A.on_pressed:
+                if self._mocap_session.state == MocapSessionState.PAUSED:
+                    if self._offline_playback is not None and self._offline_playback.finished:
+                        logger.info("Playback already ended; press B to replay from the start")
+                    else:
+                        logger.info("A pressed -> resuming playback")
+                        self._resume_paused_mocap()
+                else:
+                    logger.info("A pressed -> pausing playback")
+                    self._pause_active_mocap()
+                return
             if self.remote.X.on_pressed:
                 logger.info("X pressed -> returning to STANDING")
                 self._enter_standing()
@@ -688,11 +798,22 @@ class Sim2RealController:
             logger.warning("Mocap check: input provider not available")
             return False
 
-        # For UDP BVH provider, also check if initial data has been received
-        if hasattr(self.input_provider, "_frame_ready"):
-            if not self.input_provider._frame_ready.is_set():
-                logger.warning("Mocap check: no data received yet")
-                return False
+        if self._offline_reference is not None:
+            frame_count = min(self._check_frames, self._offline_reference.num_frames)
+            valid_count = 0
+            for frame_index in range(frame_count):
+                try:
+                    frame = self.input_provider.get_frame_by_index(frame_index)
+                except (IndexError, RuntimeError, ValueError):
+                    return False
+                if self._frame_is_valid(frame):
+                    valid_count += 1
+                else:
+                    break
+            if valid_count >= frame_count:
+                return True
+            logger.warning("Mocap check: only %d/%d valid offline frames", valid_count, frame_count)
+            return False
 
         # For Pico4 provider, check SDK data availability before calling
         # get_frame() to avoid blocking the control loop for up to
@@ -709,19 +830,7 @@ class Sim2RealController:
             except (TimeoutError, RuntimeError):
                 return False
 
-            all_valid = True
-            for bone_name, (pos, quat) in frame.items():
-                if np.any(np.isnan(pos)) or np.any(np.isinf(pos)):
-                    all_valid = False
-                    break
-                if np.any(np.abs(pos) > self._max_pos_value):
-                    all_valid = False
-                    break
-                if np.any(np.isnan(quat)) or np.any(np.isinf(quat)):
-                    all_valid = False
-                    break
-
-            if all_valid:
+            if self._frame_is_valid(frame):
                 valid_count += 1
             else:
                 valid_count = 0
@@ -758,6 +867,8 @@ class Sim2RealController:
         # robot state toward incoming live mocap.  This is done AFTER the
         # episode reset so the interpolator starts with a clean slate.
         self._arm_qpos_transition(init_qpos, duration_s=self._mocap_transition_duration)
+        if self._offline_playback is not None:
+            self._offline_playback.replay()
 
         self.mode = RobotMode.MOCAP
         logger.info("Mode -> MOCAP (tracking motion commands)")
@@ -848,6 +959,82 @@ class Sim2RealController:
             reference_steps=reference_steps,
             samples=samples,
         )
+
+    def _sample_offline_reference_at(
+        self,
+        offline_reference: OfflineReferenceMotion,
+        target_time_s: float,
+    ) -> ReferenceSample:
+        fallback_mode: str | None = None
+        sample_time_s = float(target_time_s)
+        if sample_time_s < 0.0:
+            sample_time_s = 0.0
+            fallback_mode = "fallback_oldest"
+        elif sample_time_s >= offline_reference.duration_s:
+            sample_time_s = float(np.nextafter(offline_reference.duration_s, 0.0))
+            fallback_mode = "fallback_latest"
+
+        sampled = offline_reference.sample(sample_time_s)
+        if sampled is None:
+            sample_time_s = float(np.nextafter(offline_reference.duration_s, 0.0))
+            sampled = offline_reference.sample(sample_time_s)
+            fallback_mode = "fallback_latest"
+        if sampled is None:
+            raise RuntimeError("OfflineReferenceMotion could not sample a valid reference window frame")
+
+        if fallback_mode is not None:
+            return ReferenceSample(
+                qpos=np.asarray(sampled.qpos, dtype=np.float64).copy(),
+                timestamp_s=sample_time_s,
+                mode=fallback_mode,
+                used_fallback=True,
+                older_timestamp_s=sample_time_s,
+                newer_timestamp_s=sample_time_s,
+                alpha=None,
+            )
+
+        older_timestamp_s = float(sampled.frame_idx0) / float(offline_reference.fps)
+        newer_timestamp_s = float(sampled.frame_idx1) / float(offline_reference.fps)
+        mode = "single_frame" if sampled.frame_idx0 == sampled.frame_idx1 else "interpolate"
+        return ReferenceSample(
+            qpos=np.asarray(sampled.qpos, dtype=np.float64).copy(),
+            timestamp_s=float(sample_time_s),
+            mode=mode,
+            used_fallback=False,
+            older_timestamp_s=older_timestamp_s,
+            newer_timestamp_s=newer_timestamp_s,
+            alpha=float(sampled.alpha),
+        )
+
+    def _build_offline_reference_window(
+        self,
+        offline_reference: OfflineReferenceMotion,
+        base_time_s: float,
+    ) -> ReferenceWindow:
+        reference_steps = tuple(self._reference_window_builder.reference_steps)
+        samples = tuple(
+            self._sample_offline_reference_at(
+                offline_reference,
+                float(base_time_s) + float(step) * (1.0 / self.policy_hz),
+            )
+            for step in reference_steps
+        )
+        return ReferenceWindow(
+            base_time_s=float(base_time_s),
+            policy_dt_s=1.0 / self.policy_hz,
+            reference_steps=reference_steps,
+            samples=samples,
+        )
+
+    def _frame_is_valid(self, frame: dict[str, tuple[np.ndarray, np.ndarray]]) -> bool:
+        for pos, quat in frame.values():
+            if np.any(np.isnan(pos)) or np.any(np.isinf(pos)):
+                return False
+            if np.any(np.abs(pos) > self._max_pos_value):
+                return False
+            if np.any(np.isnan(quat)) or np.any(np.isinf(quat)):
+                return False
+        return True
 
     def _obs_builder_requires_reference_window(self) -> bool:
         return bool(getattr(self.obs_builder, "requires_reference_window", False)) or callable(
@@ -987,6 +1174,29 @@ class Sim2RealController:
         self._fixed_reference_yaw_quat = None
         self._fixed_reference_pivot_pos_w = None
 
+    def _restart_offline_playback(self) -> None:
+        if self._offline_playback is None:
+            raise RuntimeError("Offline playback replay is only available for indexed BVH input")
+
+        state = self.robot.get_state()
+        restart_qpos = np.zeros(36, dtype=np.float64)
+        restart_qpos[3:7] = state.quat.astype(np.float64)
+        restart_qpos[7:36] = state.qpos.astype(np.float64)
+
+        self._last_retarget_qpos = restart_qpos.copy()
+        self._last_commanded_motion_qpos = restart_qpos.copy()
+        self._offline_playback.replay()
+        self._reset_policy_state()
+        self._arm_qpos_transition(restart_qpos, duration_s=self._mocap_transition_duration)
+        logger.info("Offline playback restarted from frame 0")
+
+    def _hold_completed_offline_playback(self, hold_qpos: Float64Array) -> None:
+        if self._offline_playback is None or self._mocap_session.state == MocapSessionState.PAUSED:
+            return
+        self._offline_playback.finish()
+        self._mocap_session.pause(hold_qpos)
+        logger.info("Offline playback reached the end; press B to replay")
+
     def _arm_qpos_transition(self, start_qpos: Float64Array, *, duration_s: float) -> None:
         self._qpos_interpolator.reset()
         self._qpos_interpolator.configure(duration_s)
@@ -1039,9 +1249,15 @@ class Sim2RealController:
         # must call pause() *after* it to set the correct PAUSED state.
         self._reset_policy_state()
         self._mocap_session.pause(hold_qpos)
+        if self._offline_playback is not None:
+            self._offline_playback.pause()
         logger.info("Mocap session -> PAUSED (episode-reset)")
 
     def _resume_paused_mocap(self) -> None:
+        if self._offline_playback is not None and self._offline_playback.finished:
+            logger.info("Offline playback already ended; press B to replay from the start")
+            return
+
         # Episode-reset + reference-side interpolation.
         #
         # 1. Reference starts at current robot state (not hold_qpos) so there
@@ -1071,6 +1287,8 @@ class Sim2RealController:
         # Reference-side interpolation: smoothly blend from current robot
         # state toward incoming live mocap.
         self._arm_qpos_transition(resume_qpos, duration_s=self._pause_resume_transition_duration)
+        if self._offline_playback is not None:
+            self._offline_playback.resume()
 
         logger.info("Mocap session -> ACTIVE (episode-reset + reference interpolation)")
 
@@ -1089,7 +1307,9 @@ class Sim2RealController:
         hold_qpos = self._mocap_session.hold_qpos
         if hold_qpos is None:
             raise RuntimeError("Paused mocap session is missing a hold_qpos")
+        self._run_static_mocap_step(hold_qpos)
 
+    def _run_static_mocap_step(self, hold_qpos: Float64Array) -> None:
         robot_state = self.robot.get_state()
         qpos = np.asarray(hold_qpos, dtype=np.float64).copy()
         motion_joint_vel = np.zeros(self.num_actions, dtype=np.float32)

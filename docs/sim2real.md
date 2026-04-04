@@ -4,14 +4,14 @@
 
 > **Pico VR 用户**：完整的 Pico 4 / Pico 4 Ultra 部署指南见 **[pico4.md](pico4.md)**。
 
-> 离线/在线推理见 [inference.md](inference.md)，技术规格见 [architecture.md](architecture.md)。
+> 离线推理见 [inference.md](inference.md)，技术规格见 [architecture.md](architecture.md)。
 
 ## 输入源
 
 | 输入源 | 配置 | 文档 |
 |------|--------|------|
 | **Pico 4 / Pico 4 Ultra** | `--config-name pico4_sim2real` | **[Pico VR 部署](pico4.md)** |
-| UDP BVH | 默认配置 | 本文档 |
+| 离线 BVH 动作文件 | 默认配置 | 本文档 |
 
 ## 前置要求
 
@@ -20,7 +20,7 @@
 - Unitree G1（29 DOF）
 - Unitree 无线遥控器
 - 机器人与控制 PC 的网络连接
-- Pico 4 / Pico 4 Ultra 头显，或外部动捕 UDP 数据源
+- Pico 4 / Pico 4 Ultra 头显，或离线 BVH 动作文件
 
 软件：
 
@@ -33,17 +33,23 @@
 - `pip install -e '.[sim2real]'`
 - Pico 路径额外需要：`bash scripts/setup_pico4.sh`
 
-## UDP BVH 部署
+## 离线动作文件播放
 
 ```bash
-# 终端 1
 python scripts/run_sim2real.py \
     controller.policy_path=track.onnx \
-    real_robot.network_interface=eth0
-
-# 终端 2
-python scripts/send_bvh_udp.py --bvh data/hc_mocap/wander.bvh --loop --port 1118
+    real_robot.network_interface=eth0 \
+    input.bvh_file=data/sample_bvh/aiming1_subject1.bvh
 ```
+
+默认遥控器映射：
+
+- `Start`：进入 `STANDING`
+- `Y`：从 `STANDING` 进入离线播放
+- `A`：暂停 / 恢复当前播放
+- `B`：从头重播当前动作文件
+- `X`：回到 `STANDING`
+- `L1+R1`：急停进入 `DAMPING`
 
 ## Onboard 部署
 
@@ -107,7 +113,7 @@ python scripts/run_onboard_sim2real.py \
 | 模式 | 数据流 | 适用场景 |
 |------|--------|----------|
 | `STANDING` | 默认站姿 → RL policy → 关节控制 | 起步、恢复、等待 |
-| `MOCAP` | Pico / UDP → retarget → RL policy → 关节控制 | 全身遥操作 |
+| `MOCAP` | Pico / 离线 BVH → retarget → RL policy → 关节控制 | 全身遥操作 / 动作播放 |
 | `DAMPING` | 发送阻尼命令 | 急停 |
 
 对于 `input.provider=pico4` 的真机遥操作，`MOCAP` 内部还包含会话子状态：
@@ -133,9 +139,9 @@ python scripts/run_onboard_sim2real.py \
 
 1. 启动控制脚本
 2. 按 `Start` 进入 `STANDING`
-3. 确认输入正常（Pico 追踪已连接 / UDP 数据已到达）
+3. 确认输入正常（Pico 追踪已连接 / 离线 BVH 文件已指定）
 4. 按 `Y` 切到 `MOCAP`
-5. Pico 遥操作时按手柄 `A` 可暂停/恢复当前 mocap 会话
+5. 按 `A` 可暂停/恢复；恢复时尽量保持姿态接近暂停时，若出现扭曲请立即再次暂停；离线播放按 `B` 可从头重播
 6. 按 `X` 回到 `STANDING`；`L1+R1` 急停进入 `DAMPING`
 
 ## 常用参数
@@ -144,10 +150,10 @@ python scripts/run_onboard_sim2real.py \
 # 调整控制频率
 python scripts/run_sim2real.py controller.policy_path=track.onnx policy_hz=30
 
-# 调整 UDP 端口
+# 指定离线 BVH 文件
 python scripts/run_sim2real.py \
     controller.policy_path=track.onnx \
-    input.udp_port=1119
+    input.bvh_file=data/sample_bvh/aiming1_subject1.bvh
 
 # Pico 超时时间
 python scripts/run_sim2real.py --config-name pico4_sim2real \

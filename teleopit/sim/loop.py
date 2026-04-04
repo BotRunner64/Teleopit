@@ -34,6 +34,8 @@ from teleopit.sim.reference_timeline import (
 from teleopit.sim.realtime_utils import RealtimeReferenceDiagnostics, RealtimeReferenceManager
 from teleopit.sim.runtime_components import PolicyStepRunner, RunRecorder, RuntimePublisher, ViewerManager
 from teleopit.runtime.mocap_session import MocapSessionManager, MocapSessionState
+from teleopit.runtime.offline_playback import OfflinePlaybackController
+from teleopit.runtime.terminal_keyboard import TerminalKeyboardReader
 
 Float32Array = NDArray[np.float32]
 Float64Array = NDArray[np.float64]
@@ -350,6 +352,8 @@ class SimulationLoop:
             default=1.0,
             field_name="reference_qpos_smoothing_alpha",
         )
+        self._playback_pause_on_end = bool(self._try_get_cfg("playback.pause_on_end", False))
+        self._playback_keyboard_enabled = bool(self._try_get_cfg("playback.keyboard.enabled", False))
 
         self._viewers: set[str] = set(viewers or set())
         self._step_runner = PolicyStepRunner(
@@ -403,13 +407,21 @@ class SimulationLoop:
         cached_human_frame: dict | None = None
         cached_retargeted: object = None
         offline_reference: OfflineReferenceMotion | None = None
+        offline_playback: OfflinePlaybackController | None = None
         if hasattr(input_provider, "__len__") and hasattr(input_provider, "get_frame_by_index"):
             offline_reference = OfflineReferenceMotion(input_provider, retargeter)
             input_fps = offline_reference.fps
+            offline_playback = OfflinePlaybackController(
+                duration_s=offline_reference.duration_s,
+                step_dt_s=policy_dt,
+                pause_on_end=self._playback_pause_on_end,
+            )
         realtime_interpolated_input = (
             offline_reference is None
             and (hasattr(input_provider, "get_realtime_input_packet") or hasattr(input_provider, "get_frame_packet"))
         )
+        if self._playback_keyboard_enabled and offline_reference is None and self._try_get_cfg("playback.keyboard.enabled") is True:
+            raise ValueError("playback.keyboard.enabled requires an offline BVH input provider.")
         realtime_input_delay_s = (
             1.0 / input_fps
             if realtime_interpolated_input and self._reference_delay_s is None
@@ -464,6 +476,10 @@ class SimulationLoop:
         latest_live_timestamp: float | None = None
         mocap_session = MocapSessionManager()
         last_commanded_motion_qpos: Float64Array | None = None
+        keyboard_reader: TerminalKeyboardReader | None = None
+        playback_stop_requested = False
+        if self._playback_keyboard_enabled and offline_reference is not None:
+            keyboard_reader = TerminalKeyboardReader()
 
         debug_writer: RolloutTraceWriter | None = None
         if self._debug_trace_path is not None:
@@ -482,21 +498,95 @@ class SimulationLoop:
             while steps_done < max_steps:
                 if has_viewers and not self._viewer_manager.any_active():
                     break
+                if keyboard_reader is not None:
+                    if offline_playback is None:
+                        raise RuntimeError("Keyboard playback polling requires an offline playback controller")
+                    for key_event in keyboard_reader.poll():
+                        key = key_event.key.lower()
+                        if key == "q":
+                            playback_stop_requested = True
+                            break
+                        if key == "r":
+                            self._restart_offline_playback(
+                                offline_playback=offline_playback,
+                                mocap_session=mocap_session,
+                                retargeter=retargeter,
+                            )
+                            cached_human_frame = None
+                            cached_retargeted = None
+                            last_commanded_motion_qpos = None
+                            continue
+                        if key not in (" ", "p"):
+                            continue
+                        if mocap_session.state == MocapSessionState.PAUSED:
+                            if offline_playback.finished:
+                                import logging
+
+                                logging.getLogger(__name__).info(
+                                    "Offline playback already ended; press r to replay from frame 0."
+                                )
+                            else:
+                                hold_qpos = mocap_session.hold_qpos
+                                self._resume_offline_playback(
+                                    offline_playback=offline_playback,
+                                    mocap_session=mocap_session,
+                                    retargeter=retargeter,
+                                )
+                                last_commanded_motion_qpos = None
+                        else:
+                            hold_qpos = self._resolve_hold_qpos(
+                                last_commanded_motion_qpos,
+                                self._step_runner.last_retarget_qpos,
+                                None,
+                                self.robot.get_state(),
+                            )
+                            self._pause_offline_playback(
+                                offline_playback=offline_playback,
+                                mocap_session=mocap_session,
+                                hold_qpos=hold_qpos,
+                                retargeter=retargeter,
+                            )
+                    if playback_stop_requested:
+                        break
 
                 policy_time = steps_done * policy_dt
+                if offline_playback is not None:
+                    policy_time = offline_playback.current_time_s
                 frame_f = policy_time * input_fps
                 reference_window: ReferenceWindow | None = None
                 realtime_reference_diag: RealtimeReferenceDiagnostics | None = None
                 if offline_reference is not None:
-                    sampled = offline_reference.sample(policy_time)
-                    if sampled is None:
-                        break
-                    if self._observation_uses_reference_window():
-                        reference_window = self._build_offline_reference_window(offline_reference, policy_time)
-                    cached_human_frame = sampled.human_frame
-                    cached_retargeted = sampled.qpos
-                    last_bvh_idx = sampled.frame_idx0
-                    new_bvh_frame = True
+                    if offline_playback is None:
+                        raise RuntimeError("Offline playback controller must be initialized for offline references")
+                    if mocap_session.state == MocapSessionState.PAUSED:
+                        hold_qpos = mocap_session.hold_qpos
+                        if hold_qpos is None:
+                            raise RuntimeError("Paused offline playback is missing a hold pose")
+                        cached_retargeted = hold_qpos.copy()
+                        new_bvh_frame = False
+                    else:
+                        sampled = offline_reference.sample(policy_time)
+                        if sampled is None:
+                            if offline_playback.pause_on_end:
+                                offline_playback.finish()
+                                hold_qpos = self._resolve_hold_qpos(
+                                    last_commanded_motion_qpos,
+                                    self._step_runner.last_retarget_qpos,
+                                    None,
+                                    self.robot.get_state(),
+                                )
+                                mocap_session.pause(hold_qpos)
+                                cached_retargeted = hold_qpos.copy()
+                                new_bvh_frame = False
+                            else:
+                                break
+                        else:
+                            if self._observation_uses_reference_window():
+                                reference_window = self._build_offline_reference_window(offline_reference, policy_time)
+                            cached_human_frame = sampled.human_frame
+                            cached_retargeted = sampled.qpos
+                            last_bvh_idx = sampled.frame_idx0
+                            new_bvh_frame = True
                 elif realtime_interpolated_input:
                     packet = self._fetch_realtime_input_packet(input_provider, last_live_packet_seq)
                     human_frame = cast(dict, packet.frame)
@@ -633,7 +723,7 @@ class SimulationLoop:
                         last_bvh_idx = bvh_idx
 
                 state = self.robot.get_state()
-                if realtime_interpolated_input and mocap_session.state == MocapSessionState.PAUSED:
+                if mocap_session.state == MocapSessionState.PAUSED:
                     hold_qpos = mocap_session.hold_qpos
                     if hold_qpos is None:
                         raise RuntimeError("Paused mocap session is missing a hold pose")
@@ -776,11 +866,23 @@ class SimulationLoop:
 
                 self._step_runner.finish_step(action, preparation.qpos)
                 last_commanded_motion_qpos = preparation.qpos.copy()
+                if (
+                    offline_playback is not None
+                    and mocap_session.state != MocapSessionState.PAUSED
+                ):
+                    if offline_playback.advance():
+                        if offline_playback.pause_on_end:
+                            mocap_session.pause(preparation.qpos.copy())
+                        else:
+                            steps_done += 1
+                            break
                 steps_done += 1
         except KeyboardInterrupt:
             pass
         finally:
             self._viewer_manager.shutdown()
+            if keyboard_reader is not None:
+                keyboard_reader.close()
             if debug_writer is not None:
                 debug_writer.save()
 
@@ -791,6 +893,7 @@ class SimulationLoop:
             "policy_hz": self.policy_hz,
             "pd_hz": self.pd_hz,
             "decimation": self.decimation,
+            "playback_stop": int(playback_stop_requested),
         }
 
     def run_headless(
@@ -940,6 +1043,64 @@ class SimulationLoop:
         hold_qpos[3:7] = np.asarray(getattr(state, "quat"), dtype=np.float64)[:4]
         hold_qpos[7:7 + self._num_actions] = np.asarray(getattr(state, "qpos"), dtype=np.float64)[: self._num_actions]
         return hold_qpos
+
+    def _restart_offline_playback(
+        self,
+        *,
+        offline_playback: OfflinePlaybackController,
+        mocap_session: MocapSessionManager,
+        retargeter: Retargeter,
+    ) -> None:
+        offline_playback.replay()
+        mocap_session.reset()
+        self._step_runner.reset()
+        self._last_action = np.zeros((self._num_actions,), dtype=np.float32)
+        self.controller.reset()
+        reset_obs_builder = getattr(self.obs_builder, "reset", None)
+        if callable(reset_obs_builder):
+            reset_obs_builder()
+        reset_retargeter = getattr(retargeter, "reset", None)
+        if callable(reset_retargeter):
+            reset_retargeter()
+        reset_robot = getattr(self.robot, "reset", None)
+        if callable(reset_robot):
+            reset_robot()
+
+    def _pause_offline_playback(
+        self,
+        *,
+        offline_playback: OfflinePlaybackController,
+        mocap_session: MocapSessionManager,
+        hold_qpos: Float64Array,
+        retargeter: Retargeter,
+    ) -> None:
+        offline_playback.pause()
+        mocap_session.pause(hold_qpos)
+        self._step_runner.qpos_interpolator.reset()
+        reset_retargeter = getattr(retargeter, "reset", None)
+        if callable(reset_retargeter):
+            reset_retargeter()
+
+    def _resume_offline_playback(
+        self,
+        *,
+        offline_playback: OfflinePlaybackController,
+        mocap_session: MocapSessionManager,
+        retargeter: Retargeter,
+    ) -> None:
+        start_qpos = mocap_session.begin_resume()
+        offline_playback.resume()
+        self._step_runner.soft_reset_reference_state(
+            reset_alignment=self._pause_reset_alignment_on_resume
+        )
+        self._step_runner.last_retarget_qpos = start_qpos.copy()
+        self._step_runner.arm_motion_transition(
+            start_qpos,
+            duration_s=self._pause_resume_transition_duration,
+        )
+        reset_retargeter = getattr(retargeter, "reset", None)
+        if callable(reset_retargeter):
+            reset_retargeter()
 
     def _build_observation(
         self,

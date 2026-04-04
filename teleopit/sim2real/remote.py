@@ -215,3 +215,20 @@ class UnitreeRemote:
     def ry(self) -> float:
         """Right stick Y axis (up/down)."""
         return self._ry
+
+
+class UnitreeRemoteReceiver:
+    """Read Unitree wireless remote bytes via the G1 DDS bridge."""
+
+    def __init__(self, network_interface: str = "eth0") -> None:
+        import g1_bridge_sdk
+
+        self._bridge = g1_bridge_sdk.G1Bridge(str(network_interface))
+
+    def get_wireless_remote(self) -> bytes:
+        return self._bridge.get_wireless_remote()
+
+    def close(self) -> None:
+        close_fn = getattr(self._bridge, "close", None)
+        if callable(close_fn):
+            close_fn()

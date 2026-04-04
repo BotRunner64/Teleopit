@@ -96,8 +96,9 @@ python scripts/run_sim2real.py \
 3. 确认 Pico 追踪数据已到达（终端会有日志）
 4. 按 **Y** → 进入 `MOCAP`（开始遥操作）
 5. 在 `MOCAP` 中按 Pico 手柄 **A** → 暂停当前跟踪，再按一次 **A** → 平滑恢复跟踪
-6. 按 **X** → 回到 `STANDING`
-7. **L1+R1** → 急停（`DAMPING`）
+6. 恢复时请尽量保持不动并让姿态接近暂停时；如果出现扭曲，立刻再次暂停，回到更接近暂停时的姿态后再恢复
+7. 按 **X** → 回到 `STANDING`
+8. **L1+R1** → 急停（`DAMPING`）
 
 状态机详情见 [sim2real.md](sim2real.md)。
 

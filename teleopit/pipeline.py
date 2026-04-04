@@ -8,7 +8,7 @@ from omegaconf import DictConfig
 from teleopit.bus.in_process import InProcessBus
 from teleopit.controllers.observation import VelCmdObservationBuilder
 from teleopit.controllers.rl_policy import RLPolicyController
-from teleopit.inputs import BVHInputProvider, Pico4InputProvider, UDPBVHInputProvider
+from teleopit.inputs import BVHInputProvider, Pico4InputProvider
 from teleopit.recording.hdf5_recorder import HDF5Recorder
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.robots.mujoco_robot import MuJoCoRobot
@@ -37,7 +37,6 @@ class TeleopPipeline:
             obs_builder_cls=VelCmdObservationBuilder,
             bvh_input_cls=BVHInputProvider,
             pico4_input_cls=Pico4InputProvider,
-            udp_bvh_input_cls=UDPBVHInputProvider,
             retargeter_cls=RetargetingModule,
         )
 

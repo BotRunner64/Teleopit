@@ -1,6 +1,6 @@
 # 推理与运行指南
 
-本文档覆盖离线 sim2sim、UDP 实时 online sim2sim、viewer、录制和离线渲染。配置约束与 FAQ 见 [configuration.md](configuration.md)。
+本文档覆盖离线 sim2sim、离线文件重播、viewer、录制和离线渲染。配置约束与 FAQ 见 [configuration.md](configuration.md)。
 
 ## 运行前确认
 
@@ -38,34 +38,38 @@ python scripts/run_sim.py \
     +record=true
 ```
 
-## UDP 实时 online sim2sim
+## 离线文件键盘重播
 
 ```bash
-# Terminal 1
-python scripts/run_sim.py --config-name online controller.policy_path=policy.onnx
-
-# Terminal 2
-python scripts/send_bvh_udp.py --bvh data/hc_mocap/wander.bvh --loop
+python scripts/run_sim.py \
+    controller.policy_path=policy.onnx \
+    input.bvh_file=data/sample_bvh/aiming1_subject1.bvh \
+    playback.keyboard.enabled=true
 ```
 
 常见 override：
 
 ```bash
-python scripts/run_sim.py --config-name online \
+python scripts/run_sim.py \
     controller.policy_path=policy.onnx \
-    input.udp_port=1119
-python scripts/run_sim.py --config-name online \
+    input.bvh_file=data/sample_bvh/aiming1_subject1.bvh \
+    playback.keyboard.enabled=true \
+    playback.pause_on_end=true
+python scripts/run_sim.py \
     controller.policy_path=policy.onnx \
+    input.bvh_file=data/sample_bvh/aiming1_subject1.bvh \
     viewers=none
-python scripts/run_sim.py --config-name online \
+python scripts/run_sim.py \
     controller.policy_path=policy.onnx \
+    input.bvh_file=data/sample_bvh/aiming1_subject1.bvh \
     num_steps=300
 ```
 
 运行时行为：
 
-- `UDPBVHInputProvider` 始终返回最新帧，不维护内部播放计数器。
-- `fps=30` 固定，`SimulationLoop` 按 `bvh_idx = int(policy_time × input_fps)` 做时间对齐。
+- 离线 BVH 直接在进程内采样，不再需要 UDP relay。
+- `Space` / `P` 暂停或恢复，`R` 从头重播，`Q` 停止当前 sim2sim 运行。
+- `playback.pause_on_end=true` 时动作播完会停在最后一帧等待手动重播。
 - `num_steps=0` 表示无限循环。
 - `realtime=true` 时即使没有 viewer 也会做 wall-clock 限速。
 

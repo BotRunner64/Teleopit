@@ -83,21 +83,22 @@ python train_mimic/scripts/save_onnx.py \
 
 | 场景 | 命令 | 文档 |
 |------|------|------|
+| **离线 sim2real 动作播放** | `python scripts/run_sim2real.py controller.policy_path=track.onnx input.bvh_file=...` | [sim2real.md](docs/sim2real.md) |
 | **Pico 4 VR 遥操作** | `python scripts/run_sim.py --config-name pico4_sim ...` | **[Pico VR 部署](docs/pico4.md)** |
 | **Pico 4 真机部署** | `python scripts/run_sim2real.py --config-name pico4_sim2real ...` | **[Pico VR 部署](docs/pico4.md)** |
 | **G1 Onboard（NX 机载）** | `python scripts/run_onboard_sim2real.py ...` | [sim2real.md](docs/sim2real.md) |
-| UDP 实时 sim2sim | `python scripts/run_sim.py --config-name online ...` | [inference.md](docs/inference.md) |
-| G1 真机部署（UDP） | `python scripts/run_sim2real.py ...` | [sim2real.md](docs/sim2real.md) |
+| **离线 sim2sim 键盘重播** | `python scripts/run_sim.py controller.policy_path=track.onnx input.bvh_file=... playback.keyboard.enabled=true` | [inference.md](docs/inference.md) |
 | 训练与导出 | `python train_mimic/scripts/train.py ...` | [training.md](docs/training.md) |
 
-Pico 真机遥操作支持手柄暂停/恢复：默认按 `A` 冻结当前跟踪姿态，再按一次 `A` 重新建立对齐并平滑接回 live mocap。
+离线 `sim2sim` 键盘映射：`Space/P` 暂停/恢复，`R` 从头重播，`Q` 停止；`sim2real` 继续使用遥控器，`Y` 进入播放、`A` 暂停/恢复、`B` 重播、`X` 回站立。
+Pico mocap 暂停恢复的重要提示：恢复时尽量不要运动，尽量让恢复姿态接近暂停姿态；如果出现扭曲，立即再次暂停，等姿态稳定后再恢复。
 
 ## 文档
 
 - **[Pico VR 部署](docs/pico4.md)**：Pico 4 / Pico 4 Ultra 全身追踪遥操作完整指南
-- [真机部署](docs/sim2real.md)：Unitree G1 部署、状态机、UDP 输入
+- [真机部署](docs/sim2real.md)：Unitree G1 部署、离线动作播放、Pico 遥操作
 - [G1 Bridge SDK](docs/g1_bridge_sdk.md)：C++ DDS 桥接库安装与 API 说明
-- [推理与运行](docs/inference.md)：离线/在线推理、viewer、录制
+- [推理与运行](docs/inference.md)：离线播放、viewer、录制、遥控重播
 - [训练](docs/training.md)：训练、评估、导出 ONNX
 - [数据集](docs/dataset.md)：数据下载与自定义构建
 - [资源管理](docs/assets.md)：外部资源下载与 ModelScope 上传

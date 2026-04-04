@@ -79,8 +79,8 @@ def _coordinate_transform_input(body_pose_dict: dict) -> dict:
 class Pico4InputProvider:
     """Real-time input provider using Pico4 full-body tracking via xrobotoolkit_sdk.
 
-    Implements the same interface as ``BVHInputProvider`` / ``UDPBVHInputProvider``
-    so it plugs directly into the Teleopit pipeline.
+    Implements the same interface expected by the shared Teleopit motion
+    pipeline, while also exposing realtime packet helpers.
     """
 
     def __init__(
@@ -150,10 +150,9 @@ class Pico4InputProvider:
         """Whether the provider is healthy and can be polled.
 
         Returns ``True`` as long as the provider has not been closed.
-        This matches ``UDPBVHInputProvider`` semantics where
-        ``is_available()`` means "provider is alive" (not "data ready
-        right now").  The actual blocking-until-data logic lives in
-        ``get_frame()``.
+        For realtime providers, ``is_available()`` means "provider is
+        alive" (not "data ready right now"). The actual
+        blocking-until-data logic lives in ``get_frame()``.
         """
         return not self._closed and self._poll_thread.is_alive()
 

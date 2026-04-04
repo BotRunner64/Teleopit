@@ -1,7 +1,7 @@
 defaults:
   - robot: g1
   - controller: rl_policy
-  - input: udp_bvh
+  - input: bvh
   - _self_
 
 policy_hz: 50.0
@@ -21,6 +21,8 @@ reference_velocity_smoothing_alpha: 0.35
 reference_anchor_velocity_smoothing_alpha: 0.25
 reference_steps: [0]
 reference_debug_log: false
+playback:
+  pause_on_end: true
 
 # Startup ramp duration (seconds) -- smoothly blend from locked to policy positions
 startup_ramp_duration: 2.0

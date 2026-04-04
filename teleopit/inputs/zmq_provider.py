@@ -2,7 +2,8 @@
 
 Subscribes to a ZMQ PUB socket that publishes raw Pico4 body tracking
 frames (already coordinate-transformed into Teleopit space). Implements
-the same interface as ``Pico4InputProvider`` / ``UDPBVHInputProvider``.
+the same interface as ``Pico4InputProvider`` for the shared realtime
+motion-control pipeline.
 """
 
 from __future__ import annotations
