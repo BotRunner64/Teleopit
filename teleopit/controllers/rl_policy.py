@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -8,6 +9,8 @@ from typing import Protocol, cast
 
 import numpy as np
 from numpy.typing import NDArray
+
+_logger = logging.getLogger(__name__)
 
 
 class _OrtValue(Protocol):
@@ -136,6 +139,9 @@ class RLPolicyController:
             self._session.run([self._output_name], feed)[0],
             dtype=np.float32,
         ).reshape(-1)
+        if not np.all(np.isfinite(raw_action)):
+            _logger.warning("NaN/inf in ONNX output, damping to zero action")
+            raw_action = np.zeros_like(raw_action)
         return raw_action
 
     def get_target_dof_pos(self, raw_action: NDArray[np.float32]) -> NDArray[np.float32]:
@@ -165,7 +171,11 @@ class RLPolicyController:
 
     def _clip_and_scale(self, raw_action: NDArray[np.float32]) -> NDArray[np.float32]:
         clipped = np.clip(raw_action, self.clip_range[0], self.clip_range[1])
-        return np.asarray(clipped * self.action_scale, dtype=np.float32)
+        scaled = np.asarray(clipped * self.action_scale, dtype=np.float32)
+        if not np.all(np.isfinite(scaled)):
+            _logger.warning("NaN/inf after clip_and_scale, damping to zero")
+            return np.zeros_like(scaled)
+        return scaled
 
     @staticmethod
     def _cfg_get(cfg: object, key: str, default: object) -> object:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import multiprocessing as mp
 import time
 from dataclasses import dataclass
@@ -7,6 +8,8 @@ from typing import Any, Callable, Protocol, cast
 
 import numpy as np
 from numpy.typing import NDArray
+
+_logger = logging.getLogger(__name__)
 
 from teleopit.bus.topics import TOPIC_ACTION, TOPIC_MIMIC_OBS, TOPIC_ROBOT_STATE
 from teleopit.controllers.observation import (
@@ -314,6 +317,14 @@ class PolicyStepRunner:
         else:
             anchor_ang_vel_w = np.zeros(3, dtype=np.float32)
 
+        _zero3 = np.zeros(3, dtype=np.float32)
+        if not np.all(np.isfinite(anchor_lin_vel_w)):
+            _logger.warning("NaN/inf in anchor_lin_vel_w, damping to zero")
+            anchor_lin_vel_w = _zero3
+        if not np.all(np.isfinite(anchor_ang_vel_w)):
+            _logger.warning("NaN/inf in anchor_ang_vel_w, damping to zero")
+            anchor_ang_vel_w = _zero3
+
         return anchor_lin_vel_w, anchor_ang_vel_w
 
     def compute_target_dof_pos(self, action: Float32Array) -> Float32Array:
@@ -421,7 +432,11 @@ class PolicyStepRunner:
         if self.last_retarget_qpos is None:
             return np.zeros((self.num_actions,), dtype=np.float32)
         prev_joint_pos = np.asarray(self.last_retarget_qpos[7:7 + self.num_actions], dtype=np.float32)
-        return np.asarray((motion_joint_pos - prev_joint_pos) * np.float32(self.policy_hz), dtype=np.float32)
+        vel = np.asarray((motion_joint_pos - prev_joint_pos) * np.float32(self.policy_hz), dtype=np.float32)
+        if not np.all(np.isfinite(vel)):
+            _logger.warning("NaN/inf in motion_joint_vel, damping to zero")
+            return np.zeros((self.num_actions,), dtype=np.float32)
+        return vel
 
     def _extract_motion_joint_data(
         self, retarget_qpos: Float64Array

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from pathlib import Path
 from typing import Sequence, cast, final
@@ -7,6 +8,8 @@ from typing import Sequence, cast, final
 import numpy as np
 
 from teleopit.interfaces import RobotState
+
+_logger = logging.getLogger(__name__)
 
 FloatVec = np.ndarray[tuple[int, ...], np.dtype[np.float32]]
 ConfigType = dict[str, object] | object
@@ -287,6 +290,10 @@ class VelCmdObservationBuilder:
         obs = np.concatenate([base_obs, velcmd_obs], dtype=np.float32)
         if obs.shape[0] != self.total_obs_size:
             raise ValueError(f"Expected {self.total_obs_size}D velcmd observation, got {obs.shape[0]}")
+        if not np.all(np.isfinite(obs)):
+            bad_indices = np.where(~np.isfinite(obs))[0]
+            _logger.warning("NaN/inf in observation at indices %s, replacing with zeros", bad_indices.tolist())
+            obs = np.where(np.isfinite(obs), obs, np.float32(0.0))
         return obs
 
     def build_observation(
