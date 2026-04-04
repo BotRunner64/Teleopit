@@ -2,7 +2,7 @@
 
 ## [0.2.0] - 2026-04-03
 
-机载 Onboard Sim2Real（G1 NX + ZMQ Pico4）、G1 Bridge SDK（C++ DDS pybind11）、独立 Standing 控制器（RL policy + timing 诊断）、实时 mocap 缓冲与 catch-up 优化。
+机载 Onboard Sim2Real（G1 NX + ZMQ Pico4）、G1 Bridge SDK（C++ DDS pybind11）、独立 Standing 控制器（RL policy + timing 诊断）、实时 mocap 缓冲与 catch-up 优化；发布模型升级至 30k checkpoint。
 
 ## [0.1.1] - 2025-03-28
 

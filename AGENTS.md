@@ -200,6 +200,36 @@ python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_general_trac
 - `train_mimic/assets/` is no longer tracked; FK tooling reuses `teleopit/retargeting/gmr/assets/unitree_g1/g1_mjlab.xml`
 - Run `python scripts/check_large_tracked_files.py` before pushing
 
+Assets are split across two ModelScope repos by type:
+
+| Repo | Type | Contents |
+|------|------|----------|
+| `BingqianWu/Teleopit-models` | model | checkpoints, GMR retargeting assets, sample BVH |
+| `BingqianWu/Teleopit-datasets` | dataset | training/validation data shards |
+
+Asset group → repo mapping is defined in `teleopit/runtime/external_assets.py` (`MODEL_REPO_ID` / `DATASET_REPO_ID`).
+
+**Uploading a new release:**
+
+```bash
+# 1. Prepare upload directory
+python scripts/prepare_modelscope_assets.py --only ckpt gmr bvh --clean
+python scripts/prepare_modelscope_assets.py --only data
+
+# 2. Upload to each repo
+modelscope upload --repo-type model BingqianWu/Teleopit-models \
+  data/modelscope_upload/checkpoints checkpoints
+modelscope upload --repo-type model BingqianWu/Teleopit-models \
+  data/modelscope_upload/archives archives
+modelscope upload --repo-type dataset BingqianWu/Teleopit-datasets \
+  data/modelscope_upload/data data
+
+# 3. Tag the release on the model repo (match the Git tag; dataset repo does not support tags)
+python -c "from modelscope.hub.api import HubApi; api=HubApi(); print(api.create_model_tag('BingqianWu/Teleopit-models', 'vX.Y.Z'))"
+```
+
+The old `BingqianWu/Teleopit-assets` repo is deprecated; do not upload to it.
+
 ### IK Offset Calibration
 For each `(robot_body, human_bone)` pair, IK config stores a quaternion offset `R_offset` (`w,x,y,z`, scalar-first):
 

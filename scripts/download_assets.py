@@ -16,9 +16,13 @@ import sys
 import tarfile
 from pathlib import Path
 
-from teleopit.runtime.external_assets import ASSET_GROUPS, AssetEntry
+from teleopit.runtime.external_assets import (
+    ASSET_GROUPS,
+    AssetEntry,
+    MODEL_REPO_ID,
+    DATASET_REPO_ID,
+)
 
-REPO_ID = "BingqianWu/Teleopit-assets"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -54,13 +58,6 @@ def _copy_path(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
-def _resolve_entry_source(cache_dir: Path, entry: AssetEntry) -> Path | None:
-    candidate = cache_dir / entry.remote_path
-    if candidate.exists():
-        return candidate
-    return None
-
-
 def download_all(groups, cache_dir):
     """Download from ModelScope to a local cache, then copy to project paths."""
     try:
@@ -70,43 +67,54 @@ def download_all(groups, cache_dir):
         subprocess.check_call([sys.executable, "-m", "pip", "install", "modelscope"])
         from modelscope import snapshot_download
 
-    # Build allow_patterns (whitelist) for the requested groups only.
-    # More reliable than ignore_file_pattern across modelscope versions.
-    requested = set(groups)
-    allow_patterns = []
-    for group_name, entries in ASSET_GROUPS.items():
-        if group_name in requested:
-            for entry in entries:
-                # Match the exact file or everything under a directory
-                allow_patterns.append(f"{entry.remote_path}*")
+    # Split entries by repo type
+    entries_by_repo: dict[str, list[AssetEntry]] = {
+        MODEL_REPO_ID: [],
+        DATASET_REPO_ID: [],
+    }
+    repo_type_map = {MODEL_REPO_ID: "model", DATASET_REPO_ID: "dataset"}
 
-    print(f"\nDownloading {REPO_ID} to {cache_dir} ...")
-    print(f"Fetching: {[e.remote_path for g in groups for e in ASSET_GROUPS[g]]}")
-    snapshot_download(
-        REPO_ID,
-        local_dir=str(cache_dir),
-        allow_patterns=allow_patterns,
-        allow_file_pattern=allow_patterns,
-    )
+    for group in groups:
+        for entry in ASSET_GROUPS[group]:
+            repo_id = MODEL_REPO_ID if entry.repo == "model" else DATASET_REPO_ID
+            entries_by_repo[repo_id].append(entry)
+
+    # Download from each repo separately
+    all_entries = []
+    for repo_id, repo_entries in entries_by_repo.items():
+        if not repo_entries:
+            continue
+        repo_type = repo_type_map[repo_id]
+        allow_patterns = [f"{e.remote_path}*" for e in repo_entries]
+        repo_cache = cache_dir / repo_type / repo_id.split("/")[-1]
+
+        print(f"\nDownloading {repo_id} ({repo_type}) to {repo_cache} ...")
+        print(f"Fetching: {[e.remote_path for e in repo_entries]}")
+        snapshot_download(
+            repo_id,
+            repo_type=repo_type,
+            local_dir=str(repo_cache),
+            allow_patterns=allow_patterns,
+            allow_file_pattern=allow_patterns,
+        )
+        all_entries.extend((repo_cache, e) for e in repo_entries)
 
     # Copy assets to their target locations
-    for group in groups:
-        entries = ASSET_GROUPS[group]
-        print(f"\n[{group}] Placing files...")
-        for entry in entries:
-            src = _resolve_entry_source(cache_dir, entry)
-            local_rel = entry.local_path
-            dst = PROJECT_ROOT / local_rel
-            if src is None:
-                print(f"  SKIP {entry.remote_path} (not found in download)")
-                continue
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            if entry.mode == "extract" and src.is_file():
-                _safe_extract_tar(src, dst)
-                print(f"  {src.relative_to(cache_dir)} -> {local_rel} (extracted)")
-            else:
-                _copy_path(src, dst)
-                print(f"  {src.relative_to(cache_dir)} -> {local_rel}")
+    print("\nPlacing files...")
+    for repo_cache, entry in all_entries:
+        src = repo_cache / entry.remote_path if (repo_cache / entry.remote_path).exists() else None
+        local_rel = entry.local_path
+        dst = PROJECT_ROOT / local_rel
+        if src is None:
+            print(f"  SKIP {entry.remote_path} (not found in download)")
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if entry.mode == "extract" and src.is_file():
+            _safe_extract_tar(src, dst)
+            print(f"  {entry.remote_path} -> {local_rel} (extracted)")
+        else:
+            _copy_path(src, dst)
+            print(f"  {entry.remote_path} -> {local_rel}")
 
     print("\nDone!")
 

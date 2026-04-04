@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Prepare a compact upload directory for the ModelScope asset repo."""
+"""Prepare a compact upload directory for the ModelScope asset repos.
+
+Asset groups by destination repo:
+  model   (BingqianWu/Teleopit-models):   ckpt, gmr, bvh
+  dataset (BingqianWu/Teleopit-datasets): data
+"""
 
 from __future__ import annotations
 
