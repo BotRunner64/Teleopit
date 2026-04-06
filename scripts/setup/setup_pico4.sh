@@ -9,7 +9,7 @@
 #   3. Install pybind11: conda install -c conda-forge pybind11
 #
 # Usage:
-#   bash scripts/setup_pico4.sh
+#   bash scripts/setup/setup_pico4.sh
 #
 set -euo pipefail
 

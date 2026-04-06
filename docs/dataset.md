@@ -5,7 +5,7 @@
 从 ModelScope 下载已处理好的训练数据，可直接用于训练和评估：
 
 ```bash
-python scripts/download_assets.py --only data
+python scripts/setup/download_assets.py --only data
 ```
 
 训练时直接传 shard 目录：

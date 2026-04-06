@@ -89,11 +89,11 @@ train_mimic/              # Training package
 `SimulationLoop` supports three simultaneous viewer windows controlled by the `viewers` config:
 
 ```bash
-python scripts/run_sim.py controller.policy_path=policy.onnx viewers=sim2sim
-python scripts/run_sim.py controller.policy_path=policy.onnx 'viewers=[mocap,retarget,sim2sim]'
-python scripts/run_sim.py controller.policy_path=policy.onnx viewers=all
-python scripts/run_sim.py controller.policy_path=policy.onnx 'viewers=[retarget,sim2sim]'
-python scripts/run_sim.py controller.policy_path=policy.onnx viewers=none
+python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=sim2sim
+python scripts/run/run_sim.py controller.policy_path=policy.onnx 'viewers=[mocap,retarget,sim2sim]'
+python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=all
+python scripts/run/run_sim.py controller.policy_path=policy.onnx 'viewers=[retarget,sim2sim]'
+python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=none
 ```
 
 - `sim2sim`: MuJoCo physics result
@@ -186,13 +186,13 @@ python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_general_trac
 ```
 
 ### GMR Retargeting
-- Self-contained in `teleopit/retargeting/gmr/`; assets need `scripts/download_assets.py --only gmr`
+- Self-contained in `teleopit/retargeting/gmr/`; assets need `scripts/setup/download_assets.py --only gmr`
 - Supports `lafan1` BVH (22 joints, 30fps, centimeters)
 - Supports `hc_mocap` BVH (50 joints, 60fps downsampled to 30fps, meters)
 - `lafan1-resolved` still needs an adapter layer and remains unsupported
 
 ### External Assets
-- Do not commit robot meshes, datasets, checkpoints, or demo media to Git; use `scripts/download_assets.py`
+- Do not commit robot meshes, datasets, checkpoints, or demo media to Git; use `scripts/setup/download_assets.py`
 - `teleopit/retargeting/gmr/assets/` is gitignored; downloaded at runtime
 - `train_mimic/assets/` is no longer tracked; FK tooling reuses `teleopit/retargeting/gmr/assets/unitree_g1/g1_mjlab.xml`
 - Run `python scripts/check_large_tracked_files.py` before pushing
@@ -210,8 +210,8 @@ Asset group → repo mapping is defined in `teleopit/runtime/external_assets.py`
 
 ```bash
 # 1. Prepare upload directory
-python scripts/prepare_modelscope_assets.py --only ckpt gmr bvh --clean
-python scripts/prepare_modelscope_assets.py --only data
+python scripts/setup/prepare_modelscope_assets.py --only ckpt gmr bvh --clean
+python scripts/setup/prepare_modelscope_assets.py --only data
 
 # 2. Upload to each repo
 modelscope upload --repo-type model BingqianWu/Teleopit-models \

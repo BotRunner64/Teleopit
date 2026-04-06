@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--repo-root",
         type=Path,
-        default=Path(__file__).resolve().parent.parent,
+        default=Path(__file__).resolve().parents[2],
         help="Repository root to scan (default: project root).",
     )
     parser.add_argument(

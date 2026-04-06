@@ -10,7 +10,7 @@
 #   - Ubuntu 20.04 / 22.04
 #   - conda environment activated (e.g. conda activate teleopit)
 #   - Run from the Teleopit repo root:
-#       bash scripts/setup_onboard.sh
+#       bash scripts/setup/setup_onboard.sh
 #
 set -euo pipefail
 
@@ -50,9 +50,9 @@ echo ""
 echo "Next steps:"
 echo "  1. Download model assets:"
 echo "       pip install modelscope"
-echo "       python scripts/download_assets.py --only gmr ckpt bvh"
+echo "       python scripts/setup/download_assets.py --only gmr ckpt bvh"
 echo ""
 echo "  2. Run onboard sim2real (replace IP with upper machine's IP):"
-echo "       python scripts/run_onboard_sim2real.py \\"
+echo "       python scripts/run/run_onboard_sim2real.py \\"
 echo "           controller.policy_path=track.onnx \\"
 echo "           input.zmq_host=<上位机IP>"

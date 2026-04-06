@@ -11,7 +11,7 @@
 ## 离线 sim2sim
 
 ```bash
-python scripts/run_sim.py \
+python scripts/run/run_sim.py \
     controller.policy_path=policy.onnx \
     input.bvh_file=data/lafan1/dance1_subject2.bvh
 ```
@@ -19,7 +19,7 @@ python scripts/run_sim.py \
 `hc_mocap` 示例：
 
 ```bash
-python scripts/run_sim.py \
+python scripts/run/run_sim.py \
     controller.policy_path=policy.onnx \
     input.bvh_file=data/hc_mocap/walk.bvh \
     input.bvh_format=hc_mocap
@@ -28,11 +28,11 @@ python scripts/run_sim.py \
 常用 override：
 
 ```bash
-python scripts/run_sim.py controller.policy_path=policy.onnx viewers=none
-python scripts/run_sim.py controller.policy_path=policy.onnx viewers=all
-python scripts/run_sim.py controller.policy_path=policy.onnx 'viewers=[retarget,sim2sim]'
-python scripts/run_sim.py controller.policy_path=policy.onnx 'viewers=[mocap,retarget,sim2sim]'
-python scripts/run_sim.py \
+python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=none
+python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=all
+python scripts/run/run_sim.py controller.policy_path=policy.onnx 'viewers=[retarget,sim2sim]'
+python scripts/run/run_sim.py controller.policy_path=policy.onnx 'viewers=[mocap,retarget,sim2sim]'
+python scripts/run/run_sim.py \
     controller.policy_path=policy.onnx \
     +num_steps=5000 \
     +record=true
@@ -41,7 +41,7 @@ python scripts/run_sim.py \
 ## 离线文件键盘重播
 
 ```bash
-python scripts/run_sim.py \
+python scripts/run/run_sim.py \
     controller.policy_path=policy.onnx \
     input.bvh_file=data/sample_bvh/aiming1_subject1.bvh \
     playback.keyboard.enabled=true
@@ -50,16 +50,16 @@ python scripts/run_sim.py \
 常见 override：
 
 ```bash
-python scripts/run_sim.py \
+python scripts/run/run_sim.py \
     controller.policy_path=policy.onnx \
     input.bvh_file=data/sample_bvh/aiming1_subject1.bvh \
     playback.keyboard.enabled=true \
     playback.pause_on_end=true
-python scripts/run_sim.py \
+python scripts/run/run_sim.py \
     controller.policy_path=policy.onnx \
     input.bvh_file=data/sample_bvh/aiming1_subject1.bvh \
     viewers=none
-python scripts/run_sim.py \
+python scripts/run/run_sim.py \
     controller.policy_path=policy.onnx \
     input.bvh_file=data/sample_bvh/aiming1_subject1.bvh \
     num_steps=300
@@ -92,7 +92,7 @@ python scripts/run_sim.py \
 ## 录制
 
 ```bash
-python scripts/run_sim.py \
+python scripts/run/run_sim.py \
     controller.policy_path=policy.onnx \
     input.bvh_file=data/lafan1/dance1_subject2.bvh \
     +record=true \
@@ -112,10 +112,10 @@ python scripts/run_sim.py \
 ## 渲染
 
 ```bash
-MUJOCO_GL=egl python scripts/render_sim.py \
+MUJOCO_GL=egl python scripts/render/render_sim.py \
     --bvh data/lafan1/dance1_subject2.bvh \
     --policy policy.onnx
-MUJOCO_GL=egl python scripts/render_sim.py \
+MUJOCO_GL=egl python scripts/render/render_sim.py \
     --bvh data/hc_mocap/wander.bvh \
     --format hc_mocap \
     --policy policy.onnx

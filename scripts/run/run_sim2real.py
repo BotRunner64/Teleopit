@@ -9,7 +9,7 @@ from teleopit.runtime.cli import validate_policy_path
 from teleopit.sim2real.controller import Sim2RealController
 
 
-@hydra.main(version_base=None, config_path="../teleopit/configs", config_name="sim2real")
+@hydra.main(version_base=None, config_path="../../teleopit/configs", config_name="sim2real")
 def main(cfg: DictConfig) -> None:
     validate_policy_path(cfg, "run_sim2real.py")
     controller = Sim2RealController(cfg)

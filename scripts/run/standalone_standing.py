@@ -9,7 +9,7 @@ STANDING mode in Sim2RealController. Only depends on:
   - numpy
 
 Usage:
-    python scripts/standalone_standing.py \
+    python scripts/run/standalone_standing.py \
         --policy track.onnx \
         --network-interface enp130s0
 
@@ -35,7 +35,7 @@ import time
 from collections import deque
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 import mujoco
 import numpy as np

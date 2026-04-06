@@ -30,9 +30,9 @@
 用项目自带的下载脚本，不要手动提交资源文件：
 
 ```bash
-python scripts/download_assets.py
-python scripts/download_assets.py --only gmr
-python scripts/download_assets.py --only ckpt bvh
+python scripts/setup/download_assets.py
+python scripts/setup/download_assets.py --only gmr
+python scripts/setup/download_assets.py --only ckpt bvh
 ```
 
 下载脚本会按 repo 类型分别调用 ModelScope API，并将文件放置到对应本地路径：
@@ -49,8 +49,8 @@ python scripts/download_assets.py --only ckpt bvh
 ### 步骤一：准备上传目录
 
 ```bash
-python scripts/prepare_modelscope_assets.py --only ckpt gmr bvh --clean
-python scripts/prepare_modelscope_assets.py --only data
+python scripts/setup/prepare_modelscope_assets.py --only ckpt gmr bvh --clean
+python scripts/setup/prepare_modelscope_assets.py --only data
 ```
 
 产物在 `data/modelscope_upload/`。

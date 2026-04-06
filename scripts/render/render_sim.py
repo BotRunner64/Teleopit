@@ -8,7 +8,7 @@ with ALL frames rendered, so they have identical duration:
   3. *_sim2sim.mp4   — Full RL policy pipeline (mocap input → GMR → obs → ONNX → PD → MuJoCo)
 
 Usage:
-    MUJOCO_GL=egl python scripts/render_sim.py \
+    MUJOCO_GL=egl python scripts/render/render_sim.py \
         --bvh data/lafan1/dance1_subject2.bvh \
         --policy /path/to/policy.onnx
 """
@@ -42,7 +42,7 @@ from teleopit.sim.reference_motion import OfflineReferenceMotion  # noqa: E402
 
 
 def _find_project_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    return Path(__file__).resolve().parents[2]
 
 
 def _read_bvh_fps(bvh_path: Path) -> int:

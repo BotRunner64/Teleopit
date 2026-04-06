@@ -15,7 +15,7 @@ def validate_policy_path(cfg: Any, script_name: str) -> Path:
     if not policy_raw:
         raise ValueError(
             "controller.policy_path is required and must point to ONNX exported from "
-            f"train_mimic checkpoint.\nExample: python scripts/{script_name} "
+            f"train_mimic checkpoint.\nExample: python scripts/run/{script_name} "
             "controller.policy_path=policy.onnx"
         )
 

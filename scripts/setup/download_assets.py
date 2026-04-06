@@ -2,11 +2,11 @@
 """One-click download script for Teleopit assets from ModelScope.
 
 Usage:
-    python scripts/download_assets.py            # download everything
-    python scripts/download_assets.py --only gmr  # only GMR retargeting assets
-    python scripts/download_assets.py --only ckpt  # only checkpoints
-    python scripts/download_assets.py --only data  # only training data
-    python scripts/download_assets.py --only bvh   # only sample BVH
+    python scripts/setup/download_assets.py            # download everything
+    python scripts/setup/download_assets.py --only gmr  # only GMR retargeting assets
+    python scripts/setup/download_assets.py --only ckpt  # only checkpoints
+    python scripts/setup/download_assets.py --only data  # only training data
+    python scripts/setup/download_assets.py --only bvh   # only sample BVH
 """
 
 import argparse
@@ -23,7 +23,7 @@ from teleopit.runtime.external_assets import (
     DATASET_REPO_ID,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _remove_path(path: Path) -> None:
@@ -47,6 +47,10 @@ def _safe_extract_tar(archive_path: Path, dst: Path) -> None:
 
     _remove_path(dst)
     tmp_dst.replace(dst)
+
+
+def _resolve_entry_source(repo_cache: Path, entry: AssetEntry) -> Path:
+    return repo_cache / entry.remote_path
 
 
 def _copy_path(src: Path, dst: Path) -> None:
@@ -102,7 +106,7 @@ def download_all(groups, cache_dir):
     # Copy assets to their target locations
     print("\nPlacing files...")
     for repo_cache, entry in all_entries:
-        src = repo_cache / entry.remote_path if (repo_cache / entry.remote_path).exists() else None
+        src = _resolve_entry_source(repo_cache, entry) if (repo_cache / entry.remote_path).exists() else None
         local_rel = entry.local_path
         dst = PROJECT_ROOT / local_rel
         if src is None:

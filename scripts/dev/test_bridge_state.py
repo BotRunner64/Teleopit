@@ -5,7 +5,7 @@ import time
 import copy
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT / "third_party" / "unitree_sdk2_python"))
 
 import numpy as np

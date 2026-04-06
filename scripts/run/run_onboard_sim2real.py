@@ -5,8 +5,8 @@ runs retargeting + RL policy + DDS robot control locally on the
 G1 onboard computer.
 
 Usage (on G1 onboard computer):
-    python scripts/run_onboard_sim2real.py controller.policy_path=policy.onnx
-    python scripts/run_onboard_sim2real.py controller.policy_path=policy.onnx input.zmq_host=192.168.1.100
+    python scripts/run/run_onboard_sim2real.py controller.policy_path=policy.onnx
+    python scripts/run/run_onboard_sim2real.py controller.policy_path=policy.onnx input.zmq_host=192.168.1.100
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from teleopit.runtime.cli import validate_policy_path
 from teleopit.sim2real.controller import Sim2RealController
 
 
-@hydra.main(version_base=None, config_path="../teleopit/configs", config_name="onboard_sim2real")
+@hydra.main(version_base=None, config_path="../../teleopit/configs", config_name="onboard_sim2real")
 def main(cfg: DictConfig) -> None:
     validate_policy_path(cfg, "run_onboard_sim2real.py")
     controller = Sim2RealController(cfg)

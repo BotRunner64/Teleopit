@@ -33,7 +33,7 @@ import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def get_human_facing_yaw(bvh_path: str) -> float:

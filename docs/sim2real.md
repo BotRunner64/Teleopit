@@ -31,12 +31,12 @@
   pip install third_party/g1_bridge_sdk
   ```
 - `pip install -e '.[sim2real]'`
-- Pico 路径额外需要：`bash scripts/setup_pico4.sh`
+- Pico 路径额外需要：`bash scripts/setup/setup_pico4.sh`
 
 ## 离线动作文件播放
 
 ```bash
-python scripts/run_sim2real.py \
+python scripts/run/run_sim2real.py \
     controller.policy_path=track.onnx \
     real_robot.network_interface=eth0 \
     input.bvh_file=data/sample_bvh/aiming1_subject1.bvh
@@ -91,7 +91,7 @@ ssh user@192.168.1.101
 
 ```bash
 # SSH 到 NX 后，在 Teleopit 仓库目录执行一键安装
-bash scripts/setup_onboard.sh
+bash scripts/setup/setup_onboard.sh
 ```
 
 此脚本会安装系统依赖、构建 g1_bridge_sdk 并安装 teleopit[onboard]。
@@ -100,7 +100,7 @@ bash scripts/setup_onboard.sh
 
 ```bash
 # PC1 (NX) 上运行
-python scripts/run_onboard_sim2real.py \
+python scripts/run/run_onboard_sim2real.py \
     controller.policy_path=track.onnx \
     real_robot.network_interface=wlan0 \
     input.zmq_host=192.168.1.102
@@ -148,31 +148,31 @@ python scripts/run_onboard_sim2real.py \
 
 ```bash
 # 调整控制频率
-python scripts/run_sim2real.py controller.policy_path=track.onnx policy_hz=30
+python scripts/run/run_sim2real.py controller.policy_path=track.onnx policy_hz=30
 
 # 指定离线 BVH 文件
-python scripts/run_sim2real.py \
+python scripts/run/run_sim2real.py \
     controller.policy_path=track.onnx \
     input.bvh_file=data/sample_bvh/aiming1_subject1.bvh
 
 # Pico 超时时间
-python scripts/run_sim2real.py --config-name pico4_sim2real \
+python scripts/run/run_sim2real.py --config-name pico4_sim2real \
     controller.policy_path=track.onnx \
     input.pico4_timeout=30
 
 # 修改 Pico 暂停按键
-python scripts/run_sim2real.py --config-name pico4_sim2real \
+python scripts/run/run_sim2real.py --config-name pico4_sim2real \
     controller.policy_path=track.onnx \
     input.pause_button=right_axis_click
 
 # 调整暂停恢复过渡
-python scripts/run_sim2real.py --config-name pico4_sim2real \
+python scripts/run/run_sim2real.py --config-name pico4_sim2real \
     controller.policy_path=track.onnx \
     pause_resume_transition_duration=1.5 \
     pause_resume_warmup_steps=3
 
 # 指定网卡
-python scripts/run_sim2real.py \
+python scripts/run/run_sim2real.py \
     controller.policy_path=track.onnx \
     real_robot.network_interface=enp3s0
 ```
@@ -182,7 +182,7 @@ python scripts/run_sim2real.py \
 `standalone_standing.py` 是一个不依赖 Teleopit 主框架的独立测试脚本，可用于快速验证机器人硬件和 RL policy：
 
 ```bash
-python scripts/standalone_standing.py \
+python scripts/run/standalone_standing.py \
     --policy track.onnx \
     --network-interface eth0
 ```

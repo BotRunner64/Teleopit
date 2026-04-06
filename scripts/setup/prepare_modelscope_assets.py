@@ -16,7 +16,7 @@ from pathlib import Path
 from teleopit.runtime.external_assets import ASSET_GROUPS, AssetEntry
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _remove_path(path: Path) -> None:

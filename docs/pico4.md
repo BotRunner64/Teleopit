@@ -43,7 +43,7 @@ Pico 头显 (XRoboToolkit App, 全身追踪)
 ### 一键安装 SDK
 
 ```bash
-bash scripts/setup_pico4.sh
+bash scripts/setup/setup_pico4.sh
 ```
 
 脚本会自动完成：
@@ -61,7 +61,7 @@ python -c "import xrobotoolkit_sdk; print('OK')"
 先在 MuJoCo 仿真中确认 VR 追踪数据和策略推理正常：
 
 ```bash
-python scripts/run_sim.py \
+python scripts/run/run_sim.py \
     --config-name pico4_sim \
     controller.policy_path=track.onnx
 ```
@@ -83,7 +83,7 @@ Pico sim2sim 也支持会话级暂停/恢复：
 pip install -e '.[sim2real]'
 git submodule update --init --recursive
 
-python scripts/run_sim2real.py \
+python scripts/run/run_sim2real.py \
     --config-name pico4_sim2real \
     controller.policy_path=track.onnx \
     real_robot.network_interface=eth0
@@ -106,33 +106,33 @@ python scripts/run_sim2real.py \
 
 ```bash
 # 调整 Pico 等待超时（默认 60 秒）
-python scripts/run_sim.py --config-name pico4_sim \
+python scripts/run/run_sim.py --config-name pico4_sim \
     controller.policy_path=track.onnx \
     input.pico4_timeout=30
 
 # 调整 sim2sim 的暂停恢复过渡
-python scripts/run_sim.py --config-name pico4_sim \
+python scripts/run/run_sim.py --config-name pico4_sim \
     controller.policy_path=track.onnx \
     pause_resume_transition_duration=1.0
 
 # 调整策略频率
-python scripts/run_sim2real.py --config-name pico4_sim2real \
+python scripts/run/run_sim2real.py --config-name pico4_sim2real \
     controller.policy_path=track.onnx \
     policy_hz=30
 
 # 修改暂停按键
-python scripts/run_sim2real.py --config-name pico4_sim2real \
+python scripts/run/run_sim2real.py --config-name pico4_sim2real \
     controller.policy_path=track.onnx \
     input.pause_button=right_axis_click
 
 # 调整暂停恢复过渡
-python scripts/run_sim2real.py --config-name pico4_sim2real \
+python scripts/run/run_sim2real.py --config-name pico4_sim2real \
     controller.policy_path=track.onnx \
     pause_resume_transition_duration=1.5 \
     pause_resume_warmup_steps=3
 
 # 指定网卡
-python scripts/run_sim2real.py --config-name pico4_sim2real \
+python scripts/run/run_sim2real.py --config-name pico4_sim2real \
     controller.policy_path=track.onnx \
     real_robot.network_interface=enp3s0
 ```
@@ -141,7 +141,7 @@ python scripts/run_sim2real.py --config-name pico4_sim2real \
 
 | 现象 | 可能原因 | 解决方案 |
 |------|---------|---------|
-| `ImportError: xrobotoolkit_sdk` | SDK 未安装 | 运行 `bash scripts/setup_pico4.sh` |
+| `ImportError: xrobotoolkit_sdk` | SDK 未安装 | 运行 `bash scripts/setup/setup_pico4.sh` |
 | `TimeoutError: No Pico4 body data` | 头显未连接或追踪未启动 | 检查 XRoboToolkit 应用状态和网络 |
 | 机器人不跟随 VR 动作 | 仍在 STANDING 模式 | 按遥控器 Y 进入 MOCAP |
 | `libPXREARobotSDK.so not found` | PC Service 未安装 | 安装 deb 包后重新运行 setup 脚本 |

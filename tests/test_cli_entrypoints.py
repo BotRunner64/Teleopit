@@ -7,7 +7,7 @@ from pathlib import Path
 
 def _run_cli(project_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "scripts/run_sim.py", *args],
+        [sys.executable, "scripts/run/run_sim.py", *args],
         cwd=project_root,
         capture_output=True,
         text=True,

@@ -31,13 +31,13 @@ pip install -e '.[sim2real]'  # 真机部署
 
 ```bash
 pip install modelscope
-python scripts/download_assets.py
+python scripts/setup/download_assets.py
 ```
 
 只下载推理必需的部分：
 
 ```bash
-python scripts/download_assets.py --only gmr ckpt bvh
+python scripts/setup/download_assets.py --only gmr ckpt bvh
 ```
 
 下载内容说明：
@@ -56,7 +56,7 @@ python scripts/download_assets.py --only gmr ckpt bvh
 离线 sim2sim：
 
 ```bash
-python scripts/run_sim.py \
+python scripts/run/run_sim.py \
     controller.policy_path=track.onnx \
     input.bvh_file=data/sample_bvh/aiming1_subject1.bvh
 ```
@@ -83,11 +83,11 @@ python train_mimic/scripts/save_onnx.py \
 
 | 场景 | 命令 | 文档 |
 |------|------|------|
-| **离线 sim2real 动作播放** | `python scripts/run_sim2real.py controller.policy_path=track.onnx input.bvh_file=...` | [sim2real.md](docs/sim2real.md) |
-| **Pico 4 VR 遥操作** | `python scripts/run_sim.py --config-name pico4_sim ...` | **[Pico VR 部署](docs/pico4.md)** |
-| **Pico 4 真机部署** | `python scripts/run_sim2real.py --config-name pico4_sim2real ...` | **[Pico VR 部署](docs/pico4.md)** |
-| **G1 Onboard（NX 机载）** | `python scripts/run_onboard_sim2real.py ...` | [sim2real.md](docs/sim2real.md) |
-| **离线 sim2sim 键盘重播** | `python scripts/run_sim.py controller.policy_path=track.onnx input.bvh_file=... playback.keyboard.enabled=true` | [inference.md](docs/inference.md) |
+| **离线 sim2real 动作播放** | `python scripts/run/run_sim2real.py controller.policy_path=track.onnx input.bvh_file=...` | [sim2real.md](docs/sim2real.md) |
+| **Pico 4 VR 遥操作** | `python scripts/run/run_sim.py --config-name pico4_sim ...` | **[Pico VR 部署](docs/pico4.md)** |
+| **Pico 4 真机部署** | `python scripts/run/run_sim2real.py --config-name pico4_sim2real ...` | **[Pico VR 部署](docs/pico4.md)** |
+| **G1 Onboard（NX 机载）** | `python scripts/run/run_onboard_sim2real.py ...` | [sim2real.md](docs/sim2real.md) |
+| **离线 sim2sim 键盘重播** | `python scripts/run/run_sim.py controller.policy_path=track.onnx input.bvh_file=... playback.keyboard.enabled=true` | [inference.md](docs/inference.md) |
 | 训练与导出 | `python train_mimic/scripts/train.py ...` | [training.md](docs/training.md) |
 
 离线 `sim2sim` 键盘映射：`Space/P` 暂停/恢复，`R` 从头重播，`Q` 停止；`sim2real` 继续使用遥控器，`Y` 进入播放、`A` 暂停/恢复、`B` 重播、`X` 回站立。

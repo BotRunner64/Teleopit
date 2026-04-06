@@ -24,7 +24,7 @@ class RobotState:
 class InputProvider(Protocol):
     """Minimal interface shared by all human-motion input sources.
 
-    Satisfied by both offline providers (``BVHInputProvider``, ``_LoopingInputProvider``)
+    Satisfied by both offline providers (``BVHInputProvider``)
     and realtime providers (``Pico4InputProvider``, ``ZMQInputProvider``).
     """
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,36 +26,6 @@ class MocapComponents:
     retargeter: Any
     controller: Any
     obs_builder: Any
-
-
-class _LoopingInputProvider:
-    def __init__(
-        self, provider: Any, on_reset: Callable[[], None] | None = None
-    ) -> None:
-        self._provider = provider
-        self._on_reset = on_reset
-
-    def get_frame(self) -> dict[str, tuple[Any, Any]]:
-        if not self._provider.is_available():
-            self._provider.reset()
-            if self._on_reset is not None:
-                self._on_reset()
-        return self._provider.get_frame()
-
-    def is_available(self) -> bool:
-        return True
-
-    @property
-    def fps(self) -> int:
-        return self._provider.fps
-
-    @property
-    def bone_names(self) -> list[str]:
-        return self._provider.bone_names
-
-    @property
-    def bone_parents(self) -> Any:
-        return self._provider.bone_parents
 
 
 
@@ -207,7 +176,7 @@ def _build_policy_components(
 
 def _prepare_input_cfg(input_cfg: Any, project_root: Path, *, sim2real: bool) -> str:
     provider_kind = str(cfg_get(input_cfg, "provider", "bvh")).lower()
-    if provider_kind in ("bvh", "vr_stub"):
+    if provider_kind == "bvh":
         normalize_path_in_cfg(
             input_cfg,
             "bvh_file",
@@ -220,7 +189,7 @@ def _prepare_input_cfg(input_cfg: Any, project_root: Path, *, sim2real: bool) ->
     elif provider_kind != "pico4":
         raise ValueError(
             f"Unsupported input.provider='{provider_kind}'. "
-            "Supported providers are bvh, vr_stub, pico4, zmq_pico4."
+            "Supported providers are bvh, pico4, zmq_pico4."
         )
 
     if sim2real and provider_kind not in ("bvh", "pico4", "zmq_pico4"):
@@ -263,13 +232,10 @@ def _build_input_provider(
             pause_debounce_s=float(cfg_get(input_cfg, "pause_debounce_s", 0.25)),
         )
 
-    provider = bvh_input_cls(
+    return bvh_input_cls(
         bvh_path=str(cfg_get(input_cfg, "bvh_file")),
         human_format=str(cfg_get(input_cfg, "bvh_format", "lafan1")),
     )
-    if provider_kind == "vr_stub":
-        return _LoopingInputProvider(provider)
-    return provider
 
 
 
@@ -332,8 +298,6 @@ def build_inference_components(
         bvh_input_cls=bvh_input_cls,
         pico4_input_cls=pico4_input_cls,
     )
-    if isinstance(input_provider, _LoopingInputProvider) and hasattr(controller, "reset"):
-        input_provider._on_reset = controller.reset
     retargeter = _build_retargeter(input_cfg, input_provider, retargeter_cls)
     return InferenceComponents(
         robot=robot,

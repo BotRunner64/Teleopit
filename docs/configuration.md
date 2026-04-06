@@ -77,7 +77,7 @@ target_dof_pos = clip(action, low, high) * action_scale + default_dof_pos
 ### 离线 sim2sim
 
 ```bash
-python scripts/run_sim.py \
+python scripts/run/run_sim.py \
   controller.policy_path=policy.onnx \
   input.bvh_file=data/lafan1/dance1_subject2.bvh \
   policy_hz=50 \
@@ -87,12 +87,12 @@ python scripts/run_sim.py \
 ### 改 viewer
 
 ```bash
-python scripts/run_sim.py controller.policy_path=policy.onnx viewers=all
-python scripts/run_sim.py controller.policy_path=policy.onnx viewers=none
-python scripts/run_sim.py \
+python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=all
+python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=none
+python scripts/run/run_sim.py \
     controller.policy_path=policy.onnx \
     'viewers=[retarget,sim2sim]'
-python scripts/run_sim.py \
+python scripts/run/run_sim.py \
     controller.policy_path=policy.onnx \
     'viewers=[mocap,retarget,sim2sim]'
 ```
@@ -102,7 +102,7 @@ python scripts/run_sim.py \
 ### 开启离线播放键盘控制
 
 ```bash
-python scripts/run_sim.py \
+python scripts/run/run_sim.py \
     controller.policy_path=policy.onnx \
     input.bvh_file=data/sample_bvh/aiming1_subject1.bvh \
     playback.keyboard.enabled=true
@@ -111,7 +111,7 @@ python scripts/run_sim.py \
 ### 改真机网络接口
 
 ```bash
-python scripts/run_sim2real.py \
+python scripts/run/run_sim2real.py \
     controller.policy_path=policy.onnx \
     real_robot.network_interface=enp3s0
 ```
@@ -141,7 +141,7 @@ Teleopit 当前配置与运行时逻辑遵循 fail-fast 原则：
 因为 `input/bvh.yaml` 已不再提供机器相关默认路径。最稳妥的做法始终是命令行显式指定：
 
 ```bash
-python scripts/run_sim.py controller.policy_path=policy.onnx input.bvh_file=...
+python scripts/run/run_sim.py controller.policy_path=policy.onnx input.bvh_file=...
 ```
 
 ### 为什么 `viewer=true` 不再工作？
@@ -149,8 +149,8 @@ python scripts/run_sim.py controller.policy_path=policy.onnx input.bvh_file=...
 因为 legacy alias 已移除。请统一改成：
 
 ```bash
-python scripts/run_sim.py controller.policy_path=policy.onnx viewers=sim2sim
-python scripts/run_sim.py controller.policy_path=policy.onnx viewers=none
+python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=sim2sim
+python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=none
 ```
 
 ## 继续阅读

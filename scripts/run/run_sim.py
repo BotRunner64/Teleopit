@@ -7,7 +7,7 @@ from teleopit.pipeline import TeleopPipeline
 from teleopit.runtime.cli import validate_policy_path
 
 
-@hydra.main(version_base=None, config_path="../teleopit/configs", config_name="default")
+@hydra.main(version_base=None, config_path="../../teleopit/configs", config_name="default")
 def main(cfg: DictConfig) -> None:
     validate_policy_path(cfg, "run_sim.py")
     pipeline = TeleopPipeline(cfg)
