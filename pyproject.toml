@@ -26,6 +26,7 @@ dependencies = [
     "rich",
     "loop-rate-limiters",
     "imageio",
+    "huggingface_hub",
 ]
 
 [project.optional-dependencies]

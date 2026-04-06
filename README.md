@@ -4,56 +4,41 @@
 
 <p align="center">
   <h1 align="center">Teleopit</h1>
-  <h3 align="center">轻量、可扩展的人形机器人全身遥操作框架</h3>
+  <h3 align="center">Lightweight, extensible whole-body teleoperation framework for humanoid robots</h3>
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick Start</a> •
-  <a href="docs/pico4.md">Pico VR 部署</a> •
-  <a href="docs/sim2real.md">真机部署</a> •
-  <a href="docs/training.md">训练</a> •
-  <a href="docs/assets.md">资源说明</a>
+  <a href="https://BotRunner64.github.io/Teleopit/">Documentation</a> &bull;
+  <a href="https://BotRunner64.github.io/Teleopit/docs/getting-started/quick-start">Quick Start</a> &bull;
+  <a href="https://BotRunner64.github.io/Teleopit/docs/tutorials/pico4-vr">Pico VR</a> &bull;
+  <a href="https://BotRunner64.github.io/Teleopit/docs/tutorials/sim2real">Sim2Real</a> &bull;
+  <a href="https://BotRunner64.github.io/Teleopit/docs/tutorials/training">Training</a>
 </p>
 
-## 安装
+## Installation
 
 ```bash
-pip install -e .              # 推理（sim2sim）
-pip install -e '.[train]'     # 训练
-pip install -e '.[sim2real]'  # 真机部署
+pip install -e .              # Inference (sim2sim)
+pip install -e '.[train]'     # Training
+pip install -e '.[sim2real]'  # Hardware deployment
 ```
 
-核心 mocap 可视化与离线渲染现已统一为 MuJoCo 后端，不再依赖 `matplotlib`；旧的 `bvh` 可视化命名已废弃。
-
-## 下载模型和数据
-
-一键下载所有资源（模型、数据、GMR retargeting assets）：
+## Download Models and Data
 
 ```bash
 pip install modelscope
 python scripts/setup/download_assets.py
 ```
 
-只下载推理必需的部分：
+Download only inference essentials:
 
 ```bash
 python scripts/setup/download_assets.py --only gmr ckpt bvh
 ```
 
-下载内容说明：
-
-| 资源 | 大小 | 用途 |
-|------|------|------|
-| `track.onnx` | 4M | ONNX 推理模型 |
-| `track.pt` | 27M | PyTorch checkpoint（resume 训练用） |
-| `data/datasets/seed/train/shard_*.npz` | ~25G | 训练集 |
-| `data/datasets/seed/val/shard_*.npz` | ~1.4G | 验证集 |
-| `data/sample_bvh/*.bvh` | 5M | 示例动作文件 |
-| `teleopit/retargeting/gmr/assets/` | ~1.2G | GMR retargeting 机器人模型 |
-
 ## Quick Start
 
-离线 sim2sim：
+Offline sim2sim:
 
 ```bash
 python scripts/run/run_sim.py \
@@ -61,7 +46,7 @@ python scripts/run/run_sim.py \
     input.bvh_file=data/sample_bvh/aiming1_subject1.bvh
 ```
 
-训练（传 shard 目录）：
+Training:
 
 ```bash
 python train_mimic/scripts/train.py \
@@ -70,7 +55,7 @@ python train_mimic/scripts/train.py \
     --max_iterations 30000
 ```
 
-导出 ONNX：
+Export ONNX:
 
 ```bash
 python train_mimic/scripts/save_onnx.py \
@@ -79,42 +64,42 @@ python train_mimic/scripts/save_onnx.py \
     --history_length 10
 ```
 
-## 更多用法
+## Use Cases
 
-| 场景 | 命令 | 文档 |
-|------|------|------|
-| **离线 sim2real 动作播放** | `python scripts/run/run_sim2real.py controller.policy_path=track.onnx input.bvh_file=...` | [sim2real.md](docs/sim2real.md) |
-| **Pico 4 VR 遥操作** | `python scripts/run/run_sim.py --config-name pico4_sim ...` | **[Pico VR 部署](docs/pico4.md)** |
-| **Pico 4 真机部署** | `python scripts/run/run_sim2real.py --config-name pico4_sim2real ...` | **[Pico VR 部署](docs/pico4.md)** |
-| **G1 Onboard（NX 机载）** | `python scripts/run/run_onboard_sim2real.py ...` | [sim2real.md](docs/sim2real.md) |
-| **离线 sim2sim 键盘重播** | `python scripts/run/run_sim.py controller.policy_path=track.onnx input.bvh_file=... playback.keyboard.enabled=true` | [inference.md](docs/inference.md) |
-| 训练与导出 | `python train_mimic/scripts/train.py ...` | [training.md](docs/training.md) |
+| Scenario | Command | Docs |
+|----------|---------|------|
+| **Offline sim2sim** | `python scripts/run/run_sim.py controller.policy_path=track.onnx input.bvh_file=...` | [Sim2Sim](https://BotRunner64.github.io/Teleopit/docs/tutorials/offline-sim2sim) |
+| **Pico 4 VR teleoperation** | `python scripts/run/run_sim.py --config-name pico4_sim ...` | [Pico VR](https://BotRunner64.github.io/Teleopit/docs/tutorials/pico4-vr) |
+| **Pico 4 hardware deploy** | `python scripts/run/run_sim2real.py --config-name pico4_sim2real ...` | [Pico VR](https://BotRunner64.github.io/Teleopit/docs/tutorials/pico4-vr) |
+| **G1 Onboard (NX)** | `python scripts/run/run_onboard_sim2real.py ...` | [Onboard](https://BotRunner64.github.io/Teleopit/docs/tutorials/onboard-sim2real) |
+| **Offline keyboard replay** | `python scripts/run/run_sim.py ... playback.keyboard.enabled=true` | [Sim2Sim](https://BotRunner64.github.io/Teleopit/docs/tutorials/offline-sim2sim) |
+| **Training & export** | `python train_mimic/scripts/train.py ...` | [Training](https://BotRunner64.github.io/Teleopit/docs/tutorials/training) |
 
-离线 `sim2sim` 键盘映射：`Space/P` 暂停/恢复，`R` 从头重播，`Q` 停止；`sim2real` 继续使用遥控器，`Y` 进入播放、`A` 暂停/恢复、`B` 重播、`X` 回站立。
-Pico mocap 暂停恢复的重要提示：恢复时尽量不要运动，尽量让恢复姿态接近暂停姿态；如果出现扭曲，立即再次暂停，等姿态稳定后再恢复。
+Offline sim2sim keyboard: `Space/P` pause/resume, `R` replay, `Q` stop. Sim2real uses the wireless remote: `Y` enter playback, `A` pause/resume, `B` replay, `X` return to standing.
 
-## 文档
+## Documentation
 
-- **[Pico VR 部署](docs/pico4.md)**：Pico 4 / Pico 4 Ultra 全身追踪遥操作完整指南
-- [真机部署](docs/sim2real.md)：Unitree G1 部署、离线动作播放、Pico 遥操作
-- [G1 Bridge SDK](docs/g1_bridge_sdk.md)：C++ DDS 桥接库安装与 API 说明
-- [推理与运行](docs/inference.md)：离线播放、viewer、录制、遥控重播
-- [训练](docs/training.md)：训练、评估、导出 ONNX
-- [数据集](docs/dataset.md)：数据下载与自定义构建
-- [资源管理](docs/assets.md)：外部资源下载与 ModelScope 上传
-- [配置说明](docs/configuration.md)：Hydra 配置入口
-- [架构](docs/architecture.md)：系统边界与技术规格
+Full documentation is available at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Teleopit/)**.
 
-## 更新日志
+- [Installation](https://BotRunner64.github.io/Teleopit/docs/getting-started/installation)
+- [Configuration](https://BotRunner64.github.io/Teleopit/docs/configuration/overview)
+- [Architecture](https://BotRunner64.github.io/Teleopit/docs/reference/architecture)
+- [Asset Management](https://BotRunner64.github.io/Teleopit/docs/reference/assets)
+
+## Changelog
 
 ### v0.2.0 (2026-04-03)
 
-机载 Onboard Sim2Real（G1 NX + ZMQ Pico4）、G1 Bridge SDK（C++ DDS pybind11）、独立 Standing 控制器（RL policy + timing 诊断）、实时 mocap 缓冲与 catch-up 优化；发布模型升级至 30k checkpoint。
+Onboard Sim2Real (G1 NX + ZMQ Pico4), G1 Bridge SDK (C++ DDS pybind11), standalone Standing controller (RL policy + timing diagnostics), realtime mocap buffering with catch-up optimization; released model upgraded to 30k checkpoint.
 
 ### v0.1.1 (2025-03-28)
 
-数据集 shard-only 改造、adaptive_bin 采样、外部资源管理、仓库瘦身。
+Dataset shard-only refactor, adaptive_bin sampling, external asset management, repository slimming.
 
 ### v0.1.0 (2025-03-25)
 
-首个公开版本：General-Tracking-G1 全身追踪训练、ONNX sim2sim 推理、Pico 4 VR 遥操作、Unitree G1 真机部署。
+Initial public release: General-Tracking-G1 whole-body tracking training, ONNX sim2sim inference, Pico 4 VR teleoperation, Unitree G1 hardware deployment.
+
+## License
+
+[MIT](LICENSE)

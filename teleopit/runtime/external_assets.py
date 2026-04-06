@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 MODEL_REPO_ID = "BingqianWu/Teleopit-models"
 DATASET_REPO_ID = "BingqianWu/Teleopit-datasets"
 
+HF_MODEL_REPO_ID = "12e21/Teleopit-models"
+HF_DATASET_REPO_ID = "12e21/Teleopit-datasets"
+
 
 @dataclass(frozen=True)
 class AssetEntry:
