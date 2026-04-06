@@ -28,15 +28,28 @@ from teleopit.controllers.observation import (
     compute_fixed_yaw_alignment_quat,
     rotate_motion_qpos_by_yaw,
 )
-from teleopit.controllers.qpos_interpolator import QposInterpolator
+from teleopit.controllers.qpos_interpolator import QposInterpolator, QposLowPassFilter
 from teleopit.controllers.rl_policy import RLPolicyController
+from teleopit.inputs.bvh_provider import BVHInputProvider
 from teleopit.inputs.pico4_provider import Pico4InputProvider
-from teleopit.inputs.udp_bvh_provider import UDPBVHInputProvider
+from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType, RealtimeInputPacket
 from teleopit.retargeting.core import RetargetingModule
-from teleopit.runtime.common import cfg_get
+from teleopit.runtime.common import cfg_get, parse_alpha, parse_nonnegative_int, parse_optional_nonnegative_int
 from teleopit.runtime.factory import build_sim2real_mocap_components
+from teleopit.runtime.mocap_session import MocapSessionManager, MocapSessionState
+from teleopit.runtime.offline_playback import OfflinePlaybackController
+from teleopit.sim.reference_motion import OfflineReferenceMotion
 from teleopit.sim.reference_timeline import ReferenceSample, ReferenceTimeline, ReferenceWindow, ReferenceWindowBuilder
-from teleopit.sim.realtime_utils import ExponentialVecSmoother, RealtimeReferenceManager
+from teleopit.sim.reference_utils import (
+    build_offline_reference_window,
+    build_static_reference_window,
+    obs_builder_requires_reference_window,
+    sample_offline_reference_at,
+)
+from teleopit.sim.realtime_utils import (
+    ExponentialVecSmoother,
+    RealtimeReferenceManager,
+)
 from teleopit.sim2real.remote import UnitreeRemote
 from teleopit.sim2real.unitree_g1 import UnitreeG1Robot
 
@@ -70,29 +83,80 @@ class Sim2RealController:
 
         # Motion command transition smoothing
         transition_dur = float(cfg_get(cfg, "transition_duration", 0.0) or 0.0)
+        self._mocap_transition_duration = transition_dur
+        self._pause_resume_transition_duration = float(
+            cfg_get(cfg, "pause_resume_transition_duration", transition_dur) or 0.0
+        )
         self._qpos_interpolator = QposInterpolator(transition_dur, self.policy_hz)
         self._fixed_ref_yaw_alignment = bool(cfg_get(cfg, "velcmd_fixed_ref_yaw_alignment", True))
 
-        # ---- Real robot (SDK) ----
+        self._init_components(cfg)
+        self._init_reference_config(cfg)
+        self._init_safety_config(cfg)
+
+        logger.info(
+            "Sim2RealController ready | mode=IDLE | policy_hz=%.0f",
+            self.policy_hz,
+        )
+
+    def _init_components(self, cfg: Any) -> None:
+        """Build robot hardware and mocap pipeline components."""
         real_cfg = cfg_get(cfg, "real_robot")
         self.robot = UnitreeG1Robot(real_cfg)
         self.remote = UnitreeRemote()
 
-        # ---- Mocap pipeline (reuse existing components) ----
         robot_cfg = cfg_get(cfg, "robot")
         mocap_components = build_sim2real_mocap_components(
             cfg,
             self._project_root,
             controller_cls=RLPolicyController,
             obs_builder_cls=VelCmdObservationBuilder,
+            bvh_input_cls=BVHInputProvider,
             pico4_input_cls=Pico4InputProvider,
-            udp_bvh_input_cls=UDPBVHInputProvider,
             retargeter_cls=RetargetingModule,
         )
         self.input_provider = mocap_components.input_provider
         self.retargeter = mocap_components.retargeter
         self.policy = mocap_components.controller
         self.obs_builder = mocap_components.obs_builder
+        self._offline_reference: OfflineReferenceMotion | None = None
+        self._offline_playback: OfflinePlaybackController | None = None
+        if hasattr(self.input_provider, "__len__") and hasattr(self.input_provider, "get_frame_by_index"):
+            playback_cfg = cfg_get(cfg, "playback", {})
+            self._offline_reference = OfflineReferenceMotion(self.input_provider, self.retargeter)
+            self._offline_playback = OfflinePlaybackController(
+                duration_s=self._offline_reference.duration_s,
+                step_dt_s=1.0 / self.policy_hz,
+                pause_on_end=bool(cfg_get(playback_cfg, "pause_on_end", True)),
+            )
+        if not bool(getattr(self.policy, "_multi_input", False)):
+            raise ValueError(
+                "Sim2real requires an ONNX policy with dual inputs ('obs' and 'obs_history')."
+            )
+
+        # Default standing pose (29-DOF)
+        self.default_angles = np.asarray(
+            cfg_get(robot_cfg, "default_angles"), dtype=np.float32
+        )
+        self.num_actions: int = int(cfg_get(robot_cfg, "num_actions", 29))
+
+        # Standing mode reference qpos
+        self._standing_qpos = np.zeros(36, dtype=np.float64)
+        self._standing_qpos[3] = 1.0  # identity quaternion w=1
+        self._standing_qpos[7:36] = self.default_angles.astype(np.float64)
+
+        # Policy state (shared by STANDING and MOCAP)
+        self._last_action: Float32Array = np.zeros(self.num_actions, dtype=np.float32)
+        self._last_retarget_qpos: Float64Array | None = None
+        self._last_reference_qpos: Float64Array | None = None
+        self._mocap_reentry_armed: bool = False
+        self._fixed_reference_yaw_quat: Float32Array | None = None
+        self._fixed_reference_pivot_pos_w: Float32Array | None = None
+        self._mocap_session = MocapSessionManager()
+        self._last_commanded_motion_qpos: Float64Array | None = None
+
+    def _init_reference_config(self, cfg: Any) -> None:
+        """Parse reference-window / realtime-buffer configuration."""
         raw_retarget_buffer_enabled = cfg_get(cfg, "retarget_buffer_enabled", True)
         self._retarget_buffer_enabled = bool(raw_retarget_buffer_enabled)
         self._retarget_buffer_window_s = float(cfg_get(cfg, "retarget_buffer_window_s", 0.5))
@@ -109,17 +173,18 @@ class Sim2RealController:
             )
         self._reference_debug_log = bool(cfg_get(cfg, "reference_debug_log", False))
         raw_reference_delay_s = cfg_get(cfg, "retarget_buffer_delay_s", cfg_get(cfg, "realtime_input_delay_s", None))
-        provider_fps = float(getattr(self.input_provider, "fps", self.policy_hz))
+        provider_fps = float(getattr(self.input_provider, "fps", 30.0))
         self._reference_delay_s = (
-            1.0 / provider_fps
+            1.0 / max(provider_fps, 1.0)
             if raw_reference_delay_s in (None, "", "null")
             else float(raw_reference_delay_s)
         )
-        self._realtime_buffer_low_watermark_steps = self._parse_nonnegative_int(
+        self._realtime_buffer_low_watermark_steps = parse_nonnegative_int(
             cfg_get(cfg, "realtime_buffer_low_watermark_steps", 0),
             field_name="realtime_buffer_low_watermark_steps",
+            default=0,
         )
-        self._realtime_buffer_high_watermark_steps = self._parse_optional_nonnegative_int(
+        self._realtime_buffer_high_watermark_steps = parse_optional_nonnegative_int(
             cfg_get(cfg, "realtime_buffer_high_watermark_steps", None),
             field_name="realtime_buffer_high_watermark_steps",
         )
@@ -130,17 +195,46 @@ class Sim2RealController:
             raise ValueError(
                 "realtime_buffer_high_watermark_steps must be >= realtime_buffer_low_watermark_steps"
             )
-        self._realtime_buffer_warmup_steps = self._parse_nonnegative_int(
+        self._realtime_buffer_warmup_steps = parse_nonnegative_int(
             cfg_get(cfg, "realtime_buffer_warmup_steps", 0),
             field_name="realtime_buffer_warmup_steps",
+            default=0,
         )
-        self._reference_velocity_smoothing_alpha = self._parse_alpha(
+        self._pause_resume_warmup_steps = parse_nonnegative_int(
+            cfg_get(cfg, "pause_resume_warmup_steps", self._realtime_buffer_warmup_steps),
+            field_name="pause_resume_warmup_steps",
+            default=self._realtime_buffer_warmup_steps,
+        )
+        self._pause_reset_alignment_on_resume = bool(cfg_get(cfg, "pause_reset_alignment_on_resume", True))
+        self._realtime_catchup_enabled = bool(cfg_get(cfg, "realtime_catchup_enabled", False))
+        self._realtime_catchup_trigger_steps = parse_optional_nonnegative_int(
+            cfg_get(cfg, "realtime_catchup_trigger_steps", None),
+            field_name="realtime_catchup_trigger_steps",
+        )
+        self._realtime_catchup_release_steps = parse_optional_nonnegative_int(
+            cfg_get(cfg, "realtime_catchup_release_steps", None),
+            field_name="realtime_catchup_release_steps",
+        )
+        raw_realtime_catchup_target_delay_s = cfg_get(cfg, "realtime_catchup_target_delay_s", None)
+        self._realtime_catchup_target_delay_s = (
+            None
+            if raw_realtime_catchup_target_delay_s in (None, "", "null")
+            else float(raw_realtime_catchup_target_delay_s)
+        )
+        self._reference_velocity_smoothing_alpha = parse_alpha(
             cfg_get(cfg, "reference_velocity_smoothing_alpha", 1.0),
             field_name="reference_velocity_smoothing_alpha",
+            default=1.0,
         )
-        self._reference_anchor_velocity_smoothing_alpha = self._parse_alpha(
+        self._reference_anchor_velocity_smoothing_alpha = parse_alpha(
             cfg_get(cfg, "reference_anchor_velocity_smoothing_alpha", 1.0),
             field_name="reference_anchor_velocity_smoothing_alpha",
+            default=1.0,
+        )
+        self._reference_qpos_smoothing_alpha = parse_alpha(
+            cfg_get(cfg, "reference_qpos_smoothing_alpha", 1.0),
+            field_name="reference_qpos_smoothing_alpha",
+            default=1.0,
         )
         if self._retarget_buffer_enabled:
             self._reference_window_builder.validate_runtime_support(
@@ -159,6 +253,10 @@ class Sim2RealController:
                 low_watermark_steps=self._realtime_buffer_low_watermark_steps,
                 high_watermark_steps=self._realtime_buffer_high_watermark_steps,
                 warmup_steps=self._realtime_buffer_warmup_steps,
+                catchup_enabled=self._realtime_catchup_enabled,
+                catchup_trigger_steps=self._realtime_catchup_trigger_steps,
+                catchup_release_steps=self._realtime_catchup_release_steps,
+                catchup_target_delay_s=self._realtime_catchup_target_delay_s,
             )
             if self._reference_timeline is not None
             else None
@@ -166,36 +264,40 @@ class Sim2RealController:
         self._motion_joint_vel_smoother = ExponentialVecSmoother(self._reference_velocity_smoothing_alpha)
         self._motion_anchor_lin_vel_smoother = ExponentialVecSmoother(self._reference_anchor_velocity_smoothing_alpha)
         self._motion_anchor_ang_vel_smoother = ExponentialVecSmoother(self._reference_anchor_velocity_smoothing_alpha)
+        self._reference_qpos_smoother = QposLowPassFilter(self._reference_qpos_smoothing_alpha)
         self._last_live_packet_seq = -1
 
-        # Default standing pose (29-DOF)
-        self.default_angles = np.asarray(
-            cfg_get(robot_cfg, "default_angles"), dtype=np.float32
+    def _init_safety_config(self, cfg: Any) -> None:
+        """Parse safety limits and KP ramp configuration."""
+        real_cfg = cfg_get(cfg, "real_robot")
+
+        # KP ramp (gradually increase PD gains after episode-reset)
+        _legacy_ramp_dur = cfg_get(cfg, "startup_ramp_duration", cfg_get(real_cfg, "startup_ramp_duration", 2.0))
+        kp_ramp_dur = float(cfg_get(cfg, "kp_ramp_duration", _legacy_ramp_dur))
+        self._kp_ramp_duration_steps: int = max(1, int(kp_ramp_dur * self.policy_hz))
+        self._kp_ramp_step: int = 0
+        self._kp_ramp_active: bool = False
+        self._kp_nominal = np.asarray(cfg_get(real_cfg, "kp_real", [100] * self.num_actions), dtype=np.float32)
+        self._kd_nominal = np.asarray(cfg_get(real_cfg, "kd_real", [2] * self.num_actions), dtype=np.float32)
+        self._kp_ramp_floor_ratio: float = float(cfg_get(cfg, "kp_ramp_floor_ratio", 0.1))
+
+        # Joint safety limits
+        self._joint_vel_limit: float = float(
+            cfg_get(cfg, "joint_vel_limit", cfg_get(real_cfg, "joint_vel_limit", 10.0))
         )
-        self.num_actions: int = int(cfg_get(robot_cfg, "num_actions", 29))
+        joint_pos_lower = cfg_get(real_cfg, "joint_pos_lower", None)
+        joint_pos_upper = cfg_get(real_cfg, "joint_pos_upper", None)
+        if joint_pos_lower is not None and joint_pos_upper is not None:
+            self._joint_pos_lower = np.asarray(joint_pos_lower, dtype=np.float32)
+            self._joint_pos_upper = np.asarray(joint_pos_upper, dtype=np.float32)
+        else:
+            self._joint_pos_lower = None
+            self._joint_pos_upper = None
 
-        # ---- Standing mode reference qpos ----
-        self._standing_qpos = np.zeros(36, dtype=np.float64)
-        self._standing_qpos[3] = 1.0  # identity quaternion w=1
-        self._standing_qpos[7:36] = self.default_angles.astype(np.float64)
-
-        # ---- Policy state (shared by STANDING and MOCAP) ----
-        self._last_action: Float32Array = np.zeros(self.num_actions, dtype=np.float32)
-        self._last_retarget_qpos: Float64Array | None = None
-        self._last_reference_qpos: Float64Array | None = None
-        self._mocap_reentry_armed: bool = False
-        self._fixed_reference_yaw_quat: Float32Array | None = None
-        self._fixed_reference_pivot_pos_w: Float32Array | None = None
-
-        # ---- Mocap switch safety ----
+        # Mocap switch safety
         mocap_sw = cfg_get(cfg, "mocap_switch", {})
         self._check_frames: int = int(cfg_get(mocap_sw, "check_frames", 10))
         self._max_pos_value: float = float(cfg_get(mocap_sw, "max_position_value", 5.0))
-
-        logger.info(
-            "Sim2RealController ready | mode=IDLE | policy_hz=%.0f",
-            self.policy_hz,
-        )
 
     # ------------------------------------------------------------------
     # Main control loop
@@ -213,10 +315,8 @@ class Sim2RealController:
                 t0 = time.monotonic()
 
                 # 1. Read remote state
-                ls = self.robot.get_lowstate()
-                if ls is not None:
-                    remote_bytes = bytes(ls.wireless_remote)
-                    self.remote.update(remote_bytes)
+                remote_bytes = self.robot.get_wireless_remote()
+                self.remote.update(remote_bytes)
 
                 # 2. Emergency stop (highest priority)
                 if self._check_emergency_stop():
@@ -229,13 +329,13 @@ class Sim2RealController:
                 # 3. Mode transitions
                 self._handle_transitions()
 
-                # 4. Execute current mode
+                # 5. Execute current mode
                 if self.mode == RobotMode.STANDING:
                     self._standing_step()
                 elif self.mode == RobotMode.MOCAP:
                     self._mocap_step()
 
-                # 5. Rate control
+                # 6. Rate control
                 self._sleep_until(t0, dt)
 
         except KeyboardInterrupt:
@@ -260,8 +360,8 @@ class Sim2RealController:
         motion_qpos = np.asarray(qpos[:7 + self.num_actions], dtype=np.float32)
 
         reference_window = None
-        if self._obs_builder_requires_reference_window():
-            reference_window = self._build_static_reference_window(qpos)
+        if obs_builder_requires_reference_window(self.obs_builder):
+            reference_window = build_static_reference_window(qpos, self._reference_window_builder, self.policy_hz)
 
         obs = self._build_policy_observation(
             robot_state=robot_state,
@@ -276,30 +376,40 @@ class Sim2RealController:
 
         action = self.policy.compute_action(obs)
         target_dof_pos = self.policy.get_target_dof_pos(action)
-        self.robot.send_positions(target_dof_pos)
+        target_dof_pos = self._clip_to_joint_limits(target_dof_pos)
+
+        self._send_positions_with_kp_ramp(target_dof_pos)
 
         self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
         self._last_retarget_qpos = qpos.copy()
+        self._last_commanded_motion_qpos = qpos.copy()
 
     def _mocap_step(self) -> None:
         """Mocap mode: input provider -> retarget -> policy -> update LowCmd targets."""
+        if self._offline_reference is not None:
+            self._offline_mocap_step()
+            return
+
         if not self.input_provider.is_available():
             logger.warning("Input provider unavailable -- entering damping")
             self._enter_damping()
             return
 
         try:
-            get_packet = getattr(self.input_provider, "get_frame_packet", None)
-            if callable(get_packet):
-                human_frame, frame_timestamp, frame_seq = get_packet()
-            else:
-                human_frame = self.input_provider.get_frame()
-                frame_timestamp = time.monotonic()
-                frame_seq = self._last_live_packet_seq + 1
+            packet = self._fetch_realtime_input_packet()
         except (TimeoutError, RuntimeError):
             logger.warning("Input provider error -- entering damping")
             self._enter_damping()
             return
+
+        self._handle_mocap_control_events(packet.control_events)
+        if self._mocap_session.state == MocapSessionState.PAUSED:
+            self._paused_mocap_step()
+            return
+
+        human_frame = packet.frame
+        frame_timestamp = float(packet.timestamp_s)
+        frame_seq = int(packet.seq)
 
         reference_window: ReferenceWindow | None = None
         if self._reference_timeline is not None:
@@ -334,6 +444,14 @@ class Sim2RealController:
                     reference_diag.future_horizon_steps,
                     list(reference_window.reference_steps),
                 )
+            if self._reference_debug_log and reference_diag.used_catchup:
+                logger.warning(
+                    "Reference timeline catch-up | requested_base=%.6f | effective_base=%.6f | latest=%.6f | future_horizon_steps=%d",
+                    reference_diag.requested_base_time_s,
+                    reference_diag.effective_base_time_s,
+                    -1.0 if reference_diag.latest_timestamp_s is None else reference_diag.latest_timestamp_s,
+                    reference_diag.future_horizon_steps,
+                )
             reference_qpos = reference_window.current_sample().qpos
         else:
             retargeted = self.retargeter.retarget(human_frame)
@@ -343,11 +461,16 @@ class Sim2RealController:
         robot_state = self.robot.get_state()
         if self._fixed_ref_yaw_alignment:
             reference_qpos = self._align_velcmd_reference_yaw(reference_qpos, robot_state=robot_state)
+        raw_reference_qpos = np.asarray(reference_qpos, dtype=np.float64).copy()
+        reference_qpos = self._reference_qpos_smoother.apply(reference_qpos)
         qpos = self._qpos_interpolator.apply(reference_qpos)
+        if self._mocap_session.state == MocapSessionState.RESUMING and not self._qpos_interpolator.is_active:
+            self._mocap_session.finish_resume()
+            logger.info("Mocap session -> ACTIVE")
 
         anchor_lin_vel_w = np.zeros(3, dtype=np.float32)
         anchor_ang_vel_w = np.zeros(3, dtype=np.float32)
-        if not self._obs_builder_requires_reference_window():
+        if not obs_builder_requires_reference_window(self.obs_builder):
             if self._qpos_interpolator.is_active:
                 true_lin_vel_w, true_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
                 blend = np.float32(self._qpos_interpolator.last_alpha)
@@ -384,14 +507,96 @@ class Sim2RealController:
 
         action = self.policy.compute_action(obs)
         target_dof_pos = self.policy.get_target_dof_pos(action)
+        target_dof_pos = self._clip_to_joint_limits(target_dof_pos)
 
-        # Update position targets (250Hz thread handles publishing)
-        self.robot.send_positions(target_dof_pos)
+        self._send_positions_with_kp_ramp(target_dof_pos)
 
         # Update state
         self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
         self._last_retarget_qpos = qpos.copy()
         self._last_reference_qpos = reference_qpos.copy()
+        self._last_commanded_motion_qpos = qpos.copy()
+
+    def _offline_mocap_step(self) -> None:
+        if self._offline_reference is None or self._offline_playback is None:
+            raise RuntimeError("Offline playback step requires an offline reference motion")
+
+        if self._mocap_session.state == MocapSessionState.PAUSED:
+            self._paused_mocap_step()
+            return
+
+        sample_time_s = self._offline_playback.current_time_s
+        sampled = self._offline_reference.sample(sample_time_s)
+        if sampled is None:
+            self._hold_completed_offline_playback(self._resolve_mocap_hold_qpos())
+            self._paused_mocap_step()
+            return
+
+        reference_window: ReferenceWindow | None = None
+        if obs_builder_requires_reference_window(self.obs_builder):
+            reference_window = build_offline_reference_window(
+                self._offline_reference,
+                sample_time_s,
+                self._reference_window_builder,
+                self.policy_hz,
+            )
+
+        reference_qpos = np.asarray(sampled.qpos, dtype=np.float64).copy()
+        robot_state = self.robot.get_state()
+        if self._fixed_ref_yaw_alignment:
+            reference_qpos = self._align_velcmd_reference_yaw(reference_qpos, robot_state=robot_state)
+        reference_qpos = self._reference_qpos_smoother.apply(reference_qpos)
+        qpos = self._qpos_interpolator.apply(reference_qpos)
+        if self._mocap_session.state == MocapSessionState.RESUMING and not self._qpos_interpolator.is_active:
+            self._mocap_session.finish_resume()
+            logger.info("Mocap session -> ACTIVE")
+
+        if qpos.shape[0] < 7 + self.num_actions:
+            raise ValueError(
+                f"Retargeted qpos too short: {qpos.shape[0]} (need >= {7 + self.num_actions})"
+            )
+        motion_joint_pos = np.asarray(qpos[7:7 + self.num_actions], dtype=np.float32)
+        if self._last_retarget_qpos is None:
+            raw_motion_joint_vel = np.zeros((self.num_actions,), dtype=np.float32)
+        else:
+            prev_joint_pos = np.asarray(self._last_retarget_qpos[7:7 + self.num_actions], dtype=np.float32)
+            raw_motion_joint_vel = (motion_joint_pos - prev_joint_pos) * np.float32(self.policy_hz)
+        motion_joint_vel = self._motion_joint_vel_smoother.apply(raw_motion_joint_vel)
+
+        if self._qpos_interpolator.is_active:
+            true_lin_vel_w, true_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
+            blend = np.float32(self._qpos_interpolator.last_alpha)
+            raw_anchor_lin_vel_w = np.asarray(true_lin_vel_w * blend, dtype=np.float32)
+            raw_anchor_ang_vel_w = np.asarray(true_ang_vel_w * blend, dtype=np.float32)
+        else:
+            raw_anchor_lin_vel_w, raw_anchor_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
+        anchor_lin_vel_w = self._motion_anchor_lin_vel_smoother.apply(raw_anchor_lin_vel_w)
+        anchor_ang_vel_w = self._motion_anchor_ang_vel_smoother.apply(raw_anchor_ang_vel_w)
+
+        motion_qpos = np.asarray(qpos[:7 + self.num_actions], dtype=np.float32)
+        obs = self._build_policy_observation(
+            robot_state=robot_state,
+            motion_qpos=motion_qpos,
+            motion_joint_vel=motion_joint_vel,
+            last_action=self._last_action,
+            anchor_lin_vel_w=anchor_lin_vel_w,
+            anchor_ang_vel_w=anchor_ang_vel_w,
+            reference_window=reference_window,
+        )
+        obs = self._validate_observation_for_policy(obs)
+
+        action = self.policy.compute_action(obs)
+        target_dof_pos = self.policy.get_target_dof_pos(action)
+        target_dof_pos = self._clip_to_joint_limits(target_dof_pos)
+        self._send_positions_with_kp_ramp(target_dof_pos)
+
+        self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
+        self._last_retarget_qpos = qpos.copy()
+        self._last_reference_qpos = reference_qpos.copy()
+        self._last_commanded_motion_qpos = qpos.copy()
+
+        if self._offline_playback.advance():
+            self._hold_completed_offline_playback(qpos)
 
     def _compute_anchor_velocities(
         self, qpos: Float64Array,
@@ -441,6 +646,71 @@ class Sim2RealController:
         return anchor_lin_vel_w, anchor_ang_vel_w
 
     # ------------------------------------------------------------------
+    # Startup ramp and safety
+    # ------------------------------------------------------------------
+
+    def _compute_kp_ramp_gains(self) -> tuple[Float32Array, Float32Array] | None:
+        """Return (kp, kd) for current Kp-ramp step, or None if ramp inactive.
+
+        Linearly ramps Kp from ``floor_ratio * kp_nominal`` to ``kp_nominal``
+        over ``_kp_ramp_duration_steps``.  Kd stays at nominal throughout to
+        provide damping from the first step.  Unlike the old position ramp this
+        does NOT modify the policy's target position, so the action-state
+        causal chain seen by the TemporalCNN stays consistent with training.
+        """
+        if not self._kp_ramp_active:
+            return None
+
+        factor = min(1.0, self._kp_ramp_step / self._kp_ramp_duration_steps)
+        kp = self._kp_nominal * (self._kp_ramp_floor_ratio + (1.0 - self._kp_ramp_floor_ratio) * factor)
+
+        self._kp_ramp_step += 1
+        if self._kp_ramp_step >= self._kp_ramp_duration_steps:
+            self._kp_ramp_active = False
+            logger.info("Kp ramp complete (%d steps)", self._kp_ramp_duration_steps)
+
+        return np.asarray(kp, dtype=np.float32), self._kd_nominal.copy()
+
+    def _start_kp_ramp(self) -> None:
+        """Arm the Kp ramp for gradual PD gain increase."""
+        self._kp_ramp_step = 0
+        self._kp_ramp_active = True
+        logger.info(
+            "Kp ramp armed: %d steps (%.1fs), floor_ratio=%.2f",
+            self._kp_ramp_duration_steps,
+            self._kp_ramp_duration_steps / self.policy_hz,
+            self._kp_ramp_floor_ratio,
+        )
+
+    def _send_positions_with_kp_ramp(self, target_dof_pos: Float32Array) -> None:
+        """Send position targets, applying Kp ramp gains if active."""
+        gains = self._compute_kp_ramp_gains()
+        if gains is not None:
+            kp, kd = gains
+            self.robot.send_positions(target_dof_pos, kp=kp, kd=kd)
+        else:
+            self.robot.send_positions(target_dof_pos)
+
+    def _clip_to_joint_limits(self, target_dof_pos: Float32Array) -> Float32Array:
+        """Clip target positions to configured joint limits."""
+        if self._joint_pos_lower is not None and self._joint_pos_upper is not None:
+            return np.clip(target_dof_pos, self._joint_pos_lower, self._joint_pos_upper)
+        return target_dof_pos
+
+    def _check_joint_velocity_safety(self) -> bool:
+        """Check joint velocities against safety limit. Returns True if violation detected."""
+        state = self.robot.get_state()
+        max_vel = np.max(np.abs(state.qvel))
+        if max_vel > self._joint_vel_limit:
+            logger.error(
+                "SAFETY: joint velocity %.2f rad/s exceeds limit %.2f -- entering damping",
+                max_vel, self._joint_vel_limit,
+            )
+            self._enter_damping()
+            return True
+        return False
+
+    # ------------------------------------------------------------------
     # State machine transitions
     # ------------------------------------------------------------------
 
@@ -468,6 +738,21 @@ class Sim2RealController:
                     logger.warning("Cannot switch to MOCAP -- input check failed")
 
         elif self.mode == RobotMode.MOCAP:
+            if self.remote.B.on_pressed and self._offline_playback is not None:
+                logger.info("B pressed -> replaying offline motion from start")
+                self._restart_offline_playback()
+                return
+            if self.remote.A.on_pressed:
+                if self._mocap_session.state == MocapSessionState.PAUSED:
+                    if self._offline_playback is not None and self._offline_playback.finished:
+                        logger.info("Playback already ended; press B to replay from the start")
+                    else:
+                        logger.info("A pressed -> resuming playback")
+                        self._resume_paused_mocap()
+                else:
+                    logger.info("A pressed -> pausing playback")
+                    self._pause_active_mocap()
+                return
             if self.remote.X.on_pressed:
                 logger.info("X pressed -> returning to STANDING")
                 self._enter_standing()
@@ -502,21 +787,25 @@ class Sim2RealController:
         self.robot.lock_all_joints()
         time.sleep(0.3)
 
-        # Initialize policy state
+        # Episode-reset semantics: reference = current robot state, full policy reset.
+        # This matches training where robot is teleported to reference position at
+        # episode start, so policy sees reference ≈ robot state with clean history.
         state = self.robot.get_state()
         init_qpos = np.zeros(36, dtype=np.float64)
         init_qpos[3:7] = state.quat.astype(np.float64)
         init_qpos[7:36] = state.qpos.astype(np.float64)
         self._last_retarget_qpos = init_qpos
         self._last_reference_qpos = None
+        self._mocap_session.reset()
+        self._last_commanded_motion_qpos = None
 
-        if prev_mode == RobotMode.MOCAP:
-            # Returning from MOCAP: soft reset to keep policy observation
-            # continuity (history buffer, _last_action unchanged).
-            self._reset_mocap_reference_state()
-        else:
-            # First entry from IDLE or recovery from DAMPING: hard reset.
-            self._reset_policy_state()
+        # Always do a full policy reset (episode-reset semantics) to ensure
+        # the TemporalCNN history is clean and action-state causality holds.
+        self._reset_policy_state()
+
+        # Kp ramp: gradually increase PD gains to avoid torque spike.
+        # Unlike the old position ramp, this does NOT break action-state causality.
+        self._start_kp_ramp()
 
         self._mocap_reentry_armed = prev_mode == RobotMode.MOCAP
 
@@ -533,11 +822,22 @@ class Sim2RealController:
             logger.warning("Mocap check: input provider not available")
             return False
 
-        # For UDP BVH provider, also check if initial data has been received
-        if hasattr(self.input_provider, "_frame_ready"):
-            if not self.input_provider._frame_ready.is_set():
-                logger.warning("Mocap check: no data received yet")
-                return False
+        if self._offline_reference is not None:
+            frame_count = min(self._check_frames, self._offline_reference.num_frames)
+            valid_count = 0
+            for frame_index in range(frame_count):
+                try:
+                    frame = self.input_provider.get_frame_by_index(frame_index)
+                except (IndexError, RuntimeError, ValueError):
+                    return False
+                if self._frame_is_valid(frame):
+                    valid_count += 1
+                else:
+                    break
+            if valid_count >= frame_count:
+                return True
+            logger.warning("Mocap check: only %d/%d valid offline frames", valid_count, frame_count)
+            return False
 
         # For Pico4 provider, check SDK data availability before calling
         # get_frame() to avoid blocking the control loop for up to
@@ -554,19 +854,7 @@ class Sim2RealController:
             except (TimeoutError, RuntimeError):
                 return False
 
-            all_valid = True
-            for bone_name, (pos, quat) in frame.items():
-                if np.any(np.isnan(pos)) or np.any(np.isinf(pos)):
-                    all_valid = False
-                    break
-                if np.any(np.abs(pos) > self._max_pos_value):
-                    all_valid = False
-                    break
-                if np.any(np.isnan(quat)) or np.any(np.isinf(quat)):
-                    all_valid = False
-                    break
-
-            if all_valid:
+            if self._frame_is_valid(frame):
                 valid_count += 1
             else:
                 valid_count = 0
@@ -582,25 +870,29 @@ class Sim2RealController:
     def _transition_to_mocap(self) -> None:
         """Switch from STANDING -> MOCAP.
 
-        Already in debug mode from STANDING, so just read current state
-        and start interpolation for smooth transition.
+        Episode-reset + reference-side interpolation.  The policy state is
+        fully reset (clean history, zero last_action) so the TemporalCNN
+        starts fresh.  A QposInterpolator smoothly blends the *reference*
+        from the current robot state toward incoming live mocap so the policy
+        never sees a large instantaneous tracking error.
         """
-        # Read current state as initial reference for interpolation
         state = self.robot.get_state()
         init_qpos = np.zeros(36, dtype=np.float64)
         init_qpos[3:7] = state.quat.astype(np.float64)
         init_qpos[7:36] = state.qpos.astype(np.float64)
         self._last_retarget_qpos = init_qpos
-        self._last_reference_qpos = None
-        self._fixed_reference_yaw_quat = None
-        self._fixed_reference_pivot_pos_w = None
-        self._qpos_interpolator.reset()
-        self._qpos_interpolator.start(init_qpos)
-        # Soft reset: only clear mocap reference state, keep policy history and
-        # _last_action intact so that the TemporalCNN sees a continuous
-        # observation stream across the Standing -> Mocap transition.
-        self._reset_mocap_reference_state()
+        self._last_commanded_motion_qpos = init_qpos.copy()
         self._mocap_reentry_armed = False
+
+        # Full episode reset: clean policy state, alignment, timeline.
+        self._reset_policy_state()
+
+        # Reference-side interpolation: smoothly blend reference from current
+        # robot state toward incoming live mocap.  This is done AFTER the
+        # episode reset so the interpolator starts with a clean slate.
+        self._arm_qpos_transition(init_qpos, duration_s=self._mocap_transition_duration)
+        if self._offline_playback is not None:
+            self._offline_playback.replay()
 
         self.mode = RobotMode.MOCAP
         logger.info("Mode -> MOCAP (tracking motion commands)")
@@ -624,6 +916,8 @@ class Sim2RealController:
             self._reference_timeline.clear()
         self._last_live_packet_seq = -1
         self._mocap_reentry_armed = False
+        self._mocap_session.reset()
+        self._last_commanded_motion_qpos = None
         logger.info("Mode -> DAMPING (press Start to re-enter STANDING)")
 
     # ------------------------------------------------------------------
@@ -667,33 +961,15 @@ class Sim2RealController:
         )
         return aligned_qpos
 
-    def _build_static_reference_window(self, qpos: Float64Array) -> ReferenceWindow:
-        base_time_s = time.monotonic()
-        reference_steps = tuple(self._reference_window_builder.reference_steps)
-        qpos_copy = np.asarray(qpos, dtype=np.float64).reshape(-1).copy()
-        samples = tuple(
-            ReferenceSample(
-                qpos=qpos_copy.copy(),
-                timestamp_s=base_time_s + float(step) / self.policy_hz,
-                mode="static_reference",
-                used_fallback=False,
-                older_timestamp_s=base_time_s + float(step) / self.policy_hz,
-                newer_timestamp_s=base_time_s + float(step) / self.policy_hz,
-                alpha=None,
-            )
-            for step in reference_steps
-        )
-        return ReferenceWindow(
-            base_time_s=base_time_s,
-            policy_dt_s=1.0 / self.policy_hz,
-            reference_steps=reference_steps,
-            samples=samples,
-        )
-
-    def _obs_builder_requires_reference_window(self) -> bool:
-        return bool(getattr(self.obs_builder, "requires_reference_window", False)) or callable(
-            getattr(self.obs_builder, "build_with_reference_window", None)
-        )
+    def _frame_is_valid(self, frame: dict[str, tuple[np.ndarray, np.ndarray]]) -> bool:
+        for pos, quat in frame.values():
+            if np.any(np.isnan(pos)) or np.any(np.isinf(pos)):
+                return False
+            if np.any(np.abs(pos) > self._max_pos_value):
+                return False
+            if np.any(np.isnan(quat)) or np.any(np.isinf(quat)):
+                return False
+        return True
 
     def _align_reference_window(
         self,
@@ -784,14 +1060,26 @@ class Sim2RealController:
         return obs
 
     def _reset_policy_state(self) -> None:
+        """Full episode-reset: clear all policy state so the TemporalCNN sees
+        a clean start identical to training episode reset."""
         self._last_action = np.zeros(self.num_actions, dtype=np.float32)
+        self._qpos_interpolator.reset()
         self._reset_mocap_reference_state()
+        self._reset_reference_alignment()
+        self._mocap_session.reset()
+        self._last_commanded_motion_qpos = None
         reset_policy = getattr(self.policy, "reset", None)
         if callable(reset_policy):
             reset_policy()
         self.obs_builder.reset()
+        # Reset the IK solver so the warm-start configuration does not get
+        # stuck in a local minimum far from the new target after a
+        # discontinuity (pause/resume, mode switch).
+        reset_retargeter = getattr(self.retargeter, "reset", None)
+        if callable(reset_retargeter):
+            reset_retargeter()
 
-    def _reset_mocap_reference_state(self) -> None:
+    def _reset_mocap_reference_state(self, *, warmup_steps: int | None = None) -> None:
         """Reset mocap-specific reference state without disrupting policy observation continuity.
 
         Unlike ``_reset_policy_state``, this preserves ``_last_action``, the
@@ -801,40 +1089,185 @@ class Sim2RealController:
         if self._reference_timeline is not None:
             self._reference_timeline.clear()
         if self._reference_manager is not None:
+            self._reference_manager.set_warmup_steps(
+                self._realtime_buffer_warmup_steps if warmup_steps is None else warmup_steps
+            )
             self._reference_manager.reset()
         self._motion_joint_vel_smoother.reset()
         self._motion_anchor_lin_vel_smoother.reset()
         self._motion_anchor_ang_vel_smoother.reset()
+        self._reference_qpos_smoother.reset()
+        self._last_reference_qpos = None
         self._last_live_packet_seq = -1
 
-    @staticmethod
-    def _parse_nonnegative_int(value: object, *, field_name: str) -> int:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(f"{field_name} must be a non-negative integer, got {value}")
-        parsed = int(value)
-        if parsed < 0:
-            raise ValueError(f"{field_name} must be >= 0, got {value}")
-        return parsed
+    def _reset_reference_alignment(self) -> None:
+        self._fixed_reference_yaw_quat = None
+        self._fixed_reference_pivot_pos_w = None
 
-    @staticmethod
-    def _parse_alpha(value: object, *, field_name: str) -> float:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(f"{field_name} must be in (0, 1], got {value}")
-        parsed = float(value)
-        if parsed <= 0.0 or parsed > 1.0:
-            raise ValueError(f"{field_name} must be in (0, 1], got {value}")
-        return parsed
+    def _restart_offline_playback(self) -> None:
+        if self._offline_playback is None:
+            raise RuntimeError("Offline playback replay is only available for indexed BVH input")
 
-    @staticmethod
-    def _parse_optional_nonnegative_int(value: object | None, *, field_name: str) -> int | None:
-        if value in (None, "", "null"):
-            return None
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(f"{field_name} must be a non-negative integer, got {value}")
-        parsed = int(value)
-        if parsed < 0:
-            raise ValueError(f"{field_name} must be >= 0, got {value}")
-        return parsed
+        state = self.robot.get_state()
+        restart_qpos = np.zeros(36, dtype=np.float64)
+        restart_qpos[3:7] = state.quat.astype(np.float64)
+        restart_qpos[7:36] = state.qpos.astype(np.float64)
+
+        self._last_retarget_qpos = restart_qpos.copy()
+        self._last_commanded_motion_qpos = restart_qpos.copy()
+        self._offline_playback.replay()
+        self._reset_policy_state()
+        self._arm_qpos_transition(restart_qpos, duration_s=self._mocap_transition_duration)
+        logger.info("Offline playback restarted from frame 0")
+
+    def _hold_completed_offline_playback(self, hold_qpos: Float64Array) -> None:
+        if self._offline_playback is None or self._mocap_session.state == MocapSessionState.PAUSED:
+            return
+        self._offline_playback.finish()
+        self._mocap_session.pause(hold_qpos)
+        logger.info("Offline playback reached the end; press B to replay")
+
+    def _arm_qpos_transition(self, start_qpos: Float64Array, *, duration_s: float) -> None:
+        self._qpos_interpolator.reset()
+        self._qpos_interpolator.configure(duration_s)
+        self._qpos_interpolator.start(start_qpos)
+
+    def _fetch_realtime_input_packet(self) -> RealtimeInputPacket[object]:
+        get_realtime_input_packet = getattr(self.input_provider, "get_realtime_input_packet", None)
+        if callable(get_realtime_input_packet):
+            return get_realtime_input_packet()
+
+        get_packet = getattr(self.input_provider, "get_frame_packet", None)
+        if callable(get_packet):
+            frame, frame_timestamp, frame_seq = get_packet()
+            return RealtimeInputPacket(
+                frame=frame,
+                timestamp_s=float(frame_timestamp),
+                seq=int(frame_seq),
+                control_events=(),
+            )
+
+        frame = self.input_provider.get_frame()
+        return RealtimeInputPacket(
+            frame=frame,
+            timestamp_s=time.monotonic(),
+            seq=self._last_live_packet_seq + 1,
+            control_events=(),
+        )
+
+    def _handle_mocap_control_events(self, control_events: tuple[ControlEvent, ...]) -> None:
+        for event in control_events:
+            if event.event_type != ControlEventType.TOGGLE_PAUSE:
+                continue
+            if self._mocap_session.state == MocapSessionState.PAUSED:
+                self._resume_paused_mocap()
+            else:
+                self._pause_active_mocap()
+
+    def _pause_active_mocap(self) -> None:
+        # Episode-reset semantics: treat pause as a new episode starting at
+        # the hold pose.  Full policy reset ensures TemporalCNN history is
+        # clean -- no stale frames from the previous motion that would create
+        # an OOD discontinuity (reference jumps from motion to static).
+        hold_qpos = self._resolve_mocap_hold_qpos()
+        self._last_retarget_qpos = hold_qpos.copy()
+        self._last_reference_qpos = hold_qpos.copy()
+        self._last_commanded_motion_qpos = hold_qpos.copy()
+
+        # Reset policy state (clears last_action, history, smoothers, etc.)
+        # Note: _reset_policy_state resets _mocap_session to ACTIVE, so we
+        # must call pause() *after* it to set the correct PAUSED state.
+        self._reset_policy_state()
+        self._mocap_session.pause(hold_qpos)
+        if self._offline_playback is not None:
+            self._offline_playback.pause()
+        logger.info("Mocap session -> PAUSED (episode-reset)")
+
+    def _resume_paused_mocap(self) -> None:
+        if self._offline_playback is not None and self._offline_playback.finished:
+            logger.info("Offline playback already ended; press B to replay from the start")
+            return
+
+        # Episode-reset + reference-side interpolation.
+        #
+        # 1. Reference starts at current robot state (not hold_qpos) so there
+        #    is no reference-state mismatch at the moment of resume.
+        # 2. Full policy reset ensures clean TemporalCNN history.
+        # 3. QposInterpolator smoothly blends reference from robot state
+        #    toward incoming live mocap so the policy never sees a large
+        #    instantaneous tracking error.
+
+        state = self.robot.get_state()
+        resume_qpos = np.zeros(36, dtype=np.float64)
+        resume_qpos[3:7] = state.quat.astype(np.float64)
+        resume_qpos[7:36] = state.qpos.astype(np.float64)
+
+        self._last_retarget_qpos = resume_qpos.copy()
+        self._last_commanded_motion_qpos = resume_qpos.copy()
+
+        # Full policy reset -- clean history, zero last_action, smoothers,
+        # timeline, alignment.  Also resets _mocap_session to ACTIVE.
+        self._reset_policy_state()
+
+        # Override warmup steps for the resume-specific buffer warmup.
+        if self._reference_manager is not None:
+            self._reference_manager.set_warmup_steps(self._pause_resume_warmup_steps)
+            self._reference_manager.reset()
+
+        # Reference-side interpolation: smoothly blend from current robot
+        # state toward incoming live mocap.
+        self._arm_qpos_transition(resume_qpos, duration_s=self._pause_resume_transition_duration)
+        if self._offline_playback is not None:
+            self._offline_playback.resume()
+
+        logger.info("Mocap session -> ACTIVE (episode-reset + reference interpolation)")
+
+    def _resolve_mocap_hold_qpos(self) -> Float64Array:
+        if self._last_commanded_motion_qpos is not None:
+            return self._last_commanded_motion_qpos.copy()
+        if self._last_retarget_qpos is not None:
+            return np.asarray(self._last_retarget_qpos, dtype=np.float64).copy()
+        state = self.robot.get_state()
+        hold_qpos = np.zeros(36, dtype=np.float64)
+        hold_qpos[3:7] = np.asarray(state.quat, dtype=np.float64)
+        hold_qpos[7:36] = np.asarray(state.qpos, dtype=np.float64)
+        return hold_qpos
+
+    def _paused_mocap_step(self) -> None:
+        hold_qpos = self._mocap_session.hold_qpos
+        if hold_qpos is None:
+            raise RuntimeError("Paused mocap session is missing a hold_qpos")
+        self._run_static_mocap_step(hold_qpos)
+
+    def _run_static_mocap_step(self, hold_qpos: Float64Array) -> None:
+        robot_state = self.robot.get_state()
+        qpos = np.asarray(hold_qpos, dtype=np.float64).copy()
+        motion_joint_vel = np.zeros(self.num_actions, dtype=np.float32)
+        motion_qpos = np.asarray(qpos[:7 + self.num_actions], dtype=np.float32)
+        reference_window = None
+        if obs_builder_requires_reference_window(self.obs_builder):
+            reference_window = build_static_reference_window(qpos, self._reference_window_builder, self.policy_hz)
+
+        obs = self._build_policy_observation(
+            robot_state=robot_state,
+            motion_qpos=motion_qpos,
+            motion_joint_vel=motion_joint_vel,
+            last_action=self._last_action,
+            anchor_lin_vel_w=np.zeros(3, dtype=np.float32),
+            anchor_ang_vel_w=np.zeros(3, dtype=np.float32),
+            reference_window=reference_window,
+        )
+        obs = self._validate_observation_for_policy(obs)
+
+        action = self.policy.compute_action(obs)
+        target_dof_pos = self.policy.get_target_dof_pos(action)
+        target_dof_pos = self._clip_to_joint_limits(target_dof_pos)
+
+        self._send_positions_with_kp_ramp(target_dof_pos)
+        self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
+        self._last_retarget_qpos = qpos.copy()
+        self._last_reference_qpos = qpos.copy()
+        self._last_commanded_motion_qpos = qpos.copy()
 
     @staticmethod
     def _sleep_until(t0: float, dt: float) -> None:

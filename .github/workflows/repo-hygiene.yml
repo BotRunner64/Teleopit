@@ -13,4 +13,4 @@ jobs:
         with:
           python-version: "3.10"
       - name: Check tracked file sizes
-        run: python scripts/check_large_tracked_files.py
+        run: python scripts/dev/check_large_tracked_files.py

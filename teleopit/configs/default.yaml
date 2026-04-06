@@ -11,6 +11,10 @@ velcmd_fixed_ref_yaw_alignment: true  # apply one fixed startup yaw offset to Ve
 viewers: "sim2sim"
 realtime: false
 debug_trace_path: null
+playback:
+  pause_on_end: false
+  keyboard:
+    enabled: false
 
 hydra:
   run:

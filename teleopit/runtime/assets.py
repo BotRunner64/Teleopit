@@ -17,5 +17,5 @@ def missing_gmr_assets_message(path: str | Path, *, label: str = "Required asset
     return (
         f"{label} not found: {resolved}\n"
         "Download the external robot assets with:\n"
-        "  python scripts/download_assets.py --only gmr"
+        "  python scripts/setup/download_assets.py --only gmr"
     )

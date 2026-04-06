@@ -142,3 +142,12 @@ class RetargetingModule:
     def retarget(self, human_data: HumanFrame) -> Float64Array:
         qpos = cast(Float64Array, self._gmr.retarget(human_data))
         return np.asarray(qpos, dtype=np.float64)
+
+    def reset(self) -> None:
+        """Reset IK solver state to default configuration.
+
+        Call this when the input has a discontinuity (pause/resume, mode
+        switch) so the warm-start IK solver starts fresh instead of getting
+        stuck in a local minimum far from the new target pose.
+        """
+        self._gmr.reset_configuration()

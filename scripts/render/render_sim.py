@@ -1,0 +1,560 @@
+#!/usr/bin/env python3
+"""Render MuJoCo verification videos from BVH input.
+
+Produces THREE videos per input clip, all at the input native frame rate
+with ALL frames rendered, so they have identical duration:
+  1. *_mocap.mp4    — Retargeting input skeleton (MuJoCo custom geoms)
+  2. *_retarget.mp4  — GMR kinematic retargeting (qpos set directly, no physics)
+  3. *_sim2sim.mp4   — Full RL policy pipeline (mocap input → GMR → obs → ONNX → PD → MuJoCo)
+
+Usage:
+    MUJOCO_GL=egl python scripts/render/render_sim.py \
+        --bvh data/lafan1/dance1_subject2.bvh \
+        --policy /path/to/policy.onnx
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+import time
+from pathlib import Path
+from typing import Any, cast
+
+import numpy as np
+
+os.environ.setdefault("MUJOCO_GL", "egl")
+
+import imageio  # noqa: E402
+import mujoco  # noqa: E402
+
+from teleopit.debug.rollout_trace import RolloutTraceWriter  # noqa: E402
+from teleopit.sim.mocap_mujoco import (  # noqa: E402
+    MocapSkeletonSceneDrawer,
+    fit_mocap_camera,
+    create_mocap_viewer_model,
+    frame_positions_from_human_frame,
+    lift_positions_above_ground,
+)
+from teleopit.sim.reference_motion import OfflineReferenceMotion  # noqa: E402
+
+
+def _find_project_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _read_bvh_fps(bvh_path: Path) -> int:
+    with open(bvh_path, "r") as f:
+        for line in f:
+            m = re.match(r"\s*Frame Time:\s+([\d.]+)", line)
+            if m:
+                return round(1.0 / float(m.group(1)))
+    return 30
+
+
+def _make_camera() -> mujoco.MjvCamera:
+    cam = mujoco.MjvCamera()
+    cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+    cam.lookat[:] = [0.0, 0.0, 0.8]
+    cam.distance = 3.0
+    cam.azimuth = 135.0
+    cam.elevation = -20.0
+    return cam
+
+
+def _write_video(frames: list[np.ndarray], path: Path, fps: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writer = imageio.get_writer(str(path), fps=fps, quality=8)
+    for f in frames:
+        writer.append_data(f)
+    writer.close()
+    size_mb = path.stat().st_size / (1024 * 1024)
+    duration = len(frames) / fps
+    print(
+        f"  Saved: {path} ({size_mb:.1f} MB, {len(frames)} frames, {duration:.1f}s @ {fps}fps)"
+    )
+
+
+def _load_configs(
+    bvh_path: str,
+    project_root: Path,
+    bvh_format: str = "lafan1",
+    policy_path: str | None = None,
+) -> dict[str, Any]:
+    from omegaconf import OmegaConf
+
+    default_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "default.yaml")
+    robot_cfg = OmegaConf.load(
+        project_root / "teleopit" / "configs" / "robot" / "g1.yaml"
+    )
+    controller_cfg = OmegaConf.load(
+        project_root / "teleopit" / "configs" / "controller" / "rl_policy.yaml"
+    )
+    input_cfg = OmegaConf.load(
+        project_root / "teleopit" / "configs" / "input" / "bvh.yaml"
+    )
+
+    if policy_path is not None:
+        resolved_policy = Path(policy_path).expanduser()
+        if not resolved_policy.is_absolute():
+            resolved_policy = (project_root / resolved_policy).resolve()
+        if not resolved_policy.exists():
+            print(f"ERROR: ONNX policy not found at {resolved_policy}")
+            sys.exit(1)
+        controller_cfg.policy_path = str(resolved_policy)
+    else:
+        controller_cfg.policy_path = ""
+    controller_cfg.default_dof_pos = list(robot_cfg.default_angles)
+
+    input_cfg.bvh_file = str(bvh_path)
+    input_cfg.provider = "bvh"
+    input_cfg.bvh_format = bvh_format
+    input_cfg.human_format = f"bvh_{bvh_format}"
+    input_cfg.robot_name = "unitree_g1"
+
+    return {
+        "robot": robot_cfg,
+        "controller": controller_cfg,
+        "input": input_cfg,
+        "policy_hz": float(OmegaConf.select(default_cfg, "policy_hz", default=50.0)),
+        "pd_hz": float(OmegaConf.select(default_cfg, "pd_hz", default=1000.0)),
+    }
+
+
+def render_mocap(
+    bvh_path: Path,
+    output_path: Path,
+    width: int,
+    height: int,
+    fps: int,
+    max_frames: int = 0,
+    bvh_format: str = "lafan1",
+) -> None:
+    """Render retargeting input skeleton with the same MuJoCo backend as live viewers."""
+    from teleopit.inputs import BVHInputProvider
+
+    input_prov = BVHInputProvider(bvh_path=str(bvh_path), human_format=bvh_format)
+    model = create_mocap_viewer_model()
+    data = mujoco.MjData(model)
+    model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
+    model.vis.global_.offheight = max(model.vis.global_.offheight, height)
+    renderer = mujoco.Renderer(model, height=height, width=width)
+    cam = _make_camera()
+    drawer = MocapSkeletonSceneDrawer(input_prov.bone_parents)
+
+    num_frames = len(input_prov)
+    if max_frames > 0:
+        num_frames = min(num_frames, max_frames)
+    duration = num_frames / fps
+    print(f"  [mocap] Rendering {num_frames} frames @ {fps}fps -> {duration:.1f}s video")
+
+    frames: list[np.ndarray] = []
+    t0 = time.time()
+
+    for step in range(num_frames):
+        human_frame = input_prov.get_frame()
+        positions = frame_positions_from_human_frame(input_prov.bone_names, human_frame)
+        positions = lift_positions_above_ground(positions)
+
+        data.qvel[:] = 0
+        mujoco.mj_forward(model, data)
+        fit_mocap_camera(cam, positions)
+        renderer.update_scene(data, camera=cam)
+        drawer.draw(renderer.scene, positions)
+        frames.append(renderer.render().copy())
+
+        if (step + 1) % 100 == 0:
+            print(f"    Step {step + 1}/{num_frames} ({time.time() - t0:.1f}s)")
+
+    renderer.close()
+
+    if not frames:
+        print("  WARNING: No frames rendered!")
+        return
+
+    print(f"  [mocap] Done: {len(frames)} frames in {time.time() - t0:.1f}s")
+    _write_video(frames, output_path, fps)
+
+
+def render_retarget(
+    bvh_path: Path,
+    output_path: Path,
+    width: int,
+    height: int,
+    fps: int,
+    max_frames: int = 0,
+    bvh_format: str = "lafan1",
+) -> None:
+    """Render GMR retargeting result — set qpos directly, no physics."""
+    project_root = _find_project_root()
+    cfgs = _load_configs(str(bvh_path), project_root, bvh_format, policy_path=None)
+
+    # Retarget rendering uses the GMR mocap XML (no actuator limits needed)
+    mocap_xml = (
+        project_root
+        / "teleopit"
+        / "retargeting"
+        / "gmr"
+        / "assets"
+        / "unitree_g1"
+        / "g1_mocap_29dof.xml"
+    )
+    cfgs["robot"].xml_path = str(mocap_xml)
+
+    from teleopit.inputs import BVHInputProvider
+    from teleopit.retargeting.core import RetargetingModule
+    from teleopit.robots.mujoco_robot import MuJoCoRobot
+
+    robot = MuJoCoRobot(cfgs["robot"])
+    input_prov = BVHInputProvider(bvh_path=str(bvh_path), human_format=bvh_format)
+    retargeter = RetargetingModule(
+        robot_name="unitree_g1",
+        human_format=f"bvh_{input_prov.human_format}",
+        actual_human_height=input_prov.human_height,
+    )
+
+    model = robot.model
+    data = robot.data
+    model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
+    model.vis.global_.offheight = max(model.vis.global_.offheight, height)
+    renderer = mujoco.Renderer(model, height=height, width=width)
+    cam = _make_camera()
+
+    num_steps = len(input_prov)
+    if max_frames > 0:
+        num_steps = min(num_steps, max_frames)
+    duration = num_steps / fps
+    print(
+        f"  [retarget] Rendering {num_steps} frames @ {fps}fps -> {duration:.1f}s video"
+    )
+
+    frames: list[np.ndarray] = []
+    t0 = time.time()
+
+    for step in range(num_steps):
+        try:
+            human_frame = input_prov.get_frame()
+        except StopIteration:
+            break
+
+        retargeted = retargeter.retarget(human_frame)
+        qpos = np.asarray(retargeted, dtype=np.float64).reshape(-1)
+
+        # Set full qpos (7D root + 29D joints) directly — no physics
+        data.qpos[: len(qpos)] = qpos
+        data.qvel[:] = 0
+        mujoco.mj_forward(model, data)
+
+        # Post-process: lift root Z so feet don't sink below ground
+        left_foot_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_ankle_roll_link")
+        right_foot_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right_ankle_roll_link")
+        lowest_foot_z = min(data.xpos[left_foot_id][2], data.xpos[right_foot_id][2])
+        if lowest_foot_z < 0.0:
+            data.qpos[2] -= lowest_foot_z  # lift root by the penetration depth
+            mujoco.mj_forward(model, data)
+
+        cam.lookat[:] = [data.qpos[0], data.qpos[1], 0.8]
+
+        renderer.update_scene(data, camera=cam)
+        frame = renderer.render()
+        frames.append(frame.copy())
+
+        if (step + 1) % 100 == 0:
+            print(f"    Step {step + 1}/{num_steps} ({time.time() - t0:.1f}s)")
+
+    renderer.close()
+
+    if not frames:
+        print("  WARNING: No frames rendered!")
+        return
+
+    print(f"  [retarget] Done: {len(frames)} frames in {time.time() - t0:.1f}s")
+    _write_video(frames, output_path, fps)
+
+
+def render_sim2sim(
+    bvh_path: Path,
+    output_path: Path,
+    width: int,
+    height: int,
+    fps: int,
+    max_frames: int = 0,
+    bvh_format: str = "lafan1",
+    policy_path: str | None = None,
+    debug_trace_path: str | None = None,
+) -> None:
+    """Render full sim2sim: BVH → GMR → obs → ONNX policy → PD control → MuJoCo."""
+    project_root = _find_project_root()
+    if policy_path is None:
+        raise ValueError("render_sim2sim requires --policy (ONNX exported from train_mimic checkpoint).")
+    cfgs = _load_configs(str(bvh_path), project_root, bvh_format, policy_path=policy_path)
+
+    POLICY_HZ = int(cfgs["policy_hz"])
+    PD_HZ = int(cfgs["pd_hz"])
+
+    from omegaconf import OmegaConf
+
+    from teleopit.pipeline import TeleopPipeline
+
+    cfg = OmegaConf.create(
+        {
+            "robot": cfgs["robot"],
+            "controller": cfgs["controller"],
+            "input": cfgs["input"],
+            "policy_hz": POLICY_HZ,
+            "pd_hz": PD_HZ,
+            "debug_trace_path": debug_trace_path,
+            "recording": {"output_path": "/tmp/teleopit_render.h5"},
+        }
+    )
+    pipeline = TeleopPipeline(cfg)
+
+    model = pipeline.robot.model
+    data = pipeline.robot.data
+    model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
+    model.vis.global_.offheight = max(model.vis.global_.offheight, height)
+    renderer = mujoco.Renderer(model, height=height, width=width)
+    cam = _make_camera()
+
+    input_prov = cast(Any, pipeline.input_provider)
+    retargeter = cast(Any, pipeline.retargeter)
+    loop = pipeline.loop
+
+    offline_reference = OfflineReferenceMotion(input_prov, retargeter)
+
+    input_fps = float(offline_reference.fps)
+    n_bvh = offline_reference.num_frames
+    bvh_duration = offline_reference.duration_s
+    if max_frames > 0:
+        bvh_duration = min(bvh_duration, max_frames / input_fps)
+    num_policy_steps = int(bvh_duration * POLICY_HZ)
+    print(f"  [sim2sim] {n_bvh} BVH frames @ {input_fps:g}fps = {bvh_duration:.1f}s")
+    print(
+        f"  [sim2sim] Running {num_policy_steps} policy steps @ {POLICY_HZ}Hz, PD @ {PD_HZ}Hz (decimation={loop.decimation})"
+    )
+
+    frames: list[np.ndarray] = []
+    t0 = time.time()
+    torque = np.zeros((loop._num_actions,), dtype=np.float32)
+    debug_writer: RolloutTraceWriter | None = None
+    if debug_trace_path:
+        debug_writer = RolloutTraceWriter(
+            debug_trace_path,
+            metadata={
+                "source": "render_sim2sim",
+                "policy_hz": POLICY_HZ,
+                "pd_hz": PD_HZ,
+                "input_fps": input_fps,
+                "bvh_path": str(bvh_path),
+                "policy_path": str(policy_path),
+            },
+        )
+
+    for step in range(num_policy_steps):
+        policy_time = step / POLICY_HZ
+        sampled = offline_reference.sample(policy_time)
+        if sampled is None:
+            break
+        retargeted = sampled.qpos
+
+        state = pipeline.robot.get_state()
+        preparation = loop._step_runner.prepare_motion_command(retargeted, state)
+        obs = loop._build_observation(
+            state=state,
+            motion_prep=preparation,
+            last_action=loop._step_runner.last_action,
+        )
+        policy_obs = loop._validate_observation_for_policy(obs)
+        action = np.asarray(
+            pipeline.controller.compute_action(policy_obs), dtype=np.float32
+        ).reshape(-1)
+
+        target_dof_pos = loop._compute_target_dof_pos(action)
+
+        if getattr(pipeline.robot, "_builtin_pd", False):
+            # Built-in PD actuators expect position targets, not manually computed torques.
+            pipeline.robot.set_action(target_dof_pos)
+            for _ in range(loop.decimation):
+                pipeline.robot.step()
+            torque = np.zeros((loop._num_actions,), dtype=np.float32)
+        else:
+            for _ in range(loop.decimation):
+                pd_state = pipeline.robot.get_state()
+                dof_pos = np.asarray(pd_state.qpos, dtype=np.float32)[: loop._num_actions]
+                dof_vel = np.asarray(pd_state.qvel, dtype=np.float32)[: loop._num_actions]
+                torque = (target_dof_pos - dof_pos) * loop._kps - dof_vel * loop._kds
+                torque = np.clip(torque, -loop._torque_limits, loop._torque_limits).astype(
+                    np.float32
+                )
+                pipeline.robot.set_action(torque)
+                pipeline.robot.step()
+
+        loop._step_runner.finish_step(action, preparation.qpos)
+
+        if debug_writer is not None:
+            controller_debug_inputs = pipeline.controller.get_debug_inputs()
+            final_state = pipeline.robot.get_state()
+            debug_writer.add_step(
+                step=np.int64(step),
+                policy_time=np.float64(policy_time),
+                frame_f=np.float64(sampled.frame_f),
+                obs=np.asarray(policy_obs, dtype=np.float32),
+                obs_history=controller_debug_inputs.get("obs_history"),
+                action=np.asarray(action, dtype=np.float32),
+                target_dof_pos=np.asarray(target_dof_pos, dtype=np.float32),
+                motion_qpos=np.asarray(preparation.qpos[: 7 + loop._num_actions], dtype=np.float32),
+                motion_joint_vel=np.asarray(
+                    loop._step_runner._extract_motion_joint_data(preparation.qpos)[1],
+                    dtype=np.float32,
+                ),
+                motion_anchor_lin_vel_w=preparation.motion_anchor_lin_vel_w,
+                motion_anchor_ang_vel_w=preparation.motion_anchor_ang_vel_w,
+                robot_qpos=np.asarray(final_state.qpos, dtype=np.float32),
+                robot_qvel=np.asarray(final_state.qvel, dtype=np.float32),
+                robot_quat=np.asarray(final_state.quat, dtype=np.float32),
+                robot_base_pos=(
+                    None
+                    if getattr(final_state, "base_pos", None) is None
+                    else np.asarray(final_state.base_pos, dtype=np.float32)
+                ),
+                torque=np.asarray(torque, dtype=np.float32),
+            )
+
+        cam.lookat[:] = [data.qpos[0], data.qpos[1], 0.8]
+
+        renderer.update_scene(data, camera=cam)
+        frame = renderer.render()
+        frames.append(frame.copy())
+
+        if (step + 1) % 100 == 0:
+            print(f"    Step {step + 1}/{num_policy_steps} ({time.time() - t0:.1f}s)")
+
+    renderer.close()
+    if debug_writer is not None:
+        debug_writer.save()
+
+    if not frames:
+        print("  WARNING: No frames rendered!")
+        return
+
+    print(f"  [sim2sim] Done: {len(frames)} frames in {time.time() - t0:.1f}s")
+    _write_video(frames, output_path, POLICY_HZ)
+
+
+def main() -> None:
+    available_passes = ("mocap", "retarget", "sim2sim")
+    parser = argparse.ArgumentParser(
+        description="Render mocap-input + retarget + sim2sim verification videos"
+    )
+    parser.add_argument("--bvh", required=True, help="Path to a single BVH file")
+    parser.add_argument(
+        "--max_seconds",
+        type=float,
+        default=0,
+        help="Max video duration in seconds (0=full BVH)",
+    )
+    parser.add_argument("--width", type=int, default=640, help="Video width")
+    parser.add_argument("--height", type=int, default=368, help="Video height")
+    parser.add_argument(
+        "--policy",
+        type=str,
+        required=True,
+        help="Path to ONNX policy exported from train_mimic checkpoint",
+    )
+    parser.add_argument(
+        "--format", type=str, default="lafan1", help="BVH format (lafan1 or hc_mocap)"
+    )
+    parser.add_argument(
+        "--debug-trace",
+        type=str,
+        default=None,
+        help="Optional .npz path to dump per-step sim2sim trace for debugging",
+    )
+    parser.add_argument(
+        "--render",
+        type=str,
+        nargs="+",
+        choices=available_passes,
+        default=list(available_passes),
+        help="Render only the selected outputs (default: all)",
+    )
+    args = parser.parse_args()
+    project_root = _find_project_root()
+    bvh_path = Path(args.bvh)
+    if not bvh_path.is_absolute():
+        bvh_path = (project_root / bvh_path).resolve()
+
+    if not bvh_path.exists():
+        print(f"BVH file not found: {bvh_path}")
+        sys.exit(1)
+
+    fps = _read_bvh_fps(bvh_path)
+    # hc_mocap 60fps is downsampled to 30fps by BVHInputProvider — match here
+    if args.format == "hc_mocap" and fps == 60:
+        fps = 30
+    max_frames = int(fps * args.max_seconds) if args.max_seconds > 0 else 0
+
+    output_dir = project_root / "outputs"
+    output_dir.mkdir(exist_ok=True)
+    stem = bvh_path.stem
+
+    print(
+        f"Processing: {bvh_path.name} (native {fps}fps"
+        + (f", cap {args.max_seconds:.0f}s)" if max_frames else ", full)")
+    )
+
+    rendered_outputs: list[tuple[str, Path]] = []
+
+    if "mocap" in args.render:
+        mocap_out = output_dir / f"{stem}_mocap.mp4"
+        print(f"\n=== Pass 1: Mocap Input ===")
+        render_mocap(
+            bvh_path=bvh_path,
+            output_path=mocap_out,
+            width=args.width,
+            height=args.height,
+            fps=fps,
+            max_frames=max_frames,
+            bvh_format=args.format,
+        )
+        rendered_outputs.append(("Mocap", mocap_out))
+
+    if "retarget" in args.render:
+        retarget_out = output_dir / f"{stem}_retarget.mp4"
+        print(f"\n=== Pass 2: GMR Retarget ===")
+        render_retarget(
+            bvh_path=bvh_path,
+            output_path=retarget_out,
+            width=args.width,
+            height=args.height,
+            fps=fps,
+            max_frames=max_frames,
+            bvh_format=args.format,
+        )
+        rendered_outputs.append(("Retarget", retarget_out))
+
+    if "sim2sim" in args.render:
+        sim2sim_out = output_dir / f"{stem}_sim2sim.mp4"
+        print(f"\n=== Pass 3: Sim2Sim ===")
+        render_sim2sim(
+            bvh_path=bvh_path,
+            output_path=sim2sim_out,
+            width=args.width,
+            height=args.height,
+            fps=fps,
+            max_frames=max_frames,
+            bvh_format=args.format,
+            policy_path=args.policy,
+            debug_trace_path=args.debug_trace,
+        )
+        rendered_outputs.append(("Sim2Sim", sim2sim_out))
+
+    print(f"\nDone! Videos saved to {output_dir}/")
+    for label, path in rendered_outputs:
+        print(f"  {label:<9}: {path.name}")
+
+
+if __name__ == "__main__":
+    main()

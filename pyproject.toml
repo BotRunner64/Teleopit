@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "teleopit"
-version = "0.1.0"
+version = "0.2.0"
 description = "Teleoperation framework for humanoid robots with motion retargeting"
 authors = [
     {name = "Teleopit Team"}
@@ -26,7 +26,7 @@ dependencies = [
     "rich",
     "loop-rate-limiters",
     "imageio",
-    "matplotlib",
+    "huggingface_hub",
 ]
 
 [project.optional-dependencies]
@@ -35,10 +35,9 @@ dev = [
     "pytest-cov",
 ]
 sim2real = [
-    "cyclonedds==0.10.2",
     "opencv-python",
-    # Also requires unitree_sdk2_python submodule:
-    #   pip install -e third_party/unitree_sdk2_python
+    # Also requires g1_bridge_sdk (C++ DDS bridge):
+    #   pip install third_party/g1_bridge_sdk
 ]
 train = [
     "torch>=2.0.0",
@@ -50,6 +49,13 @@ train = [
 ]
 pico4 = [
     # xrobotoolkit_sdk is a proprietary Pico4 SDK — install manually from vendor package
+    "pyzmq>=25.0",
+    "msgpack>=1.0",
+    "teleopit[sim2real]",
+]
+onboard = [
+    "pyzmq>=25.0",
+    "msgpack>=1.0",
     "teleopit[sim2real]",
 ]
 

@@ -31,8 +31,8 @@ def _make_dummy_policy(expected_obs_dim: int, *, multi_input: bool = True) -> Ma
 def _make_sim2real_cfg(tmp_path: Path) -> dict:
     policy_path = tmp_path / "policy.onnx"
     policy_path.write_bytes(b"dummy")
-    ref_bvh = tmp_path / "ref.bvh"
-    ref_bvh.write_text("HIERARCHY\n", encoding="utf-8")
+    bvh_path = tmp_path / "clip.bvh"
+    bvh_path.write_text("HIERARCHY\n", encoding="utf-8")
 
     return {
         "policy_hz": 50.0,
@@ -40,11 +40,9 @@ def _make_sim2real_cfg(tmp_path: Path) -> dict:
         "gamepad": {},
         "mocap_switch": {},
         "input": {
-            "reference_bvh": str(ref_bvh),
-            "udp_host": "",
-            "udp_port": 1118,
+            "provider": "bvh",
+            "bvh_file": str(bvh_path),
             "bvh_format": "hc_mocap",
-            "udp_timeout": 0.1,
             "robot_name": "unitree_g1",
         },
         "controller": {
@@ -63,6 +61,30 @@ def _make_sim2real_cfg(tmp_path: Path) -> dict:
 
 
 def _apply_sim2real_mocks(monkeypatch, policy_mock: MagicMock) -> None:
+    dummy_provider = MagicMock()
+    dummy_provider.human_format = "hc_mocap"
+    dummy_provider.fps = 30
+    dummy_provider.__len__.return_value = 1
+    dummy_provider.get_frame_by_index.return_value = {}
+    obs_builder = MagicMock(total_obs_size=166)
+
+    def _build_components(*args, **kwargs):
+        if policy_mock._expected_obs_dim != 166:
+            raise ValueError(
+                f"Only 166D velcmd_history ONNX policies are supported here; "
+                f"obs_builder produces 166D but policy expects {policy_mock._expected_obs_dim}D."
+            )
+        if not policy_mock._multi_input:
+            raise ValueError(
+                "Sim2real requires an ONNX policy with dual inputs ('obs' and 'obs_history')."
+            )
+        return MagicMock(
+            input_provider=dummy_provider,
+            retargeter=MagicMock(),
+            controller=policy_mock,
+            obs_builder=obs_builder,
+        )
+
     monkeypatch.setattr(
         "teleopit.sim2real.controller.UnitreeG1Robot",
         lambda cfg: MagicMock(check_mode=MagicMock(return_value={"name": "mock"})),
@@ -72,20 +94,9 @@ def _apply_sim2real_mocks(monkeypatch, policy_mock: MagicMock) -> None:
         MagicMock,
     )
 
-    dummy_provider = MagicMock()
-    dummy_provider.human_format = "hc_mocap"
-    dummy_provider.fps = 30
     monkeypatch.setattr(
-        "teleopit.sim2real.controller.UDPBVHInputProvider",
-        lambda **kw: dummy_provider,
-    )
-    monkeypatch.setattr(
-        "teleopit.sim2real.controller.RetargetingModule",
-        lambda **kw: MagicMock(),
-    )
-    monkeypatch.setattr(
-        "teleopit.sim2real.controller.RLPolicyController",
-        lambda cfg: policy_mock,
+        "teleopit.sim2real.controller.build_sim2real_mocap_components",
+        _build_components,
     )
 
 

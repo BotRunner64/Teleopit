@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable, Any, Dict
+from typing import Any, Dict, Protocol, Tuple, runtime_checkable
+
 import numpy as np
+from numpy.typing import NDArray
 
 
 @dataclass
@@ -20,15 +22,44 @@ class RobotState:
 
 @runtime_checkable
 class InputProvider(Protocol):
-    """Provides human motion input from various sources."""
-    
-    def get_frame(self) -> Dict[str, Any]:
-        """Get current frame of human motion data."""
-        ...
-    
-    def is_available(self) -> bool:
-        """Check if input source is available."""
-        ...
+    """Minimal interface shared by all human-motion input sources.
+
+    Satisfied by both offline providers (``BVHInputProvider``)
+    and realtime providers (``Pico4InputProvider``, ``ZMQInputProvider``).
+    """
+
+    @property
+    def fps(self) -> float: ...
+
+    @property
+    def bone_names(self) -> list[str]: ...
+
+    @property
+    def bone_parents(self) -> NDArray[np.int32]: ...
+
+    def is_available(self) -> bool: ...
+
+    def get_frame(self) -> Any: ...
+
+
+@runtime_checkable
+class RealtimeInputProvider(InputProvider, Protocol):
+    """Extended interface for realtime streaming providers (Pico4, ZMQ).
+
+    Adds methods required by the realtime buffering pipeline that offline
+    providers (BVH, looping wrappers) do not implement.
+    """
+
+    @property
+    def human_format(self) -> str: ...
+
+    def get_frame_packet(self) -> tuple[Any, float, int]: ...
+
+    def get_realtime_input_packet(self) -> Any: ...
+
+    def sample_frame(self, query_time_s: float, delay_s: float) -> Any: ...
+
+    def close(self) -> None: ...
 
 
 @runtime_checkable

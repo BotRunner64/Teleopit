@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,42 +28,19 @@ class MocapComponents:
     obs_builder: Any
 
 
-class _LoopingInputProvider:
-    def __init__(
-        self, provider: Any, on_reset: Callable[[], None] | None = None
-    ) -> None:
-        self._provider = provider
-        self._on_reset = on_reset
-
-    def get_frame(self) -> dict[str, tuple[Any, Any]]:
-        if not self._provider.is_available():
-            self._provider.reset()
-            if self._on_reset is not None:
-                self._on_reset()
-        return self._provider.get_frame()
-
-    def is_available(self) -> bool:
-        return True
-
-    @property
-    def fps(self) -> int:
-        return self._provider.fps
-
-    @property
-    def bone_names(self) -> list[str]:
-        return self._provider.bone_names
-
-    @property
-    def bone_parents(self) -> Any:
-        return self._provider.bone_parents
-
-
 
 def build_simulation_cfg(cfg: Any) -> dict[str, object]:
+    playback_cfg = cfg_get(cfg, "playback", {}) or {}
+    playback_keyboard_cfg = cfg_get(playback_cfg, "keyboard", {}) or {}
     return {
         "policy_hz": float(cfg_get(cfg, "policy_hz", 50.0)),
         "pd_hz": float(cfg_get(cfg, "pd_hz", 1000.0)),
         "transition_duration": float(cfg_get(cfg, "transition_duration", 0.0) or 0.0),
+        "pause_resume_transition_duration": float(
+            cfg_get(cfg, "pause_resume_transition_duration", cfg_get(cfg, "transition_duration", 0.0)) or 0.0
+        ),
+        "pause_resume_warmup_steps": cfg_get(cfg, "pause_resume_warmup_steps", None),
+        "pause_reset_alignment_on_resume": cfg_get(cfg, "pause_reset_alignment_on_resume", None),
         "velcmd_fixed_ref_yaw_alignment": bool(cfg_get(cfg, "velcmd_fixed_ref_yaw_alignment", True)),
         "retarget_buffer_enabled": bool(cfg_get(cfg, "retarget_buffer_enabled", True)),
         "retarget_buffer_window_s": float(cfg_get(cfg, "retarget_buffer_window_s", 0.5)),
@@ -75,12 +51,23 @@ def build_simulation_cfg(cfg: Any) -> dict[str, object]:
         "realtime_buffer_low_watermark_steps": cfg_get(cfg, "realtime_buffer_low_watermark_steps", None),
         "realtime_buffer_high_watermark_steps": cfg_get(cfg, "realtime_buffer_high_watermark_steps", None),
         "realtime_buffer_warmup_steps": cfg_get(cfg, "realtime_buffer_warmup_steps", None),
+        "realtime_catchup_enabled": bool(cfg_get(cfg, "realtime_catchup_enabled", False)),
+        "realtime_catchup_trigger_steps": cfg_get(cfg, "realtime_catchup_trigger_steps", None),
+        "realtime_catchup_release_steps": cfg_get(cfg, "realtime_catchup_release_steps", None),
+        "realtime_catchup_target_delay_s": cfg_get(cfg, "realtime_catchup_target_delay_s", None),
+        "reference_qpos_smoothing_alpha": float(cfg_get(cfg, "reference_qpos_smoothing_alpha", 1.0)),
         "reference_velocity_smoothing_alpha": float(cfg_get(cfg, "reference_velocity_smoothing_alpha", 1.0)),
         "reference_anchor_velocity_smoothing_alpha": float(
             cfg_get(cfg, "reference_anchor_velocity_smoothing_alpha", 1.0)
         ),
         "realtime": bool(cfg_get(cfg, "realtime", False)),
         "debug_trace_path": cfg_get(cfg, "debug_trace_path", None),
+        "playback": {
+            "pause_on_end": bool(cfg_get(playback_cfg, "pause_on_end", False)),
+            "keyboard": {
+                "enabled": bool(cfg_get(playback_keyboard_cfg, "enabled", False)),
+            },
+        },
     }
 
 
@@ -166,10 +153,19 @@ def _build_policy_components(
     propagate_controller_defaults(controller_cfg, robot_cfg)
 
     controller = controller_cls(controller_cfg)
+    if not bool(getattr(controller, "_multi_input", False)):
+        raise ValueError(
+            "Only dual inputs ONNX policies are supported here; expected inputs named 'obs' and 'obs_history'."
+        )
     obs_builder = _build_obs_builder(robot_cfg, controller_cfg, sim_cfg)
     policy_dim = getattr(controller, "_expected_obs_dim", None)
     builder_dim = getattr(obs_builder, "total_obs_size", None)
     if policy_dim is not None and builder_dim is not None and policy_dim != builder_dim:
+        if builder_dim == 166:
+            raise ValueError(
+                f"Only 166D velcmd_history ONNX policies are supported here; "
+                f"obs_builder produces 166D but policy expects {policy_dim}D."
+            )
         raise ValueError(
             f"Observation dimension mismatch at startup: obs_builder produces {builder_dim}D "
             f"but policy expects {policy_dim}D. Use a matching ONNX model."
@@ -179,8 +175,8 @@ def _build_policy_components(
 
 
 def _prepare_input_cfg(input_cfg: Any, project_root: Path, *, sim2real: bool) -> str:
-    provider_kind = str(cfg_get(input_cfg, "provider", "udp_bvh" if sim2real else "bvh")).lower()
-    if provider_kind in ("bvh", "vr_stub"):
+    provider_kind = str(cfg_get(input_cfg, "provider", "bvh")).lower()
+    if provider_kind == "bvh":
         normalize_path_in_cfg(
             input_cfg,
             "bvh_file",
@@ -188,23 +184,17 @@ def _prepare_input_cfg(input_cfg: Any, project_root: Path, *, sim2real: bool) ->
             required=True,
             missing_message="input.bvh_file must be set for offline BVH input",
         )
-    elif provider_kind == "udp_bvh":
-        normalize_path_in_cfg(
-            input_cfg,
-            "reference_bvh",
-            base_dir=project_root,
-            required=True,
-            missing_message="input.reference_bvh must be set for udp_bvh provider",
-        )
+    elif provider_kind == "zmq_pico4":
+        pass  # no path normalization needed
     elif provider_kind != "pico4":
         raise ValueError(
             f"Unsupported input.provider='{provider_kind}'. "
-            "Supported providers are bvh, vr_stub, udp_bvh, pico4."
+            "Supported providers are bvh, pico4, zmq_pico4."
         )
 
-    if sim2real and provider_kind not in ("udp_bvh", "pico4"):
+    if sim2real and provider_kind not in ("bvh", "pico4", "zmq_pico4"):
         raise ValueError(
-            f"Sim2real only supports udp_bvh or pico4 input providers; got '{provider_kind}'."
+            f"Sim2real only supports bvh, pico4, or zmq_pico4 input providers; got '{provider_kind}'."
         )
     return provider_kind
 
@@ -216,30 +206,36 @@ def _build_input_provider(
     provider_kind: str,
     bvh_input_cls: type[Any],
     pico4_input_cls: type[Any],
-    udp_bvh_input_cls: type[Any],
 ) -> Any:
+    if provider_kind == "zmq_pico4":
+        from teleopit.inputs.zmq_provider import ZMQInputProvider
+
+        return ZMQInputProvider(
+            host=str(cfg_get(input_cfg, "zmq_host", "192.168.1.100")),
+            port=int(cfg_get(input_cfg, "zmq_port", 5555)),
+            topic=str(cfg_get(input_cfg, "zmq_topic", "pico4")),
+            human_format=str(cfg_get(input_cfg, "human_format", "xrobot")),
+            timeout=float(cfg_get(input_cfg, "zmq_timeout", 30.0)),
+            conflate=bool(cfg_get(input_cfg, "zmq_conflate", True)),
+            recv_hwm=int(cfg_get(input_cfg, "zmq_rcv_hwm", 1)),
+            seq_gap_reset_threshold=int(cfg_get(input_cfg, "zmq_seq_gap_reset_threshold", 4)),
+        )
+
     if provider_kind == "pico4":
         return pico4_input_cls(
             human_format=str(cfg_get(input_cfg, "human_format", "xrobot")),
             timeout=float(cfg_get(input_cfg, "pico4_timeout", 60.0)),
+            buffer_size=int(cfg_get(input_cfg, "pico4_buffer_size", 60)),
+            timestamp_gap_reset_s=float(cfg_get(input_cfg, "pico4_timestamp_gap_reset_s", 0.15)),
+            poll_sleep_s=float(cfg_get(input_cfg, "pico4_poll_sleep_s", 0.002)),
+            pause_button=cfg_get(input_cfg, "pause_button", "A"),
+            pause_debounce_s=float(cfg_get(input_cfg, "pause_debounce_s", 0.25)),
         )
 
-    if provider_kind == "udp_bvh":
-        return udp_bvh_input_cls(
-            reference_bvh=str(cfg_get(input_cfg, "reference_bvh")),
-            host=str(cfg_get(input_cfg, "udp_host", "")),
-            port=int(cfg_get(input_cfg, "udp_port", 1118)),
-            human_format=str(cfg_get(input_cfg, "bvh_format", "hc_mocap")),
-            timeout=float(cfg_get(input_cfg, "udp_timeout", 30.0)),
-        )
-
-    provider = bvh_input_cls(
+    return bvh_input_cls(
         bvh_path=str(cfg_get(input_cfg, "bvh_file")),
         human_format=str(cfg_get(input_cfg, "bvh_format", "lafan1")),
     )
-    if provider_kind == "vr_stub":
-        return _LoopingInputProvider(provider)
-    return provider
 
 
 
@@ -247,7 +243,7 @@ def _resolve_human_format(input_cfg: Any, input_provider: Any) -> str:
     if hasattr(input_provider, "human_format"):
         provider_format = input_provider.human_format
         provider_kind = str(cfg_get(input_cfg, "provider", "bvh")).lower()
-        if provider_kind == "pico4":
+        if provider_kind in ("pico4", "zmq_pico4"):
             return str(provider_format)
         return f"bvh_{provider_format}"
 
@@ -255,7 +251,7 @@ def _resolve_human_format(input_cfg: Any, input_provider: Any) -> str:
     if human_format and str(human_format) != "null":
         return str(human_format)
 
-    if str(cfg_get(input_cfg, "provider", "bvh")).lower() == "pico4":
+    if str(cfg_get(input_cfg, "provider", "bvh")).lower() in ("pico4", "zmq_pico4"):
         return str(cfg_get(input_cfg, "human_format", "xrobot"))
     return f"bvh_{cfg_get(input_cfg, 'bvh_format', 'lafan1')}"
 
@@ -279,7 +275,6 @@ def build_inference_components(
     obs_builder_cls: type[Any],
     bvh_input_cls: type[Any],
     pico4_input_cls: type[Any],
-    udp_bvh_input_cls: type[Any],
     retargeter_cls: type[Any],
 ) -> InferenceComponents:
     del obs_builder_cls
@@ -302,10 +297,7 @@ def build_inference_components(
         provider_kind=provider_kind,
         bvh_input_cls=bvh_input_cls,
         pico4_input_cls=pico4_input_cls,
-        udp_bvh_input_cls=udp_bvh_input_cls,
     )
-    if isinstance(input_provider, _LoopingInputProvider) and hasattr(controller, "reset"):
-        input_provider._on_reset = controller.reset
     retargeter = _build_retargeter(input_cfg, input_provider, retargeter_cls)
     return InferenceComponents(
         robot=robot,
@@ -325,8 +317,8 @@ def build_sim2real_mocap_components(
     *,
     controller_cls: type[Any],
     obs_builder_cls: type[Any],
+    bvh_input_cls: type[Any],
     pico4_input_cls: type[Any],
-    udp_bvh_input_cls: type[Any],
     retargeter_cls: type[Any],
 ) -> MocapComponents:
     del obs_builder_cls
@@ -346,9 +338,8 @@ def build_sim2real_mocap_components(
     input_provider = _build_input_provider(
         input_cfg=input_cfg,
         provider_kind=provider_kind,
-        bvh_input_cls=object,
+        bvh_input_cls=bvh_input_cls,
         pico4_input_cls=pico4_input_cls,
-        udp_bvh_input_cls=udp_bvh_input_cls,
     )
     retargeter = _build_retargeter(input_cfg, input_provider, retargeter_cls)
     return MocapComponents(

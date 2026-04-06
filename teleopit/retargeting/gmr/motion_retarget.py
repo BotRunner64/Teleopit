@@ -101,8 +101,25 @@ class GeneralMotionRetargeting:
             self.ik_limits.append(mink.VelocityLimit(self.model, VELOCITY_LIMITS)) 
             
         self.setup_retarget_configuration()
-        
+
         self.ground_offset = 0.0
+        self._warmup_needed = False
+        self._warmup_max_iter = 200
+        self._warmup_dt = 0.1  # large integration step for fast convergence during warmup
+
+    def reset_configuration(self):
+        """Reset the IK configuration to the model's default qpos.
+
+        Must be called when the input source has a discontinuity (e.g.
+        pause/resume) so the warm-start IK solver does not get stuck in a
+        local minimum far from the new target.
+
+        The next ``retarget()`` call will use many more iterations so the
+        solver can converge from the default pose to the (potentially distant)
+        new target.
+        """
+        self.configuration.update(q=self.model.qpos0.copy())
+        self._warmup_needed = True
 
     def setup_retarget_configuration(self):
         self.configuration = mink.Configuration(self.model)
@@ -174,19 +191,25 @@ class GeneralMotionRetargeting:
         # Update the task targets
         self.update_targets(human_data, offset_to_ground)
 
+        # After a reset, use a large dt and more iterations so the solver
+        # can converge from the default pose to a potentially distant target.
+        warmup = self._warmup_needed
+        if warmup:
+            self._warmup_needed = False
+        iter_limit = self._warmup_max_iter if warmup else self.max_iter
+        dt = self._warmup_dt if warmup else self.configuration.model.opt.timestep
+
         if self.use_ik_match_table1:
             # Solve the IK problem
             curr_error = self.error1()
-            dt = self.configuration.model.opt.timestep
             vel1 = mink.solve_ik(
                 self.configuration, self.tasks1, dt, self.solver, self.damping, self.ik_limits
             )
             self.configuration.integrate_inplace(vel1, dt)
             next_error = self.error1()
             num_iter = 0
-            while curr_error - next_error > 0.001 and num_iter < self.max_iter:
+            while curr_error - next_error > 0.001 and num_iter < iter_limit:
                 curr_error = next_error
-                dt = self.configuration.model.opt.timestep
                 vel1 = mink.solve_ik(
                     self.configuration, self.tasks1, dt, self.solver, self.damping, self.ik_limits
                 )
@@ -196,26 +219,21 @@ class GeneralMotionRetargeting:
 
         if self.use_ik_match_table2:
             curr_error = self.error2()
-            dt = self.configuration.model.opt.timestep
             vel2 = mink.solve_ik(
                 self.configuration, self.tasks2, dt, self.solver, self.damping, self.ik_limits
             )
             self.configuration.integrate_inplace(vel2, dt)
             next_error = self.error2()
             num_iter = 0
-            while curr_error - next_error > 0.001 and num_iter < self.max_iter:
+            while curr_error - next_error > 0.001 and num_iter < iter_limit:
                 curr_error = next_error
-                # Solve the IK problem with the second task
-                dt = self.configuration.model.opt.timestep
                 vel2 = mink.solve_ik(
                     self.configuration, self.tasks2, dt, self.solver, self.damping, self.ik_limits
                 )
                 self.configuration.integrate_inplace(vel2, dt)
-                
                 next_error = self.error2()
                 num_iter += 1
-                
-            
+
         return self.configuration.data.qpos.copy()
 
 

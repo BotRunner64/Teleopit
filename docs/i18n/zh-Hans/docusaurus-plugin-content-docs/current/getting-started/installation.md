@@ -1,0 +1,80 @@
+---
+sidebar_position: 1
+---
+
+# 安装
+
+Teleopit 提供多种安装配置，你可以根据实际使用场景选择对应的安装方式。
+
+## 前置条件
+
+- Python 3.10+
+- [Conda](https://docs.conda.io/)（推荐）
+
+```bash
+conda create -n teleopit python=3.10
+conda activate teleopit
+```
+
+## 安装配置
+
+### 仅推理（sim2sim）
+
+```bash
+pip install -e .
+```
+
+该配置已足够进行离线 BVH 回放和 MuJoCo 仿真。
+
+### 训练
+
+```bash
+pip install -e '.[train]'
+```
+
+额外安装 `rsl-rl-lib`、`mjlab`、`wandb` 等训练相关依赖。
+
+### Sim2Real（硬件部署）
+
+```bash
+pip install -e '.[sim2real]'
+```
+
+额外安装 `opencv-python` 和 `g1_bridge_sdk`。此外还需要初始化子模块并编译 C++ 桥接库：
+
+```bash
+git submodule update --init --recursive
+pip install pybind11
+pip install third_party/g1_bridge_sdk
+```
+
+详见 [G1 Bridge SDK](../reference/g1-bridge-sdk)。
+
+### Pico 4 VR
+
+```bash
+pip install -e '.[pico4]'
+bash scripts/setup/setup_pico4.sh
+```
+
+完整设置流程详见 [Pico 4 VR 教程](../tutorials/pico4-vr)。
+
+### 机载部署（G1 NX）
+
+```bash
+bash scripts/setup/setup_onboard.sh
+```
+
+该脚本会安装系统依赖、编译 `g1_bridge_sdk`，并安装 `teleopit[onboard]`。
+
+## 验证安装
+
+```bash
+python -c "import teleopit; print('teleopit OK')"
+python -c "import train_mimic.tasks; print('training OK')"  # 仅在安装了训练配置时适用
+```
+
+## 下一步
+
+- [下载资源](download-assets) - 下载模型和数据
+- [快速上手](quick-start) - 运行你的第一个仿真

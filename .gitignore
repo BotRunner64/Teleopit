@@ -62,6 +62,7 @@ venv.bak/
 *.h5
 *.onnx
 track.pt
+track_*.pt
 assets/demo.gif
 assets/demo.mp4
 /data/
@@ -96,3 +97,6 @@ train_mimic/assets/
 # ModelScope download cache
 data/modelscope_cache/
 data/modelscope_upload/
+
+# Codex local workspace state
+.codex

@@ -11,7 +11,7 @@ Config: Hydra/OmegaConf YAML files in `teleopit/configs/`
 ## Architecture
 
 ```
-InputProvider (BVH file / UDP realtime / Pico4 VR) → Retargeter (GMR) → ObservationBuilder (166D) → Controller (dual-input TemporalCNN ONNX) → Robot (MuJoCo + PD / Unitree SDK)
+InputProvider (BVH file / Pico4 VR) → Retargeter (GMR) → ObservationBuilder (166D) → Controller (dual-input TemporalCNN ONNX) → Robot (MuJoCo + PD / Unitree SDK)
 ```
 
 Module-internal isolation: all modules run in-process and communicate via `InProcessBus` (zero-copy). Core interfaces are defined as `typing.Protocol` in `teleopit/interfaces.py`.
@@ -33,12 +33,11 @@ teleopit/                 # Core inference package
 ├── bus/                  # InProcessBus message pub/sub
 ├── configs/              # Hydra YAML configs
 │   ├── default.yaml      # Offline sim2sim
-│   ├── online.yaml       # Online sim2sim
 │   ├── sim2real.yaml     # sim2real
 │   ├── robot/g1.yaml     # G1 robot: XML path, PD gains, default angles, action dims
 │   ├── controller/rl_policy.yaml
 │   ├── input/bvh.yaml    # Offline BVH file input
-│   └── input/udp_bvh.yaml # UDP realtime BVH input (reference_bvh, port, timeout)
+│   └── input/pico4.yaml  # Pico4 realtime input
 ├── controllers/
 │   ├── rl_policy.py      # RLPolicyController — single-input or dual-input ONNX inference with fail-fast dim checks
 │   └── observation.py    # VelCmdObservationBuilder
@@ -46,7 +45,7 @@ teleopit/                 # Core inference package
 │   ├── bvh_provider.py       # BVHInputProvider — offline BVH file
 │   ├── pico4_provider.py     # Pico4InputProvider — xrobotoolkit_sdk realtime body tracking input
 │   ├── rot_utils.py          # Quaternion helpers for input-space transforms
-│   └── udp_bvh_provider.py   # UDPBVHInputProvider — realtime UDP BVH receiver
+│   └── zmq_provider.py       # ZMQInputProvider — onboard Pico4 realtime receiver
 ├── retargeting/
 │   ├── core.py           # RetargetingModule + extract_mimic_obs()
 │   └── gmr/              # Self-contained GMR code; heavyweight assets are downloaded into an ignored path
@@ -56,10 +55,9 @@ teleopit/                 # Core inference package
 │   └── loop.py           # SimulationLoop — PD control at 1000Hz, policy at 50Hz
 └── recording/            # HDF5Recorder
 scripts/
-├── run_sim.py            # Offline / online sim2sim pipeline
-├── run_sim2real.py       # G1 sim2real control; supports Pico4 via dedicated config names
-├── send_bvh_udp.py       # UDP BVH test sender
-├── render_sim.py         # Render single BVH → 3 videos (bvh skeleton, retarget, sim2sim)
+├── run_sim.py            # Offline sim2sim pipeline
+├── run_sim2real.py       # G1 sim2real control; supports offline BVH playback and Pico4
+├── render_sim.py         # Render single BVH → 3 MuJoCo videos (mocap input, retarget, sim2sim)
 ├── compute_ik_offsets.py # Compute IK quaternion offsets for new BVH formats
 └── setup_pico4.sh        # Pico4 environment setup helper
 train_mimic/              # Training package
@@ -91,16 +89,17 @@ train_mimic/              # Training package
 `SimulationLoop` supports three simultaneous viewer windows controlled by the `viewers` config:
 
 ```bash
-python scripts/run_sim.py controller.policy_path=policy.onnx viewers=sim2sim
-python scripts/run_sim.py controller.policy_path=policy.onnx 'viewers=[bvh,retarget,sim2sim]'
-python scripts/run_sim.py controller.policy_path=policy.onnx viewers=all
-python scripts/run_sim.py controller.policy_path=policy.onnx 'viewers=[retarget,sim2sim]'
-python scripts/run_sim.py controller.policy_path=policy.onnx viewers=none
+python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=sim2sim
+python scripts/run/run_sim.py controller.policy_path=policy.onnx 'viewers=[mocap,retarget,sim2sim]'
+python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=all
+python scripts/run/run_sim.py controller.policy_path=policy.onnx 'viewers=[retarget,sim2sim]'
+python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=none
 ```
 
 - `sim2sim`: MuJoCo physics result
 - `retarget`: kinematic retarget result
-- `bvh`: source BVH skeleton
+- `mocap`: retargeting input skeleton rendered by MuJoCo custom geoms
+- `bvh` viewer naming is removed; use `mocap`
 - All viewers run in separate subprocesses because GLFW/GLX only supports one window per process
 - Simulation exits when all active viewer windows are closed
 - `viewers` is the only supported viewer key; legacy `viewer` alias is removed
@@ -114,21 +113,22 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 
 `default_dof_pos` comes from `robot/g1.yaml` `default_angles`. `TeleopPipeline` automatically propagates `robot_cfg.default_angles` into `controller_cfg.default_dof_pos`. If this propagation is missing, knees and elbows lose their standing offset and the robot cannot balance.
 
-### Online Sim2Sim (UDP realtime input)
-- Realtime BVH arrives as one BVH motion line per UDP packet
-- `UDPBVHInputProvider` parses skeleton metadata from `reference_bvh`
-- A daemon thread receives packets and stores only the latest processed frame
-- `get_frame()` always returns the newest frame; `is_available()` stays `True`
-- `fps=30` is fixed for the UDP provider
-- Realtime control writes retargeted `qpos` into a short reference timeline and samples from that timeline at `time.monotonic() - retarget_buffer_delay_s`
-- `reference_steps=[0]` is the default production path
+### Offline Playback
+- Offline sim2sim and default sim2real both read `input.bvh_file` directly; no UDP relay path remains
+- Offline sim2sim playback can be keyboard-controlled: `Space/P` pause/resume, `R` replay from frame 0, `Q` stop
+- Pause/resume now includes a short hold window; users should stay still during resume and pause again if visible distortion appears
+- sim2sim keyboard playback is optional via `playback.keyboard.enabled=true`
+- sim2real reuses the Unitree remote: `Start` → `STANDING`, `Y` → playback, `X` → back to `STANDING`, `L1+R1` → `DAMPING`
+- `playback.pause_on_end=true` keeps the final pose and waits for manual replay
 
 ### Pico4 Realtime Input
 - `Pico4InputProvider` reads realtime body tracking from `xrobotoolkit_sdk`
 - Bone naming follows `xrobot_to_g1.json`
 - The provider applies an input-space transform to match the current retarget config
 - Do not hardcode that transform as a public coordinate-system contract; validate against actual retarget/sim2sim behavior when SDK or firmware changes
-- Pico4 realtime control uses the same retargeted-reference timeline path as UDP realtime input
+- Pico4 realtime control uses the same retargeted-reference timeline path as the shared realtime input stack
+- Pico4 sim2real pause/resume is handled as a mocap-session control event (`toggle_pause`), not as a mode switch to `STANDING`
+- Default Pico pause button is `A`; restore tracking by rebuilding realtime buffer + yaw/pivot alignment and blending back into live mocap
 
 ### SimulationLoop Runtime Behavior
 - `realtime=true` enforces wall-clock pacing even without a viewer
@@ -137,6 +137,8 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - BVH frame alignment is time-based: `bvh_idx = int(policy_time × input_fps)`
 - Realtime reference buffering is controlled by `retarget_buffer_enabled`, `retarget_buffer_window_s`, `retarget_buffer_delay_s`, `reference_steps`, `realtime_buffer_warmup_steps`, and the low/high watermark knobs
 - Realtime inferred `motion_joint_vel`, anchor linear velocity, and anchor angular velocity can be EMA-smoothed via `reference_velocity_smoothing_alpha` and `reference_anchor_velocity_smoothing_alpha`
+- Sim2real Pico pause/resume adds a mocap-session sub-state machine: `ACTIVE → PAUSED → RESUMING → ACTIVE`
+- Realtime sim2sim with Pico/ZMQ control events uses the same mocap-session pause/resume semantics and rebuilds the realtime reference path on resume
 
 ### Inference Observation
 Observation format: `velcmd_history` (166D, dual-input ONNX)
@@ -184,16 +186,46 @@ python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_general_trac
 ```
 
 ### GMR Retargeting
-- Self-contained in `teleopit/retargeting/gmr/`; assets need `scripts/download_assets.py --only gmr`
+- Self-contained in `teleopit/retargeting/gmr/`; assets need `scripts/setup/download_assets.py --only gmr`
 - Supports `lafan1` BVH (22 joints, 30fps, centimeters)
 - Supports `hc_mocap` BVH (50 joints, 60fps downsampled to 30fps, meters)
 - `lafan1-resolved` still needs an adapter layer and remains unsupported
 
 ### External Assets
-- Do not commit robot meshes, datasets, checkpoints, or demo media to Git; use `scripts/download_assets.py`
+- Do not commit robot meshes, datasets, checkpoints, or demo media to Git; use `scripts/setup/download_assets.py`
 - `teleopit/retargeting/gmr/assets/` is gitignored; downloaded at runtime
 - `train_mimic/assets/` is no longer tracked; FK tooling reuses `teleopit/retargeting/gmr/assets/unitree_g1/g1_mjlab.xml`
 - Run `python scripts/check_large_tracked_files.py` before pushing
+
+Assets are split across two ModelScope repos by type:
+
+| Repo | Type | Contents |
+|------|------|----------|
+| `BingqianWu/Teleopit-models` | model | checkpoints, GMR retargeting assets, sample BVH |
+| `BingqianWu/Teleopit-datasets` | dataset | training/validation data shards |
+
+Asset group → repo mapping is defined in `teleopit/runtime/external_assets.py` (`MODEL_REPO_ID` / `DATASET_REPO_ID`).
+
+**Uploading a new release:**
+
+```bash
+# 1. Prepare upload directory
+python scripts/setup/prepare_modelscope_assets.py --only ckpt gmr bvh --clean
+python scripts/setup/prepare_modelscope_assets.py --only data
+
+# 2. Upload to each repo
+modelscope upload --repo-type model BingqianWu/Teleopit-models \
+  data/modelscope_upload/checkpoints checkpoints
+modelscope upload --repo-type model BingqianWu/Teleopit-models \
+  data/modelscope_upload/archives archives
+modelscope upload --repo-type dataset BingqianWu/Teleopit-datasets \
+  data/modelscope_upload/data data
+
+# 3. Tag the release on the model repo (match the Git tag; dataset repo does not support tags)
+python -c "from modelscope.hub.api import HubApi; api=HubApi(); print(api.create_model_tag('BingqianWu/Teleopit-models', 'vX.Y.Z'))"
+```
+
+The old `BingqianWu/Teleopit-assets` repo is deprecated; do not upload to it.
 
 ### IK Offset Calibration
 For each `(robot_body, human_bone)` pair, IK config stores a quaternion offset `R_offset` (`w,x,y,z`, scalar-first):
@@ -218,6 +250,7 @@ Critical note: align robot root orientation to the BVH human forward direction b
 - Do not auto-commit changes
 - Use the default git user as commit author
 - After major feature changes, update `AGENTS.md` and `README.md` together with the code
+- English docs (`docs/docs/`), Chinese docs (`docs/i18n/zh-Hans/`), and code implementation must stay in sync. Chinese docs are translations of the English originals — never generate Chinese content independently; always translate from the corresponding English page
 
 ```bash
 pip install -e .

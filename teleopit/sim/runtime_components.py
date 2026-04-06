@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import multiprocessing as mp
 import time
 from dataclasses import dataclass
@@ -8,16 +9,19 @@ from typing import Any, Callable, Protocol, cast
 import numpy as np
 from numpy.typing import NDArray
 
+_logger = logging.getLogger(__name__)
+
 from teleopit.bus.topics import TOPIC_ACTION, TOPIC_MIMIC_OBS, TOPIC_ROBOT_STATE
 from teleopit.controllers.observation import (
     VelCmdObservationBuilder,
     compute_fixed_yaw_alignment_quat,
     rotate_motion_qpos_by_yaw,
 )
-from teleopit.controllers.qpos_interpolator import QposInterpolator
+from teleopit.controllers.qpos_interpolator import QposInterpolator, QposLowPassFilter
 from teleopit.interfaces import MessageBus, ObservationBuilder, Recorder, Robot
 from teleopit.retargeting.core import extract_mimic_obs
 from teleopit.sim.reference_timeline import ReferenceSample, ReferenceWindow
+from teleopit.sim.reference_utils import obs_builder_requires_reference_window
 from teleopit.sim.realtime_utils import ExponentialVecSmoother
 
 Float32Array = NDArray[np.float32]
@@ -114,6 +118,7 @@ class PolicyStepRunner:
         fixed_ref_yaw_alignment: bool = True,
         reference_velocity_smoothing_alpha: float = 1.0,
         reference_anchor_velocity_smoothing_alpha: float = 1.0,
+        reference_qpos_smoothing_alpha: float = 1.0,
     ) -> None:
         self.robot = robot
         self.controller = controller
@@ -130,6 +135,7 @@ class PolicyStepRunner:
         self._motion_joint_vel_smoother = ExponentialVecSmoother(reference_velocity_smoothing_alpha)
         self._motion_anchor_lin_vel_smoother = ExponentialVecSmoother(reference_anchor_velocity_smoothing_alpha)
         self._motion_anchor_ang_vel_smoother = ExponentialVecSmoother(reference_anchor_velocity_smoothing_alpha)
+        self._reference_qpos_smoother = QposLowPassFilter(reference_qpos_smoothing_alpha)
         self.last_action: Float32Array = np.zeros((self.num_actions,), dtype=np.float32)
         self.last_retarget_qpos: Float64Array | None = None
         self.last_reference_qpos: Float64Array | None = None
@@ -147,12 +153,52 @@ class PolicyStepRunner:
         self._motion_joint_vel_smoother.reset()
         self._motion_anchor_lin_vel_smoother.reset()
         self._motion_anchor_ang_vel_smoother.reset()
+        self._reference_qpos_smoother.reset()
         self.qpos_interpolator.reset()
+
+    def soft_reset_reference_state(self, *, reset_alignment: bool = True) -> None:
+        self.last_reference_qpos = None
+        self._pending_reference_qpos = None
+        if reset_alignment:
+            self._fixed_reference_yaw_quat = None
+            self._fixed_reference_pivot_pos_w = None
+        self._motion_joint_vel_smoother.reset()
+        self._motion_anchor_lin_vel_smoother.reset()
+        self._motion_anchor_ang_vel_smoother.reset()
+        self._reference_qpos_smoother.reset()
+
+    def arm_motion_transition(self, start_qpos: Float64Array, *, duration_s: float) -> None:
+        self.qpos_interpolator.reset()
+        self.qpos_interpolator.configure(duration_s)
+        self.qpos_interpolator.start(start_qpos)
+
+    def prepare_static_motion_command(self, qpos: Float64Array) -> MotionPreparation:
+        hold_qpos = self._retarget_to_qpos(qpos)
+        mimic_obs = extract_mimic_obs(
+            qpos=hold_qpos,
+            last_qpos=hold_qpos,
+            dt=1.0 / self.policy_hz,
+        )
+        zeros_joint_vel = np.zeros((self.num_actions,), dtype=np.float32)
+        zeros_anchor_vel = np.zeros(3, dtype=np.float32)
+        self._pending_reference_qpos = hold_qpos.copy()
+        return MotionPreparation(
+            qpos=hold_qpos.copy(),
+            retarget_viewer_qpos=hold_qpos.copy(),
+            mimic_obs=np.asarray(mimic_obs, dtype=np.float32),
+            motion_joint_vel=zeros_joint_vel,
+            raw_motion_joint_vel=zeros_joint_vel.copy(),
+            motion_anchor_lin_vel_w=zeros_anchor_vel,
+            motion_anchor_ang_vel_w=zeros_anchor_vel.copy(),
+            raw_motion_anchor_lin_vel_w=zeros_anchor_vel.copy(),
+            raw_motion_anchor_ang_vel_w=zeros_anchor_vel.copy(),
+        )
 
     def prepare_motion_command(self, retargeted: object, state: object) -> MotionPreparation:
         reference_qpos = self._retarget_to_qpos(retargeted)
         if self.fixed_ref_yaw_alignment:
             reference_qpos = self._align_velcmd_reference_yaw(reference_qpos, state)
+        reference_qpos = self._reference_qpos_smoother.apply(reference_qpos)
         self._pending_reference_qpos = reference_qpos.copy()
 
         if self.last_retarget_qpos is None and self.qpos_interpolator.duration > 0:
@@ -172,7 +218,7 @@ class PolicyStepRunner:
         raw_motion_anchor_ang_vel_w: Float32Array | None = None
         motion_anchor_lin_vel_w: Float32Array | None
         motion_anchor_ang_vel_w: Float32Array | None
-        if self._obs_builder_requires_reference_window():
+        if obs_builder_requires_reference_window(self.obs_builder):
             motion_anchor_lin_vel_w = None
             motion_anchor_ang_vel_w = None
         elif self.qpos_interpolator.is_active:
@@ -272,6 +318,14 @@ class PolicyStepRunner:
         else:
             anchor_ang_vel_w = np.zeros(3, dtype=np.float32)
 
+        _zero3 = np.zeros(3, dtype=np.float32)
+        if not np.all(np.isfinite(anchor_lin_vel_w)):
+            _logger.warning("NaN/inf in anchor_lin_vel_w, damping to zero")
+            anchor_lin_vel_w = _zero3
+        if not np.all(np.isfinite(anchor_ang_vel_w)):
+            _logger.warning("NaN/inf in anchor_ang_vel_w, damping to zero")
+            anchor_ang_vel_w = _zero3
+
         return anchor_lin_vel_w, anchor_ang_vel_w
 
     def compute_target_dof_pos(self, action: Float32Array) -> Float32Array:
@@ -287,11 +341,6 @@ class PolicyStepRunner:
         if target.shape[0] != self.num_actions:
             raise ValueError(f"Target dof pos has {target.shape[0]} entries, expected {self.num_actions}")
         return target
-
-    def _obs_builder_requires_reference_window(self) -> bool:
-        return bool(getattr(self.obs_builder, "requires_reference_window", False)) or callable(
-            getattr(self.obs_builder, "build_with_reference_window", None)
-        )
 
     def _align_reference_window(
         self,
@@ -379,7 +428,11 @@ class PolicyStepRunner:
         if self.last_retarget_qpos is None:
             return np.zeros((self.num_actions,), dtype=np.float32)
         prev_joint_pos = np.asarray(self.last_retarget_qpos[7:7 + self.num_actions], dtype=np.float32)
-        return np.asarray((motion_joint_pos - prev_joint_pos) * np.float32(self.policy_hz), dtype=np.float32)
+        vel = np.asarray((motion_joint_pos - prev_joint_pos) * np.float32(self.policy_hz), dtype=np.float32)
+        if not np.all(np.isfinite(vel)):
+            _logger.warning("NaN/inf in motion_joint_vel, damping to zero")
+            return np.zeros((self.num_actions,), dtype=np.float32)
+        return vel
 
     def _extract_motion_joint_data(
         self, retarget_qpos: Float64Array
@@ -451,19 +504,19 @@ class ViewerManager:
         robot: Robot,
         viewers: set[str],
         start_robot_viewer: Callable[[str, int, bool, str, int, int], tuple[mp.Process, mp.Array, mp.Value, mp.Event]],
-        bvh_viewer_proc: Callable[[list[int], mp.Array, int, mp.Event, mp.Value, int, int], None],
+        mocap_viewer_proc: Callable[[list[int], mp.Array, int, mp.Event, mp.Value, int, int], None],
     ) -> None:
         self._robot = robot
         self._viewers = set(viewers)
         self._start_robot_viewer = start_robot_viewer
-        self._bvh_viewer_proc = bvh_viewer_proc
+        self._mocap_viewer_proc = mocap_viewer_proc
         self._sub_viewers: dict[str, tuple[mp.Process, mp.Array, mp.Value, mp.Event]] = {}
-        self._bvh_pos_arr: mp.Array | None = None
-        self._bvh_n_bones = 0
+        self._mocap_pos_arr: mp.Array | None = None
+        self._mocap_n_bones = 0
 
         xml_path = getattr(self._robot, "xml_path", None)
         model = getattr(self._robot, "model", None)
-        win_positions = {"bvh": (50, 50), "retarget": (900, 50), "sim2sim": (1750, 50)}
+        win_positions = {"mocap": (50, 50), "retarget": (900, 50), "sim2sim": (1750, 50)}
 
         if xml_path is None or model is None:
             return
@@ -509,8 +562,8 @@ class ViewerManager:
                 break
             time.sleep(0.1)
 
-    def ensure_bvh_viewer(self, input_provider: object) -> None:
-        if "bvh" not in self._viewers or "bvh" in self._sub_viewers:
+    def ensure_mocap_viewer(self, input_provider: object) -> None:
+        if "mocap" not in self._viewers or "mocap" in self._sub_viewers:
             return
 
         bone_names: list[str] | None = getattr(input_provider, "bone_names", None)
@@ -523,14 +576,14 @@ class ViewerManager:
         shutdown = mp.Event()
         alive = mp.Value("i", 0)
         proc = mp.Process(
-            target=self._bvh_viewer_proc,
+            target=self._mocap_viewer_proc,
             args=(list(bone_parents.astype(int)), pos_arr, n_bones, shutdown, alive, 50, 50),
             daemon=True,
         )
         proc.start()
-        self._sub_viewers["bvh"] = (proc, pos_arr, alive, shutdown)
-        self._bvh_pos_arr = pos_arr
-        self._bvh_n_bones = n_bones
+        self._sub_viewers["mocap"] = (proc, pos_arr, alive, shutdown)
+        self._mocap_pos_arr = pos_arr
+        self._mocap_n_bones = n_bones
 
     def write_sim2sim(self, robot: Robot) -> None:
         sim2sim_entry = self._sub_viewers.get("sim2sim")
@@ -552,22 +605,22 @@ class ViewerManager:
         with arr.get_lock():
             arr[:len(retarget_viewer_qpos)] = retarget_viewer_qpos.tolist()
 
-    def write_bvh(self, input_provider: object, human_frame: dict[str, tuple[Any, Any]]) -> None:
-        bvh_entry = self._sub_viewers.get("bvh")
-        if bvh_entry is None or not bvh_entry[2].value or self._bvh_pos_arr is None:
+    def write_mocap(self, input_provider: object, human_frame: dict[str, tuple[Any, Any]]) -> None:
+        mocap_entry = self._sub_viewers.get("mocap")
+        if mocap_entry is None or not mocap_entry[2].value or self._mocap_pos_arr is None:
             return
 
         bone_names_attr: list[str] | None = getattr(input_provider, "bone_names", None)
         if bone_names_attr is None:
             return
 
-        n = self._bvh_n_bones
+        n = self._mocap_n_bones
         pos_flat = np.zeros(n * 3, dtype=np.float64)
         for i, bname in enumerate(bone_names_attr):
             if bname in human_frame:
                 pos_flat[i * 3:(i + 1) * 3] = human_frame[bname][0]
-        with self._bvh_pos_arr.get_lock():
-            self._bvh_pos_arr[:n * 3] = pos_flat.tolist()
+        with self._mocap_pos_arr.get_lock():
+            self._mocap_pos_arr[:n * 3] = pos_flat.tolist()
 
     def shutdown(self) -> None:
         for _, _, _, shutdown in self._sub_viewers.values():
