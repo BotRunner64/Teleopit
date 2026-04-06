@@ -65,4 +65,4 @@ Onboard Sim2Real (G1 NX + ZMQ Pico4), G1 Bridge SDK (C++ DDS), simplified offlin
 
 ## License
 
-[MIT](LICENSE)
+[Apache 2.0](LICENSE)
