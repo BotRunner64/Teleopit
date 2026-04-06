@@ -47,7 +47,15 @@ bash scripts/setup/setup_onboard.sh
 
 ## 运行机载 Sim2Real
 
-在 PC1（NX）上执行：
+**在 PC2（用户 PC）上** — 启动 Pico 4 ZMQ 数据转发：
+
+```bash
+python scripts/dev/zmq_pico4_publisher.py --bind 0.0.0.0 --port 5555
+```
+
+该脚本读取 Pico 4 全身追踪数据并通过 ZMQ 发布，保持运行即可。
+
+**在 PC1（NX）上** — 启动机载控制回路：
 
 ```bash
 python scripts/run/run_onboard_sim2real.py \
@@ -56,7 +64,7 @@ python scripts/run/run_onboard_sim2real.py \
     input.zmq_host=192.168.1.102
 ```
 
-其中 `input.zmq_host` 为 PC2 的 IP 地址（即运行 Pico 4 数据转发的机器）。
+其中 `input.zmq_host` 为 PC2 的 IP 地址（即运行 ZMQ 数据转发的机器）。
 
 ## 操作说明
 

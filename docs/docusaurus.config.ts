@@ -32,6 +32,7 @@ const config: Config = {
       {
         docs: {
           sidebarPath: './sidebars.ts',
+          routeBasePath: '/',
           editUrl: 'https://github.com/BotRunner64/Teleopit/tree/master/docs/',
         },
         blog: false,
@@ -69,9 +70,9 @@ const config: Config = {
         {
           title: 'Docs',
           items: [
-            {label: 'Getting Started', to: '/docs/getting-started/installation'},
-            {label: 'Tutorials', to: '/docs/tutorials/offline-sim2sim'},
-            {label: 'Configuration', to: '/docs/configuration/overview'},
+            {label: 'Getting Started', to: '/getting-started/installation'},
+            {label: 'Tutorials', to: '/tutorials/offline-sim2sim'},
+            {label: 'Configuration', to: '/configuration/overview'},
           ],
         },
         {

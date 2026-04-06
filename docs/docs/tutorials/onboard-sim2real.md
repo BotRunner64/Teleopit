@@ -47,7 +47,15 @@ This script installs system dependencies, builds `g1_bridge_sdk`, and installs `
 
 ## Run Onboard Sim2Real
 
-On PC1 (NX):
+**On PC2 (User PC)** — start the Pico 4 ZMQ publisher:
+
+```bash
+python scripts/dev/zmq_pico4_publisher.py --bind 0.0.0.0 --port 5555
+```
+
+This reads Pico 4 body tracking data and publishes it over ZMQ. Keep it running.
+
+**On PC1 (NX)** — start the onboard control loop:
 
 ```bash
 python scripts/run/run_onboard_sim2real.py \
@@ -56,7 +64,7 @@ python scripts/run/run_onboard_sim2real.py \
     input.zmq_host=192.168.1.102
 ```
 
-Where `input.zmq_host` is PC2's IP address (the machine running the Pico 4 relay).
+Where `input.zmq_host` is PC2's IP address (the machine running the ZMQ publisher).
 
 ## Operation
 

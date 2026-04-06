@@ -5,6 +5,8 @@ slug: /
 
 # Introduction
 
+> **Looking for Chinese docs?** [中文文档点此进入](https://BotRunner64.github.io/Teleopit/zh-Hans/)
+
 **Teleopit** is a lightweight, extensible whole-body teleoperation framework for humanoid robots. It provides real-time motion retargeting from human operators to Unitree G1 robots, supporting both MuJoCo simulation and real hardware deployment.
 
 ## Key Features
