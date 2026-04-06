@@ -11,7 +11,7 @@ sidebar_position: 2
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `policy_hz` | int | — | 策略推理频率（Hz） |
-| `pd_hz` | int | — | PD 控制器频率（Hz），通常高于 `policy_hz` |
+| `pd_hz` | int | `200` | PD 控制器频率（Hz，仅仿真），通常高于 `policy_hz` |
 | `viewers` | bool | `false` | 是否启用可视化窗口 |
 | `realtime` | bool | `false` | 是否启用实时模式（实机部署时需开启） |
 | `num_steps` | int | — | 仿真总步数；设为 `-1` 表示无限运行 |
@@ -31,7 +31,6 @@ sidebar_position: 2
 | `kds` | list[float] | 各关节的微分增益（D 增益） |
 | `default_angles` | list[float] | 默认关节角度（弧度），也是策略动作的零点 |
 | `torque_limits` | list[float] | 各关节的力矩上限 |
-| `obs_builder` | str | 观测构建器的注册名称 |
 
 ## Controller 字段
 
@@ -63,24 +62,87 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `provider` | str | 输入源类型，固定为 `"bvh"` |
 | `bvh_file` | str | BVH 文件路径 |
 | `bvh_format` | str | BVH 骨骼格式标识 |
+| `human_format` | str | 人体骨架格式 |
+
+> BVH 输入不设置 `input.provider` — 由配置组名自动推断。
 
 ### Pico 4 输入（`input/pico4.yaml`）
 
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `provider` | str | 输入源类型，固定为 `"pico4"` |
-| `timeout` | float | 等待设备连接的超时时间（秒） |
-| `pause_button` | str | 用于暂停/恢复的手柄按钮名称 |
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `provider` | str | `pico4` | 输入源类型 |
+| `pico4_timeout` | float | `60` | 等待设备连接的超时时间（秒） |
+| `pico4_buffer_size` | int | `60` | 帧缓冲区大小 |
+| `pause_button` | str | `A` | 用于暂停/恢复的手柄按钮名称 |
+| `pause_debounce_s` | float | `0.25` | 暂停按钮防抖时间 |
+
+### ZMQ Pico 4 输入（`input/zmq_pico4.yaml`，机载模式）
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `provider` | str | `zmq_pico4` | 输入源类型 |
+| `zmq_host` | str | `192.168.1.100` | 运行 ZMQ 发布端的 PC IP |
+| `zmq_port` | int | `5555` | ZMQ PUB 端口 |
+| `zmq_topic` | str | `pico4` | ZMQ 主题 |
+| `zmq_timeout` | float | `30` | 等待首帧 ZMQ 数据的超时时间（秒） |
 
 ## Realtime 字段
 
 实时模式相关字段，仅在 `realtime=true` 时生效。
 
-| 字段 | 类型 | 说明 |
+| 字段 | 说明 |
+|---|---|
+| `retarget_buffer_enabled` | 是否启用重定向缓冲 |
+| `retarget_buffer_window_s` | 缓冲窗口大小 |
+| `retarget_buffer_delay_s` | 缓冲延迟 |
+| `reference_steps` | 参考轨迹窗口步数 |
+| `realtime_buffer_warmup_steps` | 播放前预热帧数 |
+| `realtime_buffer_low_watermark_steps` | 低水位线 |
+| `realtime_buffer_high_watermark_steps` | 高水位线 |
+| `reference_velocity_smoothing_alpha` | 速度平滑系数 |
+| `reference_anchor_velocity_smoothing_alpha` | 锚点速度平滑系数 |
+
+## Sim2Real 字段
+
+以下字段用于 sim2real 配置（`sim2real.yaml`、`pico4_sim2real.yaml`、`onboard_sim2real.yaml`）。
+
+### 安全相关
+
+| 字段 | 说明 | 默认值 |
 |---|---|---|
-| `retarget_buffer` | int | 重定向缓冲区大小（帧数） |
-| `reference_steps` | int | 参考轨迹的前瞻步数 |
-| `watermark` | int | 缓冲区水位线，低于此值时触发填充 |
+| `startup_ramp_duration` | 从锁定位置平滑过渡到策略控制的时长（秒） | `2.0` |
+| `joint_vel_limit` | 关节速度限制（rad/s），超过时触发急停 | `10.0` |
+| `mocap_switch.check_frames` | 切换到 MOCAP 前所需的连续有效帧数 | `10` |
+| `mocap_switch.max_position_value` | 位置合理性阈值（米） | `5.0` |
+
+### 真机 SDK
+
+| 字段 | 说明 | 默认值 |
+|---|---|---|
+| `real_robot.network_interface` | DDS 通信网络接口 | `eth0` |
+| `real_robot.kp_real` | 真机比例增益（各关节） | — |
+| `real_robot.kd_real` | 真机微分增益（各关节） | — |
+| `real_robot.kd_damping` | 阻尼模式 kd | `8.0` |
+| `real_robot.control_mode` | 踝关节控制模式（`PR` = Pitch-Roll） | `PR` |
+| `real_robot.joint_pos_lower` | 关节位置下限（rad） | — |
+| `real_robot.joint_pos_upper` | 关节位置上限（rad） | — |
+
+### 暂停/恢复（Pico sim2real）
+
+| 字段 | 说明 | 默认值 |
+|---|---|---|
+| `pause_resume_transition_duration` | 从暂停姿态混合回实时动捕的时长（秒） | `1.0` |
+| `pause_resume_warmup_steps` | 恢复前需要积累的动捕帧数 | `2` |
+| `pause_reset_alignment_on_resume` | 暂停后重建偏航/轴心对齐 | `true` |
+
+### 实时追赶（Pico sim2real / 机载模式）
+
+| 字段 | 说明 | 默认值 |
+|---|---|---|
+| `realtime_catchup_enabled` | 缓冲区过大时启用追赶 | `true` |
+| `realtime_catchup_trigger_steps` | 触发追赶的缓冲区深度 | `6` |
+| `realtime_catchup_release_steps` | 释放追赶的缓冲区深度 | `3` |
+| `realtime_catchup_target_delay_s` | 追赶目标延迟 | `0.04` |
+| `reference_qpos_smoothing_alpha` | 关节位置平滑系数（1.0 = 无平滑） | `0.4` |

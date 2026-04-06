@@ -60,6 +60,13 @@ python -c "import xrobotoolkit_sdk; print('OK')"
 
 ## 第三步：仿真验证（Pico sim2sim）
 
+如果尚未下载模型资源，请先执行（详见[下载资源](../getting-started/download-assets)）：
+
+```bash
+pip install modelscope
+python scripts/setup/download_assets.py --only gmr ckpt bvh
+```
+
 在部署真机前，先在 MuJoCo 仿真中验证 VR 追踪数据和策略推理：
 
 ```bash

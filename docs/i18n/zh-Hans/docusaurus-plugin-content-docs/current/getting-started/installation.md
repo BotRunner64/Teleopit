@@ -40,9 +40,10 @@ pip install -e '.[train]'
 pip install -e '.[sim2real]'
 ```
 
-额外安装 `opencv-python` 和 `g1_bridge_sdk`。此外还需要编译 C++ 桥接库：
+额外安装 `opencv-python` 和 `g1_bridge_sdk`。此外还需要初始化子模块并编译 C++ 桥接库：
 
 ```bash
+git submodule update --init --recursive
 pip install pybind11
 pip install third_party/g1_bridge_sdk
 ```

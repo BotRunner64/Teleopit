@@ -40,10 +40,23 @@ ssh user@192.168.1.101
 
 ```bash
 # SSH into NX, then run in the Teleopit repo directory
+git submodule update --init --recursive
 bash scripts/setup/setup_onboard.sh
 ```
 
 This script installs system dependencies, builds `g1_bridge_sdk`, and installs `teleopit[onboard]`.
+
+## Prerequisites (on PC2)
+
+PC2 needs the Pico 4 SDK installed to read body tracking data:
+
+```bash
+pip install pybind11
+pip install -e '.[pico4]'
+bash scripts/setup/setup_pico4.sh
+```
+
+Also ensure [XRoboToolkit PC Service](https://github.com/XR-Robotics/XRoboToolkit-PC-Service) is installed and running. See the full [Pico VR Tutorial](pico4-vr#step-2-pc-environment-setup) for details.
 
 ## Run Onboard Sim2Real
 

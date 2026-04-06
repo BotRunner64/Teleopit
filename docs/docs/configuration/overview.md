@@ -12,14 +12,19 @@ Runtime assembly is centralized in `teleopit/runtime/`. Scripts, `TeleopPipeline
 
 | Config | Use Case |
 |--------|----------|
-| `teleopit/configs/default.yaml` | Offline sim2sim |
-| `teleopit/configs/sim2real.yaml` | Unitree G1 hardware control |
+| `teleopit/configs/default.yaml` | Offline sim2sim (BVH playback) |
+| `teleopit/configs/pico4_sim.yaml` | Pico 4 VR sim2sim |
+| `teleopit/configs/sim2real.yaml` | BVH sim2real on Unitree G1 |
+| `teleopit/configs/pico4_sim2real.yaml` | Pico 4 VR sim2real on Unitree G1 |
+| `teleopit/configs/onboard_sim2real.yaml` | Onboard NX sim2real (ZMQ + Pico 4) |
 
 These compose sub-configs:
 
 - `teleopit/configs/robot/g1.yaml`
 - `teleopit/configs/controller/rl_policy.yaml`
-- `teleopit/configs/input/bvh.yaml`
+- `teleopit/configs/input/bvh.yaml` — offline BVH input
+- `teleopit/configs/input/pico4.yaml` — Pico 4 direct input
+- `teleopit/configs/input/zmq_pico4.yaml` — Pico 4 via ZMQ (onboard)
 
 ## Override Examples
 
@@ -30,7 +35,7 @@ python scripts/run/run_sim.py \
     controller.policy_path=policy.onnx \
     input.bvh_file=data/sample_bvh/aiming1_subject1.bvh \
     policy_hz=50 \
-    pd_hz=1000
+    pd_hz=200
 ```
 
 ### Change Viewers

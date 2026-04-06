@@ -60,6 +60,13 @@ python -c "import xrobotoolkit_sdk; print('OK')"
 
 ## Step 3: Simulation Verification (Pico sim2sim)
 
+Download model assets if you haven't already (see [Download Assets](../getting-started/download-assets)):
+
+```bash
+pip install modelscope
+python scripts/setup/download_assets.py --only gmr ckpt bvh
+```
+
 Test VR tracking data and policy inference in MuJoCo first:
 
 ```bash

@@ -4,8 +4,8 @@ Runs on the upper machine (PC with Pico4 headset). The G1 onboard
 computer subscribes to this data via ZMQInputProvider.
 
 Usage:
-    python scripts/zmq_pico4_publisher.py --port 5555
-    python scripts/zmq_pico4_publisher.py --bind 0.0.0.0 --port 5555
+    python scripts/dev/zmq_pico4_publisher.py --port 5555
+    python scripts/dev/zmq_pico4_publisher.py --bind 0.0.0.0 --port 5555
 """
 
 from __future__ import annotations
