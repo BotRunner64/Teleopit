@@ -250,6 +250,7 @@ Critical note: align robot root orientation to the BVH human forward direction b
 - Do not auto-commit changes
 - Use the default git user as commit author
 - After major feature changes, update `AGENTS.md` and `README.md` together with the code
+- English docs (`docs/docs/`), Chinese docs (`docs/i18n/zh-Hans/`), and code implementation must stay in sync. Chinese docs are translations of the English originals — never generate Chinese content independently; always translate from the corresponding English page
 
 ```bash
 pip install -e .
