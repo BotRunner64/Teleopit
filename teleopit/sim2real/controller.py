@@ -34,12 +34,18 @@ from teleopit.inputs.bvh_provider import BVHInputProvider
 from teleopit.inputs.pico4_provider import Pico4InputProvider
 from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType, RealtimeInputPacket
 from teleopit.retargeting.core import RetargetingModule
-from teleopit.runtime.common import cfg_get
+from teleopit.runtime.common import cfg_get, parse_alpha, parse_nonnegative_int, parse_optional_nonnegative_int
 from teleopit.runtime.factory import build_sim2real_mocap_components
 from teleopit.runtime.mocap_session import MocapSessionManager, MocapSessionState
 from teleopit.runtime.offline_playback import OfflinePlaybackController
 from teleopit.sim.reference_motion import OfflineReferenceMotion
 from teleopit.sim.reference_timeline import ReferenceSample, ReferenceTimeline, ReferenceWindow, ReferenceWindowBuilder
+from teleopit.sim.reference_utils import (
+    build_offline_reference_window,
+    build_static_reference_window,
+    obs_builder_requires_reference_window,
+    sample_offline_reference_at,
+)
 from teleopit.sim.realtime_utils import (
     ExponentialVecSmoother,
     RealtimeReferenceManager,
@@ -84,12 +90,21 @@ class Sim2RealController:
         self._qpos_interpolator = QposInterpolator(transition_dur, self.policy_hz)
         self._fixed_ref_yaw_alignment = bool(cfg_get(cfg, "velcmd_fixed_ref_yaw_alignment", True))
 
-        # ---- Real robot (SDK) ----
+        self._init_components(cfg)
+        self._init_reference_config(cfg)
+        self._init_safety_config(cfg)
+
+        logger.info(
+            "Sim2RealController ready | mode=IDLE | policy_hz=%.0f",
+            self.policy_hz,
+        )
+
+    def _init_components(self, cfg: Any) -> None:
+        """Build robot hardware and mocap pipeline components."""
         real_cfg = cfg_get(cfg, "real_robot")
         self.robot = UnitreeG1Robot(real_cfg)
         self.remote = UnitreeRemote()
 
-        # ---- Mocap pipeline (reuse existing components) ----
         robot_cfg = cfg_get(cfg, "robot")
         mocap_components = build_sim2real_mocap_components(
             cfg,
@@ -118,6 +133,30 @@ class Sim2RealController:
             raise ValueError(
                 "Sim2real requires an ONNX policy with dual inputs ('obs' and 'obs_history')."
             )
+
+        # Default standing pose (29-DOF)
+        self.default_angles = np.asarray(
+            cfg_get(robot_cfg, "default_angles"), dtype=np.float32
+        )
+        self.num_actions: int = int(cfg_get(robot_cfg, "num_actions", 29))
+
+        # Standing mode reference qpos
+        self._standing_qpos = np.zeros(36, dtype=np.float64)
+        self._standing_qpos[3] = 1.0  # identity quaternion w=1
+        self._standing_qpos[7:36] = self.default_angles.astype(np.float64)
+
+        # Policy state (shared by STANDING and MOCAP)
+        self._last_action: Float32Array = np.zeros(self.num_actions, dtype=np.float32)
+        self._last_retarget_qpos: Float64Array | None = None
+        self._last_reference_qpos: Float64Array | None = None
+        self._mocap_reentry_armed: bool = False
+        self._fixed_reference_yaw_quat: Float32Array | None = None
+        self._fixed_reference_pivot_pos_w: Float32Array | None = None
+        self._mocap_session = MocapSessionManager()
+        self._last_commanded_motion_qpos: Float64Array | None = None
+
+    def _init_reference_config(self, cfg: Any) -> None:
+        """Parse reference-window / realtime-buffer configuration."""
         raw_retarget_buffer_enabled = cfg_get(cfg, "retarget_buffer_enabled", True)
         self._retarget_buffer_enabled = bool(raw_retarget_buffer_enabled)
         self._retarget_buffer_window_s = float(cfg_get(cfg, "retarget_buffer_window_s", 0.5))
@@ -140,11 +179,12 @@ class Sim2RealController:
             if raw_reference_delay_s in (None, "", "null")
             else float(raw_reference_delay_s)
         )
-        self._realtime_buffer_low_watermark_steps = self._parse_nonnegative_int(
+        self._realtime_buffer_low_watermark_steps = parse_nonnegative_int(
             cfg_get(cfg, "realtime_buffer_low_watermark_steps", 0),
             field_name="realtime_buffer_low_watermark_steps",
+            default=0,
         )
-        self._realtime_buffer_high_watermark_steps = self._parse_optional_nonnegative_int(
+        self._realtime_buffer_high_watermark_steps = parse_optional_nonnegative_int(
             cfg_get(cfg, "realtime_buffer_high_watermark_steps", None),
             field_name="realtime_buffer_high_watermark_steps",
         )
@@ -155,21 +195,23 @@ class Sim2RealController:
             raise ValueError(
                 "realtime_buffer_high_watermark_steps must be >= realtime_buffer_low_watermark_steps"
             )
-        self._realtime_buffer_warmup_steps = self._parse_nonnegative_int(
+        self._realtime_buffer_warmup_steps = parse_nonnegative_int(
             cfg_get(cfg, "realtime_buffer_warmup_steps", 0),
             field_name="realtime_buffer_warmup_steps",
+            default=0,
         )
-        self._pause_resume_warmup_steps = self._parse_nonnegative_int(
+        self._pause_resume_warmup_steps = parse_nonnegative_int(
             cfg_get(cfg, "pause_resume_warmup_steps", self._realtime_buffer_warmup_steps),
             field_name="pause_resume_warmup_steps",
+            default=self._realtime_buffer_warmup_steps,
         )
         self._pause_reset_alignment_on_resume = bool(cfg_get(cfg, "pause_reset_alignment_on_resume", True))
         self._realtime_catchup_enabled = bool(cfg_get(cfg, "realtime_catchup_enabled", False))
-        self._realtime_catchup_trigger_steps = self._parse_optional_nonnegative_int(
+        self._realtime_catchup_trigger_steps = parse_optional_nonnegative_int(
             cfg_get(cfg, "realtime_catchup_trigger_steps", None),
             field_name="realtime_catchup_trigger_steps",
         )
-        self._realtime_catchup_release_steps = self._parse_optional_nonnegative_int(
+        self._realtime_catchup_release_steps = parse_optional_nonnegative_int(
             cfg_get(cfg, "realtime_catchup_release_steps", None),
             field_name="realtime_catchup_release_steps",
         )
@@ -179,17 +221,20 @@ class Sim2RealController:
             if raw_realtime_catchup_target_delay_s in (None, "", "null")
             else float(raw_realtime_catchup_target_delay_s)
         )
-        self._reference_velocity_smoothing_alpha = self._parse_alpha(
+        self._reference_velocity_smoothing_alpha = parse_alpha(
             cfg_get(cfg, "reference_velocity_smoothing_alpha", 1.0),
             field_name="reference_velocity_smoothing_alpha",
+            default=1.0,
         )
-        self._reference_anchor_velocity_smoothing_alpha = self._parse_alpha(
+        self._reference_anchor_velocity_smoothing_alpha = parse_alpha(
             cfg_get(cfg, "reference_anchor_velocity_smoothing_alpha", 1.0),
             field_name="reference_anchor_velocity_smoothing_alpha",
+            default=1.0,
         )
-        self._reference_qpos_smoothing_alpha = self._parse_alpha(
+        self._reference_qpos_smoothing_alpha = parse_alpha(
             cfg_get(cfg, "reference_qpos_smoothing_alpha", 1.0),
             field_name="reference_qpos_smoothing_alpha",
+            default=1.0,
         )
         if self._retarget_buffer_enabled:
             self._reference_window_builder.validate_runtime_support(
@@ -222,29 +267,11 @@ class Sim2RealController:
         self._reference_qpos_smoother = QposLowPassFilter(self._reference_qpos_smoothing_alpha)
         self._last_live_packet_seq = -1
 
-        # Default standing pose (29-DOF)
-        self.default_angles = np.asarray(
-            cfg_get(robot_cfg, "default_angles"), dtype=np.float32
-        )
-        self.num_actions: int = int(cfg_get(robot_cfg, "num_actions", 29))
+    def _init_safety_config(self, cfg: Any) -> None:
+        """Parse safety limits and KP ramp configuration."""
+        real_cfg = cfg_get(cfg, "real_robot")
 
-        # ---- Standing mode reference qpos ----
-        self._standing_qpos = np.zeros(36, dtype=np.float64)
-        self._standing_qpos[3] = 1.0  # identity quaternion w=1
-        self._standing_qpos[7:36] = self.default_angles.astype(np.float64)
-
-        # ---- Policy state (shared by STANDING and MOCAP) ----
-        self._last_action: Float32Array = np.zeros(self.num_actions, dtype=np.float32)
-        self._last_retarget_qpos: Float64Array | None = None
-        self._last_reference_qpos: Float64Array | None = None
-        self._mocap_reentry_armed: bool = False
-        self._fixed_reference_yaw_quat: Float32Array | None = None
-        self._fixed_reference_pivot_pos_w: Float32Array | None = None
-        self._mocap_session = MocapSessionManager()
-        self._last_commanded_motion_qpos: Float64Array | None = None
-
-        # ---- Kp ramp (gradually increase PD gains after episode-reset) ----
-        # Fall back to legacy startup_ramp_duration for backward compatibility.
+        # KP ramp (gradually increase PD gains after episode-reset)
         _legacy_ramp_dur = cfg_get(cfg, "startup_ramp_duration", cfg_get(real_cfg, "startup_ramp_duration", 2.0))
         kp_ramp_dur = float(cfg_get(cfg, "kp_ramp_duration", _legacy_ramp_dur))
         self._kp_ramp_duration_steps: int = max(1, int(kp_ramp_dur * self.policy_hz))
@@ -254,7 +281,7 @@ class Sim2RealController:
         self._kd_nominal = np.asarray(cfg_get(real_cfg, "kd_real", [2] * self.num_actions), dtype=np.float32)
         self._kp_ramp_floor_ratio: float = float(cfg_get(cfg, "kp_ramp_floor_ratio", 0.1))
 
-        # ---- Joint safety (inspired by GR00T JointSafetyMonitor) ----
+        # Joint safety limits
         self._joint_vel_limit: float = float(
             cfg_get(cfg, "joint_vel_limit", cfg_get(real_cfg, "joint_vel_limit", 10.0))
         )
@@ -267,15 +294,10 @@ class Sim2RealController:
             self._joint_pos_lower = None
             self._joint_pos_upper = None
 
-        # ---- Mocap switch safety ----
+        # Mocap switch safety
         mocap_sw = cfg_get(cfg, "mocap_switch", {})
         self._check_frames: int = int(cfg_get(mocap_sw, "check_frames", 10))
         self._max_pos_value: float = float(cfg_get(mocap_sw, "max_position_value", 5.0))
-
-        logger.info(
-            "Sim2RealController ready | mode=IDLE | policy_hz=%.0f",
-            self.policy_hz,
-        )
 
     # ------------------------------------------------------------------
     # Main control loop
@@ -338,8 +360,8 @@ class Sim2RealController:
         motion_qpos = np.asarray(qpos[:7 + self.num_actions], dtype=np.float32)
 
         reference_window = None
-        if self._obs_builder_requires_reference_window():
-            reference_window = self._build_static_reference_window(qpos)
+        if obs_builder_requires_reference_window(self.obs_builder):
+            reference_window = build_static_reference_window(qpos, self._reference_window_builder, self.policy_hz)
 
         obs = self._build_policy_observation(
             robot_state=robot_state,
@@ -448,7 +470,7 @@ class Sim2RealController:
 
         anchor_lin_vel_w = np.zeros(3, dtype=np.float32)
         anchor_ang_vel_w = np.zeros(3, dtype=np.float32)
-        if not self._obs_builder_requires_reference_window():
+        if not obs_builder_requires_reference_window(self.obs_builder):
             if self._qpos_interpolator.is_active:
                 true_lin_vel_w, true_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
                 blend = np.float32(self._qpos_interpolator.last_alpha)
@@ -511,10 +533,12 @@ class Sim2RealController:
             return
 
         reference_window: ReferenceWindow | None = None
-        if self._obs_builder_requires_reference_window():
-            reference_window = self._build_offline_reference_window(
+        if obs_builder_requires_reference_window(self.obs_builder):
+            reference_window = build_offline_reference_window(
                 self._offline_reference,
                 sample_time_s,
+                self._reference_window_builder,
+                self.policy_hz,
             )
 
         reference_qpos = np.asarray(sampled.qpos, dtype=np.float64).copy()
@@ -937,95 +961,6 @@ class Sim2RealController:
         )
         return aligned_qpos
 
-    def _build_static_reference_window(self, qpos: Float64Array) -> ReferenceWindow:
-        base_time_s = time.monotonic()
-        reference_steps = tuple(self._reference_window_builder.reference_steps)
-        qpos_copy = np.asarray(qpos, dtype=np.float64).reshape(-1).copy()
-        samples = tuple(
-            ReferenceSample(
-                qpos=qpos_copy.copy(),
-                timestamp_s=base_time_s + float(step) / self.policy_hz,
-                mode="static_reference",
-                used_fallback=False,
-                older_timestamp_s=base_time_s + float(step) / self.policy_hz,
-                newer_timestamp_s=base_time_s + float(step) / self.policy_hz,
-                alpha=None,
-            )
-            for step in reference_steps
-        )
-        return ReferenceWindow(
-            base_time_s=base_time_s,
-            policy_dt_s=1.0 / self.policy_hz,
-            reference_steps=reference_steps,
-            samples=samples,
-        )
-
-    def _sample_offline_reference_at(
-        self,
-        offline_reference: OfflineReferenceMotion,
-        target_time_s: float,
-    ) -> ReferenceSample:
-        fallback_mode: str | None = None
-        sample_time_s = float(target_time_s)
-        if sample_time_s < 0.0:
-            sample_time_s = 0.0
-            fallback_mode = "fallback_oldest"
-        elif sample_time_s >= offline_reference.duration_s:
-            sample_time_s = float(np.nextafter(offline_reference.duration_s, 0.0))
-            fallback_mode = "fallback_latest"
-
-        sampled = offline_reference.sample(sample_time_s)
-        if sampled is None:
-            sample_time_s = float(np.nextafter(offline_reference.duration_s, 0.0))
-            sampled = offline_reference.sample(sample_time_s)
-            fallback_mode = "fallback_latest"
-        if sampled is None:
-            raise RuntimeError("OfflineReferenceMotion could not sample a valid reference window frame")
-
-        if fallback_mode is not None:
-            return ReferenceSample(
-                qpos=np.asarray(sampled.qpos, dtype=np.float64).copy(),
-                timestamp_s=sample_time_s,
-                mode=fallback_mode,
-                used_fallback=True,
-                older_timestamp_s=sample_time_s,
-                newer_timestamp_s=sample_time_s,
-                alpha=None,
-            )
-
-        older_timestamp_s = float(sampled.frame_idx0) / float(offline_reference.fps)
-        newer_timestamp_s = float(sampled.frame_idx1) / float(offline_reference.fps)
-        mode = "single_frame" if sampled.frame_idx0 == sampled.frame_idx1 else "interpolate"
-        return ReferenceSample(
-            qpos=np.asarray(sampled.qpos, dtype=np.float64).copy(),
-            timestamp_s=float(sample_time_s),
-            mode=mode,
-            used_fallback=False,
-            older_timestamp_s=older_timestamp_s,
-            newer_timestamp_s=newer_timestamp_s,
-            alpha=float(sampled.alpha),
-        )
-
-    def _build_offline_reference_window(
-        self,
-        offline_reference: OfflineReferenceMotion,
-        base_time_s: float,
-    ) -> ReferenceWindow:
-        reference_steps = tuple(self._reference_window_builder.reference_steps)
-        samples = tuple(
-            self._sample_offline_reference_at(
-                offline_reference,
-                float(base_time_s) + float(step) * (1.0 / self.policy_hz),
-            )
-            for step in reference_steps
-        )
-        return ReferenceWindow(
-            base_time_s=float(base_time_s),
-            policy_dt_s=1.0 / self.policy_hz,
-            reference_steps=reference_steps,
-            samples=samples,
-        )
-
     def _frame_is_valid(self, frame: dict[str, tuple[np.ndarray, np.ndarray]]) -> bool:
         for pos, quat in frame.values():
             if np.any(np.isnan(pos)) or np.any(np.isinf(pos)):
@@ -1035,11 +970,6 @@ class Sim2RealController:
             if np.any(np.isnan(quat)) or np.any(np.isinf(quat)):
                 return False
         return True
-
-    def _obs_builder_requires_reference_window(self) -> bool:
-        return bool(getattr(self.obs_builder, "requires_reference_window", False)) or callable(
-            getattr(self.obs_builder, "build_with_reference_window", None)
-        )
 
     def _align_reference_window(
         self,
@@ -1315,8 +1245,8 @@ class Sim2RealController:
         motion_joint_vel = np.zeros(self.num_actions, dtype=np.float32)
         motion_qpos = np.asarray(qpos[:7 + self.num_actions], dtype=np.float32)
         reference_window = None
-        if self._obs_builder_requires_reference_window():
-            reference_window = self._build_static_reference_window(qpos)
+        if obs_builder_requires_reference_window(self.obs_builder):
+            reference_window = build_static_reference_window(qpos, self._reference_window_builder, self.policy_hz)
 
         obs = self._build_policy_observation(
             robot_state=robot_state,
@@ -1338,35 +1268,6 @@ class Sim2RealController:
         self._last_retarget_qpos = qpos.copy()
         self._last_reference_qpos = qpos.copy()
         self._last_commanded_motion_qpos = qpos.copy()
-
-    @staticmethod
-    def _parse_nonnegative_int(value: object, *, field_name: str) -> int:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(f"{field_name} must be a non-negative integer, got {value}")
-        parsed = int(value)
-        if parsed < 0:
-            raise ValueError(f"{field_name} must be >= 0, got {value}")
-        return parsed
-
-    @staticmethod
-    def _parse_alpha(value: object, *, field_name: str) -> float:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(f"{field_name} must be in (0, 1], got {value}")
-        parsed = float(value)
-        if parsed <= 0.0 or parsed > 1.0:
-            raise ValueError(f"{field_name} must be in (0, 1], got {value}")
-        return parsed
-
-    @staticmethod
-    def _parse_optional_nonnegative_int(value: object | None, *, field_name: str) -> int | None:
-        if value in (None, "", "null"):
-            return None
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(f"{field_name} must be a non-negative integer, got {value}")
-        parsed = int(value)
-        if parsed < 0:
-            raise ValueError(f"{field_name} must be >= 0, got {value}")
-        return parsed
 
     @staticmethod
     def _sleep_until(t0: float, dt: float) -> None:

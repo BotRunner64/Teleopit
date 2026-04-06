@@ -20,15 +20,14 @@ from numpy.typing import NDArray
 
 from teleopit.inputs.pico4_provider import BODY_JOINT_NAMES, BODY_JOINT_PARENTS
 from teleopit.inputs.realtime_frame_cache import RealtimeFrameCache
-from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType, RealtimeInputPacket
+from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType, HumanFrame, RealtimeInputPacket
 from teleopit.sim.reference_motion import interpolate_human_frames
+from teleopit.interfaces import RealtimeInputProvider
 
 logger = logging.getLogger(__name__)
 
-HumanFrame = Dict[str, Tuple[NDArray[np.float64], NDArray[np.float64]]]
 
-
-class ZMQInputProvider:
+class ZMQInputProvider(RealtimeInputProvider):
     """Receives Pico4 body tracking frames over ZMQ SUB.
 
     Parameters

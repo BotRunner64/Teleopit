@@ -7,6 +7,7 @@ from teleopit.interfaces import (
     MessageBus,
     ObservationBuilder,
     Recorder,
+    RealtimeInputProvider,
     Retargeter,
     Robot,
     RobotState,
@@ -43,11 +44,45 @@ class TestRobotState:
 # ── Structural subtyping checks ────────────────────────────────
 
 class _FakeInputProvider:
+    """Minimal offline-style provider: satisfies InputProvider but not RealtimeInputProvider."""
+
+    @property
+    def fps(self) -> float:
+        return 30.0
+
+    @property
+    def bone_names(self) -> list:
+        return []
+
+    @property
+    def bone_parents(self):
+        return np.array([], dtype=np.int32)
+
+    def is_available(self) -> bool:
+        return True
+
     def get_frame(self):
         return {"body": [0, 0, 0]}
 
-    def is_available(self):
-        return True
+
+class _FakeRealtimeInputProvider(_FakeInputProvider):
+    """Full realtime provider: satisfies both InputProvider and RealtimeInputProvider."""
+
+    @property
+    def human_format(self) -> str:
+        return "test"
+
+    def get_frame_packet(self):
+        return ({"body": [0, 0, 0]}, 0.0, 0)
+
+    def get_realtime_input_packet(self):
+        return None
+
+    def sample_frame(self, query_time_s, delay_s):
+        return {"body": [0, 0, 0]}
+
+    def close(self) -> None:
+        pass
 
 
 class _FakeRetargeter:
@@ -104,6 +139,17 @@ class TestProtocolSubtyping:
 
     def test_input_provider_isinstance(self):
         assert isinstance(_FakeInputProvider(), InputProvider)
+
+    def test_realtime_input_provider_isinstance(self):
+        provider = _FakeRealtimeInputProvider()
+        assert isinstance(provider, InputProvider)
+        assert isinstance(provider, RealtimeInputProvider)
+
+    def test_offline_provider_not_realtime(self):
+        """A BVH-style provider satisfies InputProvider but NOT RealtimeInputProvider."""
+        provider = _FakeInputProvider()
+        assert isinstance(provider, InputProvider)
+        assert not isinstance(provider, RealtimeInputProvider)
 
     def test_retargeter_isinstance(self):
         assert isinstance(_FakeRetargeter(), Retargeter)

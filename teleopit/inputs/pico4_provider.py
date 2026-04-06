@@ -18,8 +18,9 @@ from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation as R
 
 from teleopit.inputs.realtime_frame_cache import RealtimeFrameCache
-from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType, RealtimeInputPacket
+from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType, HumanFrame, RealtimeInputPacket
 from teleopit.inputs.rot_utils import quat_mul_np
+from teleopit.interfaces import RealtimeInputProvider
 from teleopit.sim.reference_motion import interpolate_human_frames
 
 logger = logging.getLogger(__name__)
@@ -45,8 +46,6 @@ BODY_JOINT_PARENTS = np.array(
     ],
     dtype=np.int32,
 )
-
-HumanFrame = Dict[str, Tuple[NDArray[np.float64], NDArray[np.float64]]]
 
 _PICO_BUTTON_GETTERS: dict[str, str] = {
     "A": "get_A_button",
@@ -76,7 +75,7 @@ def _coordinate_transform_input(body_pose_dict: dict) -> dict:
     return body_pose_dict
 
 
-class Pico4InputProvider:
+class Pico4InputProvider(RealtimeInputProvider):
     """Real-time input provider using Pico4 full-body tracking via xrobotoolkit_sdk.
 
     Implements the same interface expected by the shared Teleopit motion

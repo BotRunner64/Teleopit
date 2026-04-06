@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+_MISSING = object()
 
 _VALID_VIEWERS = frozenset({"mocap", "retarget", "sim2sim"})
 
@@ -87,3 +88,53 @@ def normalize_path_in_cfg(
 
     cfg_set(cfg, key, str(path))
     return path
+
+
+def parse_nonnegative_int(value: object, *, field_name: str, default: Any = _MISSING) -> int:
+    """Parse *value* as a non-negative integer.
+
+    If *value* is ``None``/``""``/``"null"`` and *default* is provided, return *default*.
+    Otherwise raise ``ValueError`` for invalid values.
+    """
+    if value in (None, "", "null"):
+        if default is not _MISSING:
+            return int(default)
+        raise ValueError(f"{field_name} must be a non-negative integer, got {value!r}")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} must be a non-negative integer, got {value!r}")
+    parsed = int(value)
+    if parsed < 0:
+        raise ValueError(f"{field_name} must be >= 0, got {value!r}")
+    return parsed
+
+
+def parse_alpha(value: object, *, field_name: str, default: Any = _MISSING) -> float:
+    """Parse *value* as a smoothing alpha in ``(0, 1]``.
+
+    If *value* is ``None``/``""``/``"null"`` and *default* is provided, return *default*.
+    """
+    if value in (None, "", "null"):
+        if default is not _MISSING:
+            return float(default)
+        raise ValueError(f"{field_name} must be in (0, 1], got {value!r}")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} must be in (0, 1], got {value!r}")
+    parsed = float(value)
+    if parsed <= 0.0 or parsed > 1.0:
+        raise ValueError(f"{field_name} must be in (0, 1], got {value!r}")
+    return parsed
+
+
+def parse_optional_nonnegative_int(value: object, *, field_name: str) -> int | None:
+    """Parse *value* as an optional non-negative integer.
+
+    Returns ``None`` for ``None``/``""``/``"null"`` inputs.
+    """
+    if value in (None, "", "null"):
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} must be a non-negative integer, got {value!r}")
+    parsed = int(value)
+    if parsed < 0:
+        raise ValueError(f"{field_name} must be >= 0, got {value!r}")
+    return parsed

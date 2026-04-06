@@ -21,6 +21,7 @@ from teleopit.controllers.qpos_interpolator import QposInterpolator, QposLowPass
 from teleopit.interfaces import MessageBus, ObservationBuilder, Recorder, Robot
 from teleopit.retargeting.core import extract_mimic_obs
 from teleopit.sim.reference_timeline import ReferenceSample, ReferenceWindow
+from teleopit.sim.reference_utils import obs_builder_requires_reference_window
 from teleopit.sim.realtime_utils import ExponentialVecSmoother
 
 Float32Array = NDArray[np.float32]
@@ -217,7 +218,7 @@ class PolicyStepRunner:
         raw_motion_anchor_ang_vel_w: Float32Array | None = None
         motion_anchor_lin_vel_w: Float32Array | None
         motion_anchor_ang_vel_w: Float32Array | None
-        if self._obs_builder_requires_reference_window():
+        if obs_builder_requires_reference_window(self.obs_builder):
             motion_anchor_lin_vel_w = None
             motion_anchor_ang_vel_w = None
         elif self.qpos_interpolator.is_active:
@@ -340,11 +341,6 @@ class PolicyStepRunner:
         if target.shape[0] != self.num_actions:
             raise ValueError(f"Target dof pos has {target.shape[0]} entries, expected {self.num_actions}")
         return target
-
-    def _obs_builder_requires_reference_window(self) -> bool:
-        return bool(getattr(self.obs_builder, "requires_reference_window", False)) or callable(
-            getattr(self.obs_builder, "build_with_reference_window", None)
-        )
 
     def _align_reference_window(
         self,
