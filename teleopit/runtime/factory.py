@@ -186,13 +186,15 @@ def _prepare_input_cfg(input_cfg: Any, project_root: Path, *, sim2real: bool) ->
         )
     elif provider_kind == "zmq_pico4":
         pass  # no path normalization needed
+    elif provider_kind == "udp_bvh":
+        pass  # skeleton resolved automatically from bvh_format
     elif provider_kind != "pico4":
         raise ValueError(
             f"Unsupported input.provider='{provider_kind}'. "
-            "Supported providers are bvh, pico4, zmq_pico4."
+            "Supported providers are bvh, pico4, zmq_pico4, udp_bvh."
         )
 
-    if sim2real and provider_kind not in ("bvh", "pico4", "zmq_pico4"):
+    if sim2real and provider_kind not in ("bvh", "pico4", "zmq_pico4", "udp_bvh"):
         raise ValueError(
             f"Sim2real only supports bvh, pico4, or zmq_pico4 input providers; got '{provider_kind}'."
         )
@@ -207,6 +209,17 @@ def _build_input_provider(
     bvh_input_cls: type[Any],
     pico4_input_cls: type[Any],
 ) -> Any:
+    if provider_kind == "udp_bvh":
+        from teleopit.inputs.udp_bvh_provider import UDPBVHInputProvider
+
+        return UDPBVHInputProvider(
+            bvh_format=str(cfg_get(input_cfg, "bvh_format", "hc_mocap")),
+            human_height=float(cfg_get(input_cfg, "human_height", 1.75)),
+            udp_host=str(cfg_get(input_cfg, "udp_host", "")),
+            udp_port=int(cfg_get(input_cfg, "udp_port", 1118)),
+            udp_timeout=float(cfg_get(input_cfg, "udp_timeout", 30.0)),
+        )
+
     if provider_kind == "zmq_pico4":
         from teleopit.inputs.zmq_provider import ZMQInputProvider
 

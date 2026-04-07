@@ -1,0 +1,30 @@
+defaults:
+  - robot: g1
+  - controller: rl_policy
+  - input: udp_bvh
+  - _self_
+
+policy_hz: 50.0
+pd_hz: 200.0
+pause_resume_transition_duration: 1.0
+pause_resume_warmup_steps: 2
+pause_reset_alignment_on_resume: true
+retarget_buffer_enabled: true
+retarget_buffer_window_s: 0.5
+retarget_buffer_delay_s: null
+realtime_buffer_low_watermark_steps: 2
+realtime_buffer_high_watermark_steps: 4
+realtime_buffer_warmup_steps: 2
+reference_qpos_smoothing_alpha: 0.4
+reference_velocity_smoothing_alpha: 0.35
+reference_anchor_velocity_smoothing_alpha: 0.25
+reference_steps: [0]
+reference_debug_log: false
+viewers: "sim2sim"
+realtime: true
+num_steps: 0  # infinite loop until Ctrl+C
+debug_trace_path: null
+
+hydra:
+  run:
+    dir: .
