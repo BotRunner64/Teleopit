@@ -256,12 +256,28 @@ def _resolve_human_format(input_cfg: Any, input_provider: Any) -> str:
     return f"bvh_{cfg_get(input_cfg, 'bvh_format', 'lafan1')}"
 
 
+def _resolve_actual_human_height(input_cfg: Any, input_provider: Any) -> float:
+    del input_provider
+    configured_height = cfg_get(input_cfg, "human_height", None)
+    if configured_height not in (None, "", "null"):
+        actual_human_height = float(configured_height)
+    else:
+        actual_human_height = 1.75
+
+    if actual_human_height <= 0.0:
+        raise ValueError(
+            f"Resolved human height must be > 0, got {actual_human_height}. "
+            "Set input.human_height or provide a valid input provider human_height."
+        )
+    return actual_human_height
+
+
 
 def _build_retargeter(input_cfg: Any, input_provider: Any, retargeter_cls: type[Any]) -> Any:
     return retargeter_cls(
         robot_name=str(cfg_get(input_cfg, "robot_name", "unitree_g1")),
         human_format=_resolve_human_format(input_cfg, input_provider),
-        actual_human_height=float(cfg_get(input_cfg, "human_height", 1.75)),
+        actual_human_height=_resolve_actual_human_height(input_cfg, input_provider),
     )
 
 

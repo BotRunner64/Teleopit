@@ -102,8 +102,14 @@ def process_single_bvh_frame(
         result["LeftFootMod"] = (result[left_foot_key][0], result[left_toe_key][1])
         result["RightFootMod"] = (result[right_foot_key][0], result[right_toe_key][1])
     elif format == "hc_mocap":
-        result["LeftFootMod"] = (result["hc_Foot_L"][0], result["LeftToeBase"][1])
-        result["RightFootMod"] = (result["hc_Foot_R"][0], result["RightToeBase"][1])
+        left_foot_pos = np.array(result["hc_Foot_L"][0], copy=True)
+        right_foot_pos = np.array(result["hc_Foot_R"][0], copy=True)
+        left_toe_pos = result["LeftToeBase"][0]
+        right_toe_pos = result["RightToeBase"][0]
+        left_foot_pos[2] = min(float(left_foot_pos[2]), float(left_toe_pos[2]))
+        right_foot_pos[2] = min(float(right_foot_pos[2]), float(right_toe_pos[2]))
+        result["LeftFootMod"] = (left_foot_pos, result["LeftToeBase"][1])
+        result["RightFootMod"] = (right_foot_pos, result["RightToeBase"][1])
     else:
         raise ValueError(f"Invalid format: {format}")
 
@@ -147,11 +153,14 @@ def _load_bvh_file(bvh_file: str, format: str = "lafan1"):
             result["LeftFootMod"] = [result[left_foot_key][0], result[left_toe_key][1]]
             result["RightFootMod"] = [result[right_foot_key][0], result[right_toe_key][1]]
         elif format == "hc_mocap":
-            # hc_Foot_L/R position + LeftToeBase/RightToeBase orientation (if available)
-            left_toe_key = "LeftToeBase" if "LeftToeBase" in result else "hc_Foot_L"
-            right_toe_key = "RightToeBase" if "RightToeBase" in result else "hc_Foot_R"
-            result["LeftFootMod"] = [result["hc_Foot_L"][0], result[left_toe_key][1]]
-            result["RightFootMod"] = [result["hc_Foot_R"][0], result[right_toe_key][1]]
+            left_foot_pos = np.array(result["hc_Foot_L"][0], copy=True)
+            right_foot_pos = np.array(result["hc_Foot_R"][0], copy=True)
+            left_toe_pos = result["LeftToeBase"][0]
+            right_toe_pos = result["RightToeBase"][0]
+            left_foot_pos[2] = min(float(left_foot_pos[2]), float(left_toe_pos[2]))
+            right_foot_pos[2] = min(float(right_foot_pos[2]), float(right_toe_pos[2]))
+            result["LeftFootMod"] = [left_foot_pos, result["LeftToeBase"][1]]
+            result["RightFootMod"] = [right_foot_pos, result["RightToeBase"][1]]
         else:
             raise ValueError(f"Invalid format: {format}")
 
@@ -163,48 +172,22 @@ def _load_bvh_file(bvh_file: str, format: str = "lafan1"):
     else:
         fps = 30
 
-    if format == "hc_mocap":
-        # Use frame 0 global FK positions for accurate height (head_Y - lowest_foot_Y)
-        head_idx = list(data.bones).index("hc_Head") if "hc_Head" in data.bones else None
-        toe_l_idx = list(data.bones).index("LeftToeBase") if "LeftToeBase" in data.bones else None
-        toe_r_idx = list(data.bones).index("RightToeBase") if "RightToeBase" in data.bones else None
-        # Fallback to foot joints if toe joints not present
-        if toe_l_idx is None:
-            toe_l_idx = list(data.bones).index("hc_Foot_L") if "hc_Foot_L" in data.bones else None
-        if toe_r_idx is None:
-            toe_r_idx = list(data.bones).index("hc_Foot_R") if "hc_Foot_R" in data.bones else None
-        if head_idx is not None and toe_l_idx is not None:
-            head_y = global_data[1][0, head_idx, 1]  # Y in BVH Y-up space
-            toe_y = min(global_data[1][0, toe_l_idx, 1], global_data[1][0, toe_r_idx, 1])
-            human_height = head_y - toe_y
-        else:
-            human_height = 1.75
-        if human_height < 0.5:
-            human_height = 1.75
-    else:
-        human_height = 1.75
-
-    # Detect whether skeleton has toe joints (affects IK config selection)
-    has_toe = "LeftToeBase" in set(data.bones)
+    human_height = 1.75
 
     # Downsample hc_mocap from 60fps to 30fps
     if format == "hc_mocap" and fps == 60:
         frames = frames[::2]
         fps = 30
 
-    return frames, human_height, fps, bone_names, bone_parents, has_toe
+    return frames, human_height, fps, bone_names, bone_parents
 
 
 class BVHInputProvider:
     
     def __init__(self, bvh_path: str, human_format: str = "lafan1"):
         self.bvh_path = bvh_path
-        self._frames, self._human_height, self._fps, self._bone_names, self._bone_parents, has_toe = _load_bvh_file(bvh_path, format=human_format)
-        # Auto-select IK config: hc_mocap without toe joints needs different ankle offsets
-        if human_format == "hc_mocap" and not has_toe:
-            self.human_format = "hc_mocap_no_toe"
-        else:
-            self.human_format = human_format
+        self._frames, self._human_height, self._fps, self._bone_names, self._bone_parents = _load_bvh_file(bvh_path, format=human_format)
+        self.human_format = human_format
         self._current_frame = 0
         
     def get_frame(self) -> Dict[str, Tuple[Any, Any]]:
