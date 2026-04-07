@@ -26,11 +26,8 @@ sudo apt-get update -qq
 sudo apt-get install -y --no-install-recommends cmake libssl-dev git build-essential
 
 # ---------- 2. Install g1_bridge_sdk (C++ DDS bridge) ----------
-echo "--- Installing pybind11 ---"
-uv pip install pybind11
-
 echo "--- Building and installing g1_bridge_sdk ---"
-uv pip install "$REPO_ROOT/third_party/g1_bridge_sdk"
+bash "$REPO_ROOT/scripts/setup/setup_g1_bridge.sh"
 
 # ---------- 3. Install teleopit[onboard] ----------
 echo "--- Installing teleopit[onboard] ---"

@@ -1,7 +1,8 @@
 #!/bin/bash
 set -e
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SDK_DIR="$REPO_ROOT/third_party/g1_bridge_sdk"
+cd "$SDK_DIR"
 
 # 1. Get unitree_sdk2 C++ SDK
 if [ ! -d "thirdparty/unitree_sdk2" ]; then

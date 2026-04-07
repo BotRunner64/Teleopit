@@ -37,7 +37,7 @@ dev = [
 sim2real = [
     "opencv-python",
     # Also requires g1_bridge_sdk (C++ DDS bridge):
-    #   pip install third_party/g1_bridge_sdk
+    #   bash scripts/setup/setup_g1_bridge.sh
 ]
 train = [
     "torch>=2.0.0",

@@ -44,8 +44,7 @@ Adds `opencv-python` and `g1_bridge_sdk`. You also need to initialize submodules
 
 ```bash
 git submodule update --init --recursive
-pip install pybind11
-pip install third_party/g1_bridge_sdk
+bash scripts/setup/setup_g1_bridge.sh
 ```
 
 See [G1 Bridge SDK](../reference/g1-bridge-sdk) for details.

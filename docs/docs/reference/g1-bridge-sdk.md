@@ -19,15 +19,10 @@ All DDS publish/subscribe runs on native C++ threads. The Python side only calls
 ## Installation
 
 ```bash
-pip install pybind11
-pip install third_party/g1_bridge_sdk
+bash scripts/setup/setup_g1_bridge.sh
 ```
 
-CMake build triggers automatically during install. If compilation fails:
-
-```bash
-bash third_party/g1_bridge_sdk/setup_ubuntu.sh
-```
+The script clones `unitree_sdk2`, installs `pybind11`, and builds the C++ bridge automatically.
 
 ## Python API
 

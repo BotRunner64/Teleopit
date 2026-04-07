@@ -28,8 +28,7 @@ For Pico 4 / Pico 4 Ultra VR deployment, see the complete [Pico VR Tutorial](pic
 **Software:**
 ```bash
 git submodule update --init --recursive
-pip install pybind11
-pip install third_party/g1_bridge_sdk
+bash scripts/setup/setup_g1_bridge.sh
 pip install -e '.[sim2real]'
 ```
 

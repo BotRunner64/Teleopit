@@ -44,8 +44,7 @@ pip install -e '.[sim2real]'
 
 ```bash
 git submodule update --init --recursive
-pip install pybind11
-pip install third_party/g1_bridge_sdk
+bash scripts/setup/setup_g1_bridge.sh
 ```
 
 详见 [G1 Bridge SDK](../reference/g1-bridge-sdk)。

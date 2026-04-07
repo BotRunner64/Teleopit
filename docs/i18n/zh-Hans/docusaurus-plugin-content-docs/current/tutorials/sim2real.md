@@ -28,8 +28,7 @@ sidebar_position: 3
 **软件：**
 ```bash
 git submodule update --init --recursive
-pip install pybind11
-pip install third_party/g1_bridge_sdk
+bash scripts/setup/setup_g1_bridge.sh
 pip install -e '.[sim2real]'
 ```
 
