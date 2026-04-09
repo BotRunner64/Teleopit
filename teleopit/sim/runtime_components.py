@@ -11,16 +11,14 @@ from numpy.typing import NDArray
 
 _logger = logging.getLogger(__name__)
 
+from teleopit.constants import FULL_QPOS_DIM, NUM_JOINTS, ROOT_DIM
 from teleopit.bus.topics import TOPIC_ACTION, TOPIC_MIMIC_OBS, TOPIC_ROBOT_STATE
-from teleopit.controllers.observation import (
-    VelCmdObservationBuilder,
-    compute_fixed_yaw_alignment_quat,
-    rotate_motion_qpos_by_yaw,
-)
+from teleopit.controllers.observation import VelCmdObservationBuilder
 from teleopit.controllers.qpos_interpolator import QposInterpolator, QposLowPassFilter
-from teleopit.interfaces import MessageBus, ObservationBuilder, Recorder, Robot
+from teleopit.controllers import reference_processing as ref_proc
+from teleopit.interfaces import MessageBus, ObservationBuilder, Recorder, Robot, RobotState
 from teleopit.retargeting.core import extract_mimic_obs
-from teleopit.sim.reference_timeline import ReferenceSample, ReferenceWindow
+from teleopit.sim.reference_timeline import ReferenceWindow
 from teleopit.sim.reference_utils import obs_builder_requires_reference_window
 from teleopit.sim.realtime_utils import ExponentialVecSmoother
 
@@ -32,12 +30,6 @@ class _SupportsGetTarget(Protocol):
     def get_target_dof_pos(self, raw_action: Float32Array) -> Float32Array: ...
 
 
-class _SupportsAddFrame(Protocol):
-    def add_frame(self, data: dict[str, object]) -> None: ...
-
-
-class _SupportsRecordStep(Protocol):
-    def record_step(self, data: dict[str, object]) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -67,7 +59,7 @@ class RunRecorder:
     def record(
         self,
         recorder: Recorder | None,
-        state: object,
+        state: RobotState,
         mimic_obs: Float32Array,
         action: Float32Array,
         target_dof_pos: Float32Array,
@@ -76,28 +68,16 @@ class RunRecorder:
         if recorder is None:
             return
 
-        state_qpos = np.asarray(getattr(state, "qpos"), dtype=np.float32)
-        state_qvel = np.asarray(getattr(state, "qvel"), dtype=np.float32)
-        state_timestamp = np.asarray(float(getattr(state, "timestamp")), dtype=np.float64)
-
         payload: dict[str, object] = {
-            "joint_pos": state_qpos,
-            "joint_vel": state_qvel,
+            "joint_pos": np.asarray(state.qpos, dtype=np.float32),
+            "joint_vel": np.asarray(state.qvel, dtype=np.float32),
             "mimic_obs": mimic_obs.astype(np.float32, copy=False),
             "action": action.astype(np.float32, copy=False),
             "target_dof_pos": target_dof_pos.astype(np.float32, copy=False),
             "torque": torque.astype(np.float32, copy=False),
-            "timestamp": state_timestamp,
+            "timestamp": np.asarray(float(state.timestamp), dtype=np.float64),
         }
-        add_frame = getattr(recorder, "add_frame", None)
-        if callable(add_frame):
-            cast(_SupportsAddFrame, cast(object, recorder)).add_frame(payload)
-            return
-        record_step = getattr(recorder, "record_step", None)
-        if callable(record_step):
-            cast(_SupportsRecordStep, cast(object, recorder)).record_step(payload)
-            return
-        raise TypeError("Recorder does not provide add_frame() or record_step()")
+        recorder.add_frame(payload)
 
 
 class PolicyStepRunner:
@@ -202,10 +182,10 @@ class PolicyStepRunner:
         self._pending_reference_qpos = reference_qpos.copy()
 
         if self.last_retarget_qpos is None and self.qpos_interpolator.duration > 0:
-            start_qpos = np.zeros(36, dtype=np.float64)
+            start_qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
             start_qpos[0:3] = np.asarray(state.base_pos[:3], dtype=np.float64)
             start_qpos[3:7] = np.asarray(state.quat[:4], dtype=np.float64)
-            start_qpos[7:36] = np.asarray(state.qpos[:29], dtype=np.float64)
+            start_qpos[ROOT_DIM:FULL_QPOS_DIM] = np.asarray(state.qpos[:NUM_JOINTS], dtype=np.float64)
             self.qpos_interpolator.start(start_qpos)
         qpos = self.qpos_interpolator.apply(reference_qpos)
 
@@ -245,88 +225,24 @@ class PolicyStepRunner:
             raw_motion_anchor_ang_vel_w=raw_motion_anchor_ang_vel_w,
         )
 
-    def _align_velcmd_reference_yaw(self, reference_qpos: Float64Array, state: object) -> Float64Array:
-        if self._fixed_reference_yaw_quat is None:
-            robot_quat = np.asarray(getattr(state, "quat"), dtype=np.float32)
-            self._fixed_reference_yaw_quat = compute_fixed_yaw_alignment_quat(
-                robot_quat,
-                np.asarray(reference_qpos[3:7], dtype=np.float32),
+    def _align_velcmd_reference_yaw(self, reference_qpos: Float64Array, state: RobotState) -> Float64Array:
+        robot_quat = np.asarray(state.quat, dtype=np.float32)
+        aligned, self._fixed_reference_yaw_quat, self._fixed_reference_pivot_pos_w = (
+            ref_proc.align_reference_yaw(
+                reference_qpos, robot_quat,
+                self._fixed_reference_yaw_quat, self._fixed_reference_pivot_pos_w,
             )
-            self._fixed_reference_pivot_pos_w = np.asarray(reference_qpos[0:3], dtype=np.float32).copy()
-
-        aligned_qpos = reference_qpos.copy()
-        rotate_motion_qpos_by_yaw(
-            aligned_qpos,
-            cast(Float32Array, self._fixed_reference_yaw_quat),
-            cast(Float32Array, self._fixed_reference_pivot_pos_w),
         )
-        return aligned_qpos
+        return aligned
 
     def _compute_anchor_velocities(
         self, qpos: Float64Array
     ) -> tuple[Float32Array, Float32Array]:
         """Compute motion anchor linear/angular velocity in world frame via finite diff."""
-        builder = self.obs_builder._base
-
-        # Current anchor state via FK.
-        motion_pos = np.asarray(qpos[0:3], dtype=np.float32)
-        motion_quat = np.asarray(qpos[3:7], dtype=np.float32)
-        motion_joints = np.asarray(qpos[7:7 + self.num_actions], dtype=np.float32)
-        builder._run_fk(motion_pos, motion_quat, motion_joints)
-        cur_anchor_pos = builder._get_body_pos(builder._anchor_body_id).copy()
-
-        if self.last_reference_qpos is None:
-            return (
-                np.zeros(3, dtype=np.float32),
-                np.zeros(3, dtype=np.float32),
-            )
-
-        # Previous anchor state via FK.
-        prev = self.last_reference_qpos
-        prev_pos = np.asarray(prev[0:3], dtype=np.float32)
-        prev_quat = np.asarray(prev[3:7], dtype=np.float32)
-        prev_joints = np.asarray(prev[7:7 + self.num_actions], dtype=np.float32)
-        builder._run_fk(prev_pos, prev_quat, prev_joints)
-        prev_anchor_pos = builder._get_body_pos(builder._anchor_body_id).copy()
-
-        dt = np.float32(1.0 / self.policy_hz)
-        anchor_lin_vel_w = np.asarray(
-            (cur_anchor_pos - prev_anchor_pos) / dt, dtype=np.float32
+        return ref_proc.compute_anchor_velocities(
+            self.obs_builder._base, qpos, self.last_reference_qpos,
+            self.num_actions, self.policy_hz,
         )
-
-        # Angular velocity from quaternion difference.
-        # Re-run FK for current to restore state.
-        builder._run_fk(motion_pos, motion_quat, motion_joints)
-        cur_anchor_quat = builder._get_body_quat(builder._anchor_body_id).copy()
-        builder._run_fk(prev_pos, prev_quat, prev_joints)
-        prev_anchor_quat = builder._get_body_quat(builder._anchor_body_id).copy()
-
-        from teleopit.controllers.observation import _quat_mul_np, _quat_inv_np
-        # q_delta = cur * inv(prev) -> angular velocity
-        q_delta = _quat_mul_np(cur_anchor_quat, _quat_inv_np(prev_anchor_quat))
-        # Ensure positive w for stability.
-        if q_delta[0] < 0:
-            q_delta = -q_delta
-        # axis-angle extraction: angle = 2 * acos(w), axis = xyz / sin(angle/2)
-        w_clamped = float(np.clip(q_delta[0], -1.0, 1.0))
-        half_angle = np.float32(np.arccos(w_clamped))
-        sin_half = np.float32(np.sin(half_angle))
-        if sin_half > 1e-6:
-            axis = q_delta[1:4] / sin_half
-            angle = 2.0 * half_angle
-            anchor_ang_vel_w = np.asarray(axis * angle / dt, dtype=np.float32)
-        else:
-            anchor_ang_vel_w = np.zeros(3, dtype=np.float32)
-
-        _zero3 = np.zeros(3, dtype=np.float32)
-        if not np.all(np.isfinite(anchor_lin_vel_w)):
-            _logger.warning("NaN/inf in anchor_lin_vel_w, damping to zero")
-            anchor_lin_vel_w = _zero3
-        if not np.all(np.isfinite(anchor_ang_vel_w)):
-            _logger.warning("NaN/inf in anchor_ang_vel_w, damping to zero")
-            anchor_ang_vel_w = _zero3
-
-        return anchor_lin_vel_w, anchor_ang_vel_w
 
     def compute_target_dof_pos(self, action: Float32Array) -> Float32Array:
         get_target = getattr(self.controller, "get_target_dof_pos", None)
@@ -345,78 +261,32 @@ class PolicyStepRunner:
     def _align_reference_window(
         self,
         reference_window: ReferenceWindow | None,
-        state: object,
+        state: RobotState,
     ) -> ReferenceWindow | None:
-        if reference_window is None or not self.fixed_ref_yaw_alignment:
-            return reference_window
-
-        current_qpos = np.asarray(reference_window.current_sample().qpos, dtype=np.float64).reshape(-1)
-        if self._fixed_reference_yaw_quat is None:
-            robot_quat = np.asarray(getattr(state, "quat"), dtype=np.float32)
-            self._fixed_reference_yaw_quat = compute_fixed_yaw_alignment_quat(
-                robot_quat,
-                np.asarray(current_qpos[3:7], dtype=np.float32),
+        robot_quat = np.asarray(state.quat, dtype=np.float32)
+        aligned, self._fixed_reference_yaw_quat, self._fixed_reference_pivot_pos_w = (
+            ref_proc.align_reference_window(
+                reference_window, self.fixed_ref_yaw_alignment, robot_quat,
+                self._fixed_reference_yaw_quat, self._fixed_reference_pivot_pos_w,
             )
-            self._fixed_reference_pivot_pos_w = np.asarray(current_qpos[0:3], dtype=np.float32).copy()
-
-        aligned_samples: list[ReferenceSample] = []
-        for sample in reference_window.samples:
-            aligned_qpos = np.asarray(sample.qpos, dtype=np.float64).reshape(-1).copy()
-            rotate_motion_qpos_by_yaw(
-                aligned_qpos,
-                cast(Float32Array, self._fixed_reference_yaw_quat),
-                cast(Float32Array, self._fixed_reference_pivot_pos_w),
-            )
-            aligned_samples.append(
-                ReferenceSample(
-                    qpos=aligned_qpos,
-                    timestamp_s=float(sample.timestamp_s),
-                    mode=str(sample.mode),
-                    used_fallback=bool(sample.used_fallback),
-                    older_timestamp_s=sample.older_timestamp_s,
-                    newer_timestamp_s=sample.newer_timestamp_s,
-                    alpha=sample.alpha,
-                )
-            )
-
-        return ReferenceWindow(
-            base_time_s=float(reference_window.base_time_s),
-            policy_dt_s=float(reference_window.policy_dt_s),
-            reference_steps=tuple(reference_window.reference_steps),
-            samples=tuple(aligned_samples),
         )
+        return aligned
 
     def build_observation(
         self,
-        state: object,
+        state: RobotState,
         motion_prep: MotionPreparation,
         last_action: Float32Array,
         reference_window: ReferenceWindow | None = None,
     ) -> Float32Array:
         motion_qpos = np.asarray(motion_prep.qpos[:7 + self.num_actions], dtype=np.float32)
         motion_joint_vel = np.asarray(motion_prep.motion_joint_vel, dtype=np.float32)
-        build_with_reference_window = getattr(self.obs_builder, "build_with_reference_window", None)
-        if callable(build_with_reference_window):
-            aligned_reference_window = self._align_reference_window(reference_window, state)
-            obs = build_with_reference_window(
-                cast(object, state),
-                aligned_reference_window,
-                motion_qpos,
-                last_action,
-            )
-            return np.asarray(obs, dtype=np.float32)
-
-        assert motion_prep.motion_anchor_lin_vel_w is not None
-        assert motion_prep.motion_anchor_ang_vel_w is not None
-        obs = self.obs_builder.build(
-            cast(object, state),
-            motion_qpos,
-            motion_joint_vel,
-            last_action,
-            motion_prep.motion_anchor_lin_vel_w,
-            motion_prep.motion_anchor_ang_vel_w,
+        aligned_reference_window = self._align_reference_window(reference_window, state)
+        return ref_proc.dispatch_build_observation(
+            self.obs_builder, state, reference_window, aligned_reference_window,
+            motion_qpos, motion_joint_vel, last_action,
+            motion_prep.motion_anchor_lin_vel_w, motion_prep.motion_anchor_ang_vel_w,
         )
-        return np.asarray(obs, dtype=np.float32)
 
     def _compute_motion_joint_vel(self, retarget_qpos: Float64Array) -> Float32Array:
         if retarget_qpos.shape[0] < 7 + self.num_actions:
@@ -485,16 +355,7 @@ class PolicyStepRunner:
 
     @staticmethod
     def _retarget_to_qpos(retargeted: object) -> Float64Array:
-        if isinstance(retargeted, tuple) and len(retargeted) == 3:
-            base_pos = np.asarray(retargeted[0], dtype=np.float64).reshape(-1)
-            base_rot = np.asarray(retargeted[1], dtype=np.float64).reshape(-1)
-            joint_pos = np.asarray(retargeted[2], dtype=np.float64).reshape(-1)
-            qpos = np.concatenate((base_pos, base_rot, joint_pos))
-        else:
-            qpos = np.array(retargeted, dtype=np.float64).reshape(-1)
-        if qpos.shape[0] < 36:
-            raise ValueError(f"Retargeted qpos too short: {qpos.shape[0]} (need >= 36)")
-        return qpos
+        return ref_proc.retarget_to_qpos(retargeted)
 
 
 class ViewerManager:

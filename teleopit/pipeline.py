@@ -12,17 +12,9 @@ from teleopit.inputs import BVHInputProvider, Pico4InputProvider
 from teleopit.recording.hdf5_recorder import HDF5Recorder
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.robots.mujoco_robot import MuJoCoRobot
+from teleopit.runtime.common import cfg_get
 from teleopit.runtime.factory import build_inference_components
 from teleopit.sim.loop import SimulationLoop
-
-
-def _cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
-    if isinstance(cfg, dict):
-        return cfg.get(key, default)
-    if hasattr(cfg, "get"):
-        value = cfg.get(key)
-        return default if value is None else value
-    return getattr(cfg, key, default)
 
 
 class TeleopPipeline:
@@ -64,8 +56,8 @@ class TeleopPipeline:
         if not record:
             return dict(self.loop.run(cast(Any, self.input_provider), cast(Any, self.retargeter), num_steps=num_steps))
 
-        rec_cfg = cast(Any, _cfg_get(self.cfg, "recording", {}))
-        output_path = Path(str(_cfg_get(rec_cfg, "output_path", "teleop_session.h5"))).expanduser()
+        rec_cfg = cast(Any, cfg_get(self.cfg, "recording", {}))
+        output_path = Path(str(cfg_get(rec_cfg, "output_path", "teleop_session.h5"))).expanduser()
         if not output_path.is_absolute():
             output_path = (Path.cwd() / output_path).resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)

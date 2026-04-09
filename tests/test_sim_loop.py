@@ -58,6 +58,9 @@ class _DummyObsBuilder:
         self.mimic_obs_calls: list[np.ndarray] = []
         self._base = _DummyObsBuilderBase()
 
+    def reset(self) -> None:
+        pass
+
     def build(
         self,
         state: object,
@@ -115,12 +118,15 @@ class _DummyRetargeter:
             np.zeros(29, dtype=np.float64),
         )
 
+    def reset(self) -> None:
+        pass
+
 
 class _DummyRecorder:
     def __init__(self) -> None:
         self.frames: list[dict[str, object]] = []
 
-    def record_step(self, data: dict[str, object]) -> None:
+    def add_frame(self, data: dict[str, object]) -> None:
         self.frames.append(data)
 
 
@@ -197,7 +203,7 @@ def test_simulation_loop_interpolates_realtime_input_with_one_frame_delay(monkey
         "extract_mimic_obs",
         lambda qpos, last_qpos, dt: np.array([qpos[0]], dtype=np.float32),
     )
-    monkeypatch.setattr("teleopit.sim.loop.time.monotonic", lambda: 0.15)
+    monkeypatch.setattr("teleopit.sim.session.time.monotonic", lambda: 0.15)
 
     bus = InProcessBus()
     robot = _DummyRobot()
@@ -285,8 +291,8 @@ def test_simulation_loop_waits_for_realtime_warmup_before_first_policy_step(monk
         'extract_mimic_obs',
         lambda qpos, last_qpos, dt: np.array([qpos[0]], dtype=np.float32),
     )
-    monkeypatch.setattr('teleopit.sim.loop.time.monotonic', lambda: 0.1)
-    monkeypatch.setattr('teleopit.sim.loop.time.sleep', lambda _seconds: None)
+    monkeypatch.setattr('teleopit.sim.session.time.monotonic', lambda: 0.1)
+    monkeypatch.setattr('teleopit.sim.session.time.sleep', lambda _seconds: None)
 
     bus = InProcessBus()
     robot = _DummyRobot()
@@ -343,8 +349,8 @@ def test_simulation_loop_allows_future_reference_steps_without_explicit_high_wat
         viewers=set(),
     )
 
-    assert loop._realtime_buffer_low_watermark_steps == 0
-    assert loop._realtime_buffer_high_watermark_steps is None
+    assert loop._ref_cfg.realtime_buffer_low_watermark_steps == 0
+    assert loop._ref_cfg.realtime_buffer_high_watermark_steps is None
 
     class _RealtimeInputProvider:
         fps = 50
@@ -438,7 +444,7 @@ def test_simulation_loop_pause_resume_freezes_then_blends_back(monkeypatch) -> N
             return packet
 
     monotonic_values = iter([0.0, 1.0, 2.0, 2.1, 3.0, 3.1, 4.0, 4.1, 5.0, 5.1])
-    monkeypatch.setattr("teleopit.sim.loop.time.monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr("teleopit.sim.session.time.monotonic", lambda: next(monotonic_values))
 
     bus = InProcessBus()
     robot = _DummyRobot()
@@ -538,7 +544,7 @@ def test_simulation_loop_realtime_keyboard_mode_transitions(monkeypatch) -> None
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr("teleopit.sim.loop.TerminalKeyboardReader", _KeyboardReader)
+    monkeypatch.setattr("teleopit.sim.session.TerminalKeyboardReader", _KeyboardReader)
 
     bus = InProcessBus()
     robot = _DummyRobot()
@@ -640,7 +646,7 @@ def test_simulation_loop_realtime_keyboard_mode_drains_stale_pause_events(monkey
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr("teleopit.sim.loop.TerminalKeyboardReader", _KeyboardReader)
+    monkeypatch.setattr("teleopit.sim.session.TerminalKeyboardReader", _KeyboardReader)
 
     bus = InProcessBus()
     robot = _DummyRobot()
@@ -709,7 +715,7 @@ def test_simulation_loop_realtime_keyboard_mode_keeps_standing_when_input_not_re
         def close(self) -> None:
             pass
 
-    monkeypatch.setattr("teleopit.sim.loop.TerminalKeyboardReader", _KeyboardReader)
+    monkeypatch.setattr("teleopit.sim.session.TerminalKeyboardReader", _KeyboardReader)
 
     bus = InProcessBus()
     robot = _DummyRobot()

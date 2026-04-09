@@ -13,20 +13,11 @@ from typing import Any
 
 import numpy as np
 
+from teleopit.constants import NUM_JOINTS
 from teleopit.interfaces import RobotState
+from teleopit.runtime.common import cfg_get
 
 logger = logging.getLogger(__name__)
-
-_NUM_JOINTS = 29
-
-
-def _cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
-    if isinstance(cfg, dict):
-        return cfg.get(key, default)
-    if hasattr(cfg, "get"):
-        value = cfg.get(key)
-        return default if value is None else value
-    return getattr(cfg, key, default)
 
 
 class UnitreeG1Robot:
@@ -38,14 +29,14 @@ class UnitreeG1Robot:
     """
 
     def __init__(self, cfg: Any) -> None:
-        self._network_interface: str = str(_cfg_get(cfg, "network_interface", "eth0"))
-        self._kp = np.asarray(_cfg_get(cfg, "kp_real", [100] * _NUM_JOINTS), dtype=np.float32)
-        self._kd = np.asarray(_cfg_get(cfg, "kd_real", [2] * _NUM_JOINTS), dtype=np.float32)
+        self._network_interface: str = str(cfg_get(cfg, "network_interface", "eth0"))
+        self._kp = np.asarray(cfg_get(cfg, "kp_real", [100] * NUM_JOINTS), dtype=np.float32)
+        self._kd = np.asarray(cfg_get(cfg, "kd_real", [2] * NUM_JOINTS), dtype=np.float32)
 
-        if self._kp.shape[0] != _NUM_JOINTS:
-            raise ValueError(f"kp_real must have {_NUM_JOINTS} entries")
-        if self._kd.shape[0] != _NUM_JOINTS:
-            raise ValueError(f"kd_real must have {_NUM_JOINTS} entries")
+        if self._kp.shape[0] != NUM_JOINTS:
+            raise ValueError(f"kp_real must have {NUM_JOINTS} entries")
+        if self._kd.shape[0] != NUM_JOINTS:
+            raise ValueError(f"kd_real must have {NUM_JOINTS} entries")
 
         import g1_bridge_sdk
 
@@ -98,7 +89,7 @@ class UnitreeG1Robot:
 
         qpos, _, _, _ = self._bridge.get_state()
         self._bridge.set_target(qpos, self._kp, self._kd)
-        logger.info("All %d joints locked to current position", _NUM_JOINTS)
+        logger.info("All %d joints locked to current position", NUM_JOINTS)
 
     def send_positions(
         self,
@@ -109,8 +100,8 @@ class UnitreeG1Robot:
         """Update 29-DOF position targets (published by C++ thread)."""
         self._ensure_publishing()
 
-        if target_pos.shape[0] != _NUM_JOINTS:
-            raise ValueError(f"target_pos must have {_NUM_JOINTS} entries")
+        if target_pos.shape[0] != NUM_JOINTS:
+            raise ValueError(f"target_pos must have {NUM_JOINTS} entries")
 
         if kp is None:
             kp = self._kp

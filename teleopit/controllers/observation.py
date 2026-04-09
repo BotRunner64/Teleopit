@@ -8,13 +8,14 @@ from typing import Sequence, cast, final
 import numpy as np
 
 from teleopit.interfaces import RobotState
+from teleopit.math_utils import quat_inv_np, quat_mul_np
+from teleopit.runtime.common import cfg_get
 
 _logger = logging.getLogger(__name__)
 
 FloatVec = np.ndarray[tuple[int, ...], np.dtype[np.float32]]
 ConfigType = dict[str, object] | object
 _GRAVITY_UNIT_W = np.array([0.0, 0.0, -1.0], dtype=np.float32)
-_CFG_MISSING = object()
 
 
 def _as_float_vec(value: object, name: str) -> FloatVec:
@@ -24,41 +25,15 @@ def _as_float_vec(value: object, name: str) -> FloatVec:
     return out
 
 
-def _cfg_get(cfg: ConfigType, key: str, default: object = _CFG_MISSING) -> object:
-    if isinstance(cfg, dict):
-        if key in cfg:
-            return cast(object, cfg[key])
-        if default is not _CFG_MISSING:
-            return default
-        raise KeyError(key)
-    if hasattr(cfg, key):
-        return cast(object, object.__getattribute__(cfg, key))
-    if default is not _CFG_MISSING:
-        return default
-    raise KeyError(key)
-
-
 def _as_int_scalar(value: object, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{name} must be an int")
     return value
 
 
-def _quat_inv_np(q: FloatVec) -> FloatVec:
-    inv = q.copy()
-    inv[..., 1:] = -inv[..., 1:]
-    return inv
-
-
-def _quat_mul_np(q1: FloatVec, q2: FloatVec) -> FloatVec:
-    w1, x1, y1, z1 = q1[..., 0], q1[..., 1], q1[..., 2], q1[..., 3]
-    w2, x2, y2, z2 = q2[..., 0], q2[..., 1], q2[..., 2], q2[..., 3]
-    return np.stack([
-        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
-        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
-        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
-        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
-    ], axis=-1).astype(np.float32)
+# Backward-compat aliases for external importers
+_quat_inv_np = quat_inv_np
+_quat_mul_np = quat_mul_np
 
 
 def _quat_rotate_np(q: FloatVec, v: FloatVec) -> FloatVec:
@@ -135,14 +110,14 @@ class _VelCmdBaseObservationBuilder:
     """Internal base block used by the public 166D VelCmd builder."""
 
     def __init__(self, cfg: ConfigType) -> None:
-        self.num_actions: int = _as_int_scalar(_cfg_get(cfg, "num_actions"), "num_actions")
+        self.num_actions: int = _as_int_scalar(cfg_get(cfg, "num_actions"), "num_actions")
         self.default_dof_pos: FloatVec = _as_float_vec(
-            _cfg_get(cfg, "default_dof_pos"), "default_dof_pos"
+            cfg_get(cfg, "default_dof_pos"), "default_dof_pos"
         )
         if self.default_dof_pos.shape[0] != self.num_actions:
             raise ValueError("default_dof_pos length must match num_actions")
 
-        xml_path = str(_cfg_get(cfg, "xml_path"))
+        xml_path = str(cfg_get(cfg, "xml_path"))
         if not Path(xml_path).is_file():
             raise FileNotFoundError(f"MuJoCo XML not found: {xml_path}")
 
@@ -154,7 +129,7 @@ class _VelCmdBaseObservationBuilder:
             self._mj_model.body(i).name: i for i in range(self._mj_model.nbody)
         }
 
-        anchor_name = str(_cfg_get(cfg, "anchor_body_name"))
+        anchor_name = str(cfg_get(cfg, "anchor_body_name"))
         if anchor_name not in self._body_name_to_idx:
             raise ValueError(f"Anchor body '{anchor_name}' not found in model")
         self._anchor_body_id = self._body_name_to_idx[anchor_name]

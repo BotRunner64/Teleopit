@@ -5,6 +5,7 @@ from typing import cast
 import numpy as np
 from numpy.typing import NDArray
 
+from teleopit.constants import FULL_QPOS_DIM, ROOT_DIM
 from .gmr import GeneralMotionRetargeting
 
 Float64Array = NDArray[np.float64]
@@ -68,7 +69,7 @@ def extract_mimic_obs(
 ) -> NDArray[np.float32]:
     if qpos.ndim != 1:
         raise ValueError("qpos must be a 1D array")
-    if qpos.shape[0] < 36:
+    if qpos.shape[0] < FULL_QPOS_DIM:
         raise ValueError("qpos must contain 7D root + 29D joints")
     if dt <= 0.0:
         raise ValueError("dt must be positive")
@@ -82,7 +83,7 @@ def extract_mimic_obs(
     last_root_pos = previous[0:3]
     root_quat = current[3:7]
     last_root_quat = previous[3:7]
-    joints = current[7:36]
+    joints = current[ROOT_DIM:FULL_QPOS_DIM]
 
     base_vel_world = (root_pos - last_root_pos) / dt
     quat_delta: Float64Array = _quat_multiply(root_quat, _quat_conjugate(last_root_quat))
