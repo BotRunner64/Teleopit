@@ -32,6 +32,7 @@ class MocapComponents:
 def build_simulation_cfg(cfg: Any) -> dict[str, object]:
     playback_cfg = cfg_get(cfg, "playback", {}) or {}
     playback_keyboard_cfg = cfg_get(playback_cfg, "keyboard", {}) or {}
+    realtime_keyboard_cfg = cfg_get(cfg, "keyboard", {}) or {}
     return {
         "policy_hz": float(cfg_get(cfg, "policy_hz", 50.0)),
         "pd_hz": float(cfg_get(cfg, "pd_hz", 1000.0)),
@@ -67,6 +68,9 @@ def build_simulation_cfg(cfg: Any) -> dict[str, object]:
             "keyboard": {
                 "enabled": bool(cfg_get(playback_keyboard_cfg, "enabled", False)),
             },
+        },
+        "keyboard": {
+            "enabled": bool(cfg_get(realtime_keyboard_cfg, "enabled", False)),
         },
     }
 

@@ -8,6 +8,7 @@ from teleopit.bus.in_process import InProcessBus
 from teleopit.bus.topics import TOPIC_ACTION, TOPIC_MIMIC_OBS, TOPIC_ROBOT_STATE
 from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType, RealtimeInputPacket
 from teleopit.interfaces import RobotState
+from teleopit.runtime.terminal_keyboard import TerminalKeyEvent
 
 
 class _DummyRobot:
@@ -473,3 +474,271 @@ def test_simulation_loop_pause_resume_freezes_then_blends_back(monkeypatch) -> N
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[2], np.array([0.2], dtype=np.float32), atol=1e-6)
     assert obs_builder.mimic_obs_calls[3][0] > 0.2
     assert obs_builder.mimic_obs_calls[3][0] < 1.0
+
+
+@requires_mujoco
+def test_simulation_loop_realtime_keyboard_mode_transitions(monkeypatch) -> None:
+    from teleopit.sim.loop import SimulationLoop
+
+    class _RealtimeInputProvider:
+        fps = 1
+
+        def __init__(self) -> None:
+            self._packets = [
+                RealtimeInputPacket(
+                    frame={
+                        "Pelvis": (
+                            np.array([0.3, 0.0, 0.0], dtype=np.float32),
+                            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                        )
+                    },
+                    timestamp_s=0.0,
+                    seq=0,
+                    control_events=(),
+                ),
+                RealtimeInputPacket(
+                    frame={
+                        "Pelvis": (
+                            np.array([0.6, 0.0, 0.0], dtype=np.float32),
+                            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                        )
+                    },
+                    timestamp_s=1.0,
+                    seq=1,
+                    control_events=(),
+                ),
+            ]
+            self._idx = 0
+
+        def get_realtime_input_packet(self):
+            packet = self._packets[min(self._idx, len(self._packets) - 1)]
+            self._idx += 1
+            return packet
+
+    class _KeyboardReader:
+        def __init__(self) -> None:
+            self._polls = [
+                (),
+                (TerminalKeyEvent("y"),),
+                (TerminalKeyEvent("x"),),
+            ]
+            self._idx = 0
+
+        @property
+        def active(self) -> bool:
+            return True
+
+        def poll(self) -> tuple[TerminalKeyEvent, ...]:
+            if self._idx >= len(self._polls):
+                return ()
+            events = self._polls[self._idx]
+            self._idx += 1
+            return events
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("teleopit.sim.loop.TerminalKeyboardReader", _KeyboardReader)
+
+    bus = InProcessBus()
+    robot = _DummyRobot()
+    obs_builder = _DummyObsBuilder()
+    loop = SimulationLoop(
+        robot=robot,
+        controller=_DummyController(),
+        obs_builder=obs_builder,
+        bus=bus,
+        cfg={
+            "policy_hz": 50.0,
+            "pd_hz": 50.0,
+            "realtime": False,
+            "transition_duration": 0.0,
+            "retarget_buffer_enabled": False,
+            "realtime_input_delay_s": 0.0,
+            "velcmd_fixed_ref_yaw_alignment": False,
+            "keyboard": {"enabled": True},
+        },
+        viewers=set(),
+    )
+
+    result = loop.run(
+        input_provider=_RealtimeInputProvider(),
+        retargeter=_DummyRetargeter(),
+        num_steps=3,
+    )
+
+    assert result["steps"] == 3
+    np.testing.assert_allclose(obs_builder.mimic_obs_calls[0], np.array([0.0], dtype=np.float32), atol=1e-6)
+    np.testing.assert_allclose(obs_builder.mimic_obs_calls[1], np.array([0.3], dtype=np.float32), atol=1e-6)
+    np.testing.assert_allclose(obs_builder.mimic_obs_calls[2], np.array([0.0], dtype=np.float32), atol=1e-6)
+
+
+@requires_mujoco
+def test_simulation_loop_realtime_keyboard_mode_drains_stale_pause_events(monkeypatch) -> None:
+    from teleopit.sim.loop import SimulationLoop
+
+    class _RealtimeInputProvider:
+        fps = 1
+
+        def __init__(self) -> None:
+            self._packet = RealtimeInputPacket(
+                frame={
+                    "Pelvis": (
+                        np.array([0.4, 0.0, 0.0], dtype=np.float32),
+                        np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                    )
+                },
+                timestamp_s=0.0,
+                seq=0,
+                control_events=(
+                    ControlEvent(
+                        event_type=ControlEventType.TOGGLE_PAUSE,
+                        source="pico4:test",
+                        timestamp_s=0.0,
+                    ),
+                ),
+            )
+            self._pending_control_events = list(self._packet.control_events)
+
+        def has_frame(self) -> bool:
+            return True
+
+        def pop_control_events(self):
+            events = tuple(self._pending_control_events)
+            self._pending_control_events.clear()
+            return events
+
+        def get_realtime_input_packet(self):
+            packet = RealtimeInputPacket(
+                frame=self._packet.frame,
+                timestamp_s=self._packet.timestamp_s,
+                seq=self._packet.seq,
+                control_events=tuple(self._pending_control_events),
+            )
+            self._pending_control_events.clear()
+            return packet
+
+    class _KeyboardReader:
+        def __init__(self) -> None:
+            self._polls = [
+                (TerminalKeyEvent("a"),),
+                (TerminalKeyEvent("y"),),
+            ]
+            self._idx = 0
+
+        @property
+        def active(self) -> bool:
+            return True
+
+        def poll(self) -> tuple[TerminalKeyEvent, ...]:
+            if self._idx >= len(self._polls):
+                return ()
+            events = self._polls[self._idx]
+            self._idx += 1
+            return events
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("teleopit.sim.loop.TerminalKeyboardReader", _KeyboardReader)
+
+    bus = InProcessBus()
+    robot = _DummyRobot()
+    obs_builder = _DummyObsBuilder()
+    loop = SimulationLoop(
+        robot=robot,
+        controller=_DummyController(),
+        obs_builder=obs_builder,
+        bus=bus,
+        cfg={
+            "policy_hz": 50.0,
+            "pd_hz": 50.0,
+            "realtime": False,
+            "transition_duration": 0.0,
+            "retarget_buffer_enabled": False,
+            "realtime_input_delay_s": 0.0,
+            "velcmd_fixed_ref_yaw_alignment": False,
+            "keyboard": {"enabled": True},
+        },
+        viewers=set(),
+    )
+
+    result = loop.run(
+        input_provider=_RealtimeInputProvider(),
+        retargeter=_DummyRetargeter(),
+        num_steps=3,
+    )
+
+    assert result["steps"] == 3
+    assert len(obs_builder.mimic_obs_calls) == 3
+    np.testing.assert_allclose(obs_builder.mimic_obs_calls[-1], np.array([0.4], dtype=np.float32), atol=1e-6)
+
+
+@requires_mujoco
+def test_simulation_loop_realtime_keyboard_mode_keeps_standing_when_input_not_ready(monkeypatch) -> None:
+    from teleopit.sim.loop import SimulationLoop
+
+    class _RealtimeInputProvider:
+        fps = 1
+
+        def has_frame(self) -> bool:
+            return False
+
+        def pop_control_events(self):
+            return ()
+
+    class _KeyboardReader:
+        def __init__(self) -> None:
+            self._polls = [
+                (),
+                (TerminalKeyEvent("y"),),
+            ]
+            self._idx = 0
+
+        @property
+        def active(self) -> bool:
+            return True
+
+        def poll(self) -> tuple[TerminalKeyEvent, ...]:
+            if self._idx >= len(self._polls):
+                return ()
+            events = self._polls[self._idx]
+            self._idx += 1
+            return events
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("teleopit.sim.loop.TerminalKeyboardReader", _KeyboardReader)
+
+    bus = InProcessBus()
+    robot = _DummyRobot()
+    obs_builder = _DummyObsBuilder()
+    loop = SimulationLoop(
+        robot=robot,
+        controller=_DummyController(),
+        obs_builder=obs_builder,
+        bus=bus,
+        cfg={
+            "policy_hz": 50.0,
+            "pd_hz": 50.0,
+            "realtime": False,
+            "transition_duration": 0.0,
+            "retarget_buffer_enabled": False,
+            "realtime_input_delay_s": 0.0,
+            "velcmd_fixed_ref_yaw_alignment": False,
+            "keyboard": {"enabled": True},
+        },
+        viewers=set(),
+    )
+
+    result = loop.run(
+        input_provider=_RealtimeInputProvider(),
+        retargeter=_DummyRetargeter(),
+        num_steps=2,
+    )
+
+    assert result["steps"] == 2
+    assert len(obs_builder.mimic_obs_calls) == 2
+    np.testing.assert_allclose(obs_builder.mimic_obs_calls[0], np.array([0.0], dtype=np.float32), atol=1e-6)
+    np.testing.assert_allclose(obs_builder.mimic_obs_calls[1], np.array([0.0], dtype=np.float32), atol=1e-6)

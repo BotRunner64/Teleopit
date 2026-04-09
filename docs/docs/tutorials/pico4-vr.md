@@ -80,9 +80,20 @@ You should see the virtual robot following your VR movements. If the robot doesn
 - PC Service is running
 - Both devices are on the same network
 
+### Keyboard Mode Flow
+
+With `teleopit/configs/pico4_sim.yaml`, realtime keyboard mode is enabled by default:
+
+- Press **Y** to enter `MOCAP`
+- Press **A** to pause/resume live mocap
+- Press **X** to return to `STANDING`
+- Press **Q** to quit the simulation loop
+
+The loop starts directly in `STANDING`, so you can press **Y** once tracking is ready.
+
 ### Pause/Resume
 
-- Press controller **A** to freeze tracking
+- Press keyboard **A** or Pico controller **A** to freeze tracking
 - Press **A** again to clear the realtime reference buffer and smoothly resume live mocap
 
 ## Step 4: Hardware Deployment (Pico sim2real)
@@ -123,6 +134,9 @@ input.pico4_timeout=30
 
 # Adjust pause/resume transition
 pause_resume_transition_duration=1.0
+
+# Disable realtime keyboard mode state machine
+keyboard.enabled=false
 
 # Change policy frequency
 policy_hz=30
