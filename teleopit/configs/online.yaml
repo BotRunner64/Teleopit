@@ -20,7 +20,7 @@ reference_velocity_smoothing_alpha: 0.35
 reference_anchor_velocity_smoothing_alpha: 0.25
 reference_steps: [0]
 reference_debug_log: false
-viewers: "sim2sim"
+viewers: "all"
 realtime: true
 num_steps: 0  # infinite loop until Ctrl+C
 debug_trace_path: null
