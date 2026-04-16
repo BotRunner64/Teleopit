@@ -256,8 +256,13 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
     terminations: dict[str, TerminationTermCfg] = {
         "time_out": TerminationTermCfg(func=mdp.time_out, time_out=True),
         "anchor_pos": TerminationTermCfg(
-            func=mdp.bad_anchor_pos_z_only,
-            params={"command_name": "motion", "threshold": 0.25},
+            func=mdp.bad_anchor_pos_z_only_adaptive,
+            params={
+                "command_name": "motion",
+                "threshold": 0.15,
+                "down_threshold": 0.4,
+                "root_height_threshold": 0.5,
+            },
         ),
         "anchor_ori": TerminationTermCfg(
             func=mdp.bad_anchor_ori,
@@ -268,10 +273,20 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
             },
         ),
         "ee_body_pos": TerminationTermCfg(
-            func=mdp.bad_motion_body_pos_z_only,
+            func=mdp.bad_motion_body_pos_z_only_adaptive,
             params={
                 "command_name": "motion",
-                "threshold": 0.25,
+                "threshold": 0.15,
+                "down_threshold": 0.4,
+                "root_height_threshold": 0.5,
+                "body_names": (),  # Set per-robot.
+            },
+        ),
+        "foot_pos_xyz": TerminationTermCfg(
+            func=mdp.bad_motion_body_pos,
+            params={
+                "command_name": "motion",
+                "threshold": 0.2,
                 "body_names": (),  # Set per-robot.
             },
         ),
