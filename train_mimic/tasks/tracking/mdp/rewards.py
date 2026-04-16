@@ -7,7 +7,6 @@ import torch
 from mjlab.entity import Entity
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.sensor import ContactSensor
 from mjlab.utils.lab_api.math import (
     quat_error_magnitude,
 )
@@ -142,22 +141,6 @@ def motion_global_body_angular_velocity_error_exp(
         dim=-1,
     )
     return torch.exp(-error.mean(-1) / std**2)
-
-
-def self_collision_cost(
-    env: ManagerBasedRlEnv,
-    sensor_name: str,
-    force_threshold: float = 10.0,
-) -> torch.Tensor:
-    """Penalize self-collisions."""
-    sensor: ContactSensor = env.scene[sensor_name]
-    data = sensor.data
-    if data.force_history is not None:
-        force_mag = torch.norm(data.force_history, dim=-1)
-        hit = (force_mag > force_threshold).any(dim=1)
-        return hit.sum(dim=-1).float()
-    assert data.found is not None
-    return data.found.squeeze(-1)
 
 
 class joint_torque_limits:

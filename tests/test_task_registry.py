@@ -33,6 +33,9 @@ def test_general_tracking_task_is_registered() -> None:
     assert "critic_history" in env_cfg.observations
     assert env_cfg.commands["motion"].sampling_mode == "uniform"
     assert env_cfg.commands["motion"].window_steps == (0,)
+    assert "self_collisions" not in env_cfg.rewards
+    assert "undesired_contacts" not in env_cfg.rewards
+    assert not getattr(env_cfg.scene, "sensors", ())
     rl_cfg = load_rl_cfg(DEFAULT_TASK)
     assert rl_cfg.experiment_name == GENERAL_TRACKING_EXPERIMENT_NAME
     assert rl_cfg.actor.hidden_dims == (1024, 512, 256, 256, 128)

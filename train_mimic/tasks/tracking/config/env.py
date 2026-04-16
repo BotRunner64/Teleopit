@@ -9,7 +9,6 @@ from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
 from train_mimic.tasks.tracking import mdp
@@ -34,6 +33,14 @@ _TRACKING_BODY_NAMES = (
     "right_wrist_yaw_link",
 )
 
+_TRAIN_ONLY_EVENTS = (
+    "push_robot",
+    "base_com",
+    "encoder_bias",
+    "physics_material",
+    "randomize_rigid_body_mass",
+)
+
 
 def _apply_play_mode_overrides(cfg: ManagerBasedRlEnvCfg) -> None:
     motion_cmd = cfg.commands["motion"]
@@ -41,7 +48,8 @@ def _apply_play_mode_overrides(cfg: ManagerBasedRlEnvCfg) -> None:
 
     cfg.episode_length_s = int(1e9)
     cfg.observations["actor"].enable_corruption = False
-    cfg.events.pop("push_robot", None)
+    for event_name in _TRAIN_ONLY_EVENTS:
+        cfg.events.pop(event_name, None)
     motion_cmd.pose_range = {}
     motion_cmd.velocity_range = {}
     motion_cmd.sampling_mode = "start"
@@ -109,17 +117,6 @@ def make_general_tracking_env_cfg(
     cfg = make_tracking_env_cfg()
 
     cfg.scene.entities = {"robot": get_g1_robot_cfg()}
-    cfg.scene.sensors = (
-        ContactSensorCfg(
-            name="self_collision",
-            primary=ContactMatch(mode="subtree", pattern="pelvis", entity="robot"),
-            secondary=ContactMatch(mode="subtree", pattern="pelvis", entity="robot"),
-            fields=("found", "force"),
-            reduce="none",
-            num_slots=1,
-            history_length=4,
-        ),
-    )
 
     joint_pos_action = cfg.actions["joint_pos"]
     assert isinstance(joint_pos_action, JointPositionActionCfg)
@@ -133,10 +130,13 @@ def make_general_tracking_env_cfg(
     motion_cmd.sampling_mode = "uniform"
     motion_cmd.window_steps = (0,)
 
-    cfg.events["foot_friction"].params[
+    cfg.events["physics_material"].params[
         "asset_cfg"
-    ].geom_names = r"^(left|right)_foot[1-7]_collision$"
+    ].geom_names = r".*_collision$"
     cfg.events["base_com"].params["asset_cfg"].body_names = ("torso_link",)
+    cfg.events["randomize_rigid_body_mass"].params[
+        "asset_cfg"
+    ].body_names = r".*wrist_yaw.*|torso_link"
     cfg.terminations["ee_body_pos"].params["body_names"] = (
         "left_ankle_roll_link",
         "right_ankle_roll_link",
