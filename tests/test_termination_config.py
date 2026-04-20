@@ -21,7 +21,6 @@ def test_general_tracking_termination_config_matches_requested_policy() -> None:
         "anchor_pos",
         "anchor_ori",
         "ee_body_pos",
-        "foot_pos_xyz",
     }
 
     anchor_pos = terminations["anchor_pos"]
@@ -51,18 +50,6 @@ def test_general_tracking_termination_config_matches_requested_policy() -> None:
             "right_wrist_yaw_link",
         ),
     }
-
-    foot_pos_xyz = terminations["foot_pos_xyz"]
-    assert foot_pos_xyz.func is mdp.bad_motion_body_pos
-    assert foot_pos_xyz.params == {
-        "command_name": "motion",
-        "threshold": 0.2,
-        "body_names": (
-            "left_ankle_roll_link",
-            "right_ankle_roll_link",
-        ),
-    }
-
 
 def test_adaptive_height_termination_uses_relaxed_threshold_for_low_reference() -> None:
     command = SimpleNamespace(

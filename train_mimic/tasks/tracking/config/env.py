@@ -143,10 +143,7 @@ def make_general_tracking_env_cfg(
         "left_wrist_yaw_link",
         "right_wrist_yaw_link",
     )
-    cfg.terminations["foot_pos_xyz"].params["body_names"] = (
-        "left_ankle_roll_link",
-        "right_ankle_roll_link",
-    )
+    cfg.terminations.pop("foot_pos_xyz", None)
     cfg.terminations["anchor_ori"].params["threshold"] = 1.0
     cfg.viewer.body_name = "torso_link"
     cfg.episode_length_s = 10.0
