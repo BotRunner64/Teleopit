@@ -6,8 +6,8 @@ and outputs filtered_manifest.csv + review_summary.json.
 
 Usage:
     python scripts/data/export_reviewed_manifest.py \
-        --review data/datasets/review/twist2_full/review_state.csv \
-        --output data/datasets/review/twist2_full/filtered_manifest.csv
+        --review data/datasets/review/twist2/review_state.csv \
+        --output data/datasets/review/twist2/filtered_manifest.csv
 """
 
 from __future__ import annotations

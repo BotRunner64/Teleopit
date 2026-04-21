@@ -180,8 +180,8 @@ The single supported training task is `General-Tracking-G1` (experiment name: `g
 Quick reference:
 
 ```bash
-python train_mimic/scripts/data/build_dataset.py --spec train_mimic/configs/datasets/twist2_full.yaml
-python train_mimic/scripts/train.py --motion_file data/datasets/twist2_full/train
+python train_mimic/scripts/data/build_dataset.py --spec train_mimic/configs/datasets/twist2.yaml
+python train_mimic/scripts/train.py --motion_file data/datasets/twist2/train
 python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt --output policy.onnx --history_length 10
 ```
 

@@ -7,8 +7,8 @@ made at clip boundaries — no clip is ever truncated across shards.
 
 Usage:
     python train_mimic/scripts/data/split_shards.py \
-        --input data/datasets/seed_v1/train \
-        --output data/datasets/seed_v1/train_small_shards \
+        --input data/datasets/seed/train \
+        --output data/datasets/seed/train_small_shards \
         --max_size_gb 2
 """
 

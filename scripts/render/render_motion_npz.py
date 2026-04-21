@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
         "--robot",
         type=str,
         default="unitree_g1",
-        help="Robot viewer type. For lafan1_v1 clips this should usually stay as unitree_g1.",
+        help="Robot viewer type. For lafan1 clips this should usually stay as unitree_g1.",
     )
     parser.add_argument("--start", type=int, default=0, help="Start frame index")
     parser.add_argument("--end", type=int, default=-1, help="Exclusive end frame index; -1 means full clip")

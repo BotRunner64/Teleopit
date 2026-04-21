@@ -6,8 +6,8 @@ verifies all NPZ files exist, and rebuilds cleaned train/val shard splits.
 
 Usage:
     python scripts/data/build_dataset_from_review.py \
-        --filtered_manifest data/datasets/review/twist2_full/filtered_manifest.csv \
-        --output_dir data/datasets/builds/twist2_full_cleaned
+        --filtered_manifest data/datasets/review/twist2/filtered_manifest.csv \
+        --output_dir data/datasets/builds/twist2_cleaned
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--output_dir", type=str, required=True,
-        help="Output directory, e.g. data/datasets/builds/twist2_full_cleaned",
+        help="Output directory, e.g. data/datasets/builds/twist2_cleaned",
     )
     parser.add_argument(
         "--target_fps", type=int, default=None,

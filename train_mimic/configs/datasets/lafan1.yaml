@@ -1,4 +1,4 @@
-name: lafan1_v1
+name: lafan1
 target_fps: 30
 val_percent: 5
 hash_salt: ""
@@ -6,7 +6,7 @@ preprocess:
   normalize_root_xy: true
   ground_align: clip_min_foot
 sources:
-  - name: lafan1_v1
+  - name: lafan1
     type: bvh
     input: data/lafan1_bvh
     bvh_format: lafan1

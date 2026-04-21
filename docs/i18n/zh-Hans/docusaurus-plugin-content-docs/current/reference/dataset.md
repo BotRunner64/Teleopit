@@ -26,7 +26,7 @@ python train_mimic/scripts/train.py --motion_file data/datasets/seed/train
 
 ```bash
 python train_mimic/scripts/data/build_dataset.py \
-    --spec train_mimic/configs/datasets/twist2_full.yaml
+    --spec train_mimic/configs/datasets/twist2.yaml
 ```
 
 ## 输出目录结构
@@ -48,10 +48,10 @@ data/datasets/<dataset>/
 
 ## YAML spec
 
-示例（`train_mimic/configs/datasets/twist2_full.yaml`）：
+示例（`train_mimic/configs/datasets/twist2.yaml`）：
 
 ```yaml
-name: twist2_full
+name: twist2
 target_fps: 30
 val_percent: 5
 hash_salt: ""
@@ -62,7 +62,7 @@ sources:
   - name: OMOMO_g1_GMR
     type: pkl
     input: data/twist2_retarget_pkl/OMOMO_g1_GMR
-  - name: lafan1_v1
+  - name: lafan1
     type: bvh
     input: data/lafan1_bvh
     bvh_format: lafan1
@@ -93,20 +93,20 @@ sources:
 ```bash
 # 强制重建
 python train_mimic/scripts/data/build_dataset.py \
-    --spec train_mimic/configs/datasets/twist2_full.yaml --force
+    --spec train_mimic/configs/datasets/twist2.yaml --force
 
 # 多进程并行
 python train_mimic/scripts/data/build_dataset.py \
-    --spec train_mimic/configs/datasets/twist2_full.yaml --jobs 8
+    --spec train_mimic/configs/datasets/twist2.yaml --jobs 8
 
 # 自定义输出根目录
 python train_mimic/scripts/data/build_dataset.py \
-    --spec train_mimic/configs/datasets/twist2_full.yaml \
+    --spec train_mimic/configs/datasets/twist2.yaml \
     --output_root /tmp/my_datasets
 
 # 打印 build report
 python train_mimic/scripts/data/build_dataset.py \
-    --spec train_mimic/configs/datasets/twist2_full.yaml --json
+    --spec train_mimic/configs/datasets/twist2.yaml --json
 ```
 
 ## 批量转换为 NPZ clips
@@ -116,8 +116,8 @@ python train_mimic/scripts/data/build_dataset.py \
 ```bash
 python train_mimic/scripts/data/ingest_motion.py \
     --type bvh --input data/lafan1_bvh \
-    --output data/datasets/lafan1_v1/clips/lafan1_v1 \
-    --source lafan1_v1 --bvh_format lafan1 --jobs 8
+    --output data/datasets/lafan1/clips/lafan1 \
+    --source lafan1 --bvh_format lafan1 --jobs 8
 ```
 
 ## FK 一致性检查

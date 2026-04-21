@@ -5,6 +5,7 @@ import os
 import shutil
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -38,7 +39,7 @@ from train_mimic.scripts.convert_pkl_to_npz import (
 from teleopit.retargeting.export_pkl import convert_bvh_to_retarget_pkl, mocap_xml_path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SPEC_PATH = PROJECT_ROOT / "train_mimic" / "configs" / "datasets" / "twist2_full.yaml"
+DEFAULT_SPEC_PATH = PROJECT_ROOT / "train_mimic" / "configs" / "datasets" / "twist2.yaml"
 DEFAULT_DATASETS_ROOT = PROJECT_ROOT / "data" / "datasets"
 DEFAULT_FK_SAMPLE_CLIPS = 2
 DEFAULT_FK_SAMPLE_FRAMES = 16
@@ -86,6 +87,7 @@ class DatasetSourceSpec:
     max_frames: int = 0
     metadata_csv: str | None = None
     filters: dict[str, list] | None = None
+    seed_filter_preset: str | None = None
 
 
 @dataclass(frozen=True)
@@ -148,6 +150,39 @@ class ConversionTask:
     preprocess: DatasetPreprocessSpec = field(default_factory=DatasetPreprocessSpec)
 
 
+@dataclass(frozen=True)
+class SeedFilterRule:
+    columns: tuple[str, ...]
+    patterns: tuple[str, ...]
+    label: str
+
+
+_SEED_FILTER_PRESETS: dict[str, tuple[SeedFilterRule, ...]] = {
+    "groot_strict": (
+        SeedFilterRule(
+            columns=("content_body_position",),
+            patterns=("sitting", "on all fours", "handstand"),
+            label="content_body_position",
+        ),
+        SeedFilterRule(
+            columns=("content_type_of_movement",),
+            patterns=("crawling", "on hands and knees", "rolling", "flipping", "climbing"),
+            label="content_type_of_movement",
+        ),
+        SeedFilterRule(
+            columns=("content_props",),
+            patterns=("chair", "crutch", "crutches", "ladder", "box", "table", "bike", "scooter", "bed"),
+            label="content_props",
+        ),
+        SeedFilterRule(
+            columns=("filename", "move_name"),
+            patterns=("safety_roll", "cartwheel", "box_jump", "monkey_jump", "walking_on_edge"),
+            label="filename_or_move_name",
+        ),
+    )
+}
+
+
 def _display_path(path: Path) -> str:
     try:
         return path.relative_to(PROJECT_ROOT).as_posix()
@@ -163,6 +198,34 @@ def _validate_source_type(raw_type: object, spec_path: Path, source_name: str) -
             f"Expected one of {sorted(SOURCE_TYPES)}."
         )
     return source_type
+
+
+def _validate_seed_filter_preset(
+    source_type: str,
+    seed_filter_preset: str | None,
+    metadata_csv: str | None,
+    *,
+    spec_path: Path,
+    source_name: str,
+) -> str | None:
+    if seed_filter_preset is None:
+        return None
+    if source_type != "seed_csv":
+        raise ValueError(
+            f"source {source_name!r} uses seed_filter_preset={seed_filter_preset!r}, "
+            "but seed_filter_preset is supported only for seed_csv sources"
+        )
+    if metadata_csv is None:
+        raise ValueError(
+            f"source {source_name!r} uses seed_filter_preset={seed_filter_preset!r} "
+            f"without metadata_csv: {spec_path}"
+        )
+    if seed_filter_preset not in _SEED_FILTER_PRESETS:
+        raise ValueError(
+            f"source {source_name!r} has unknown seed_filter_preset {seed_filter_preset!r} "
+            f"in {spec_path}. Expected one of {sorted(_SEED_FILTER_PRESETS)}."
+        )
+    return seed_filter_preset
 
 
 def _load_preprocess_spec(raw: object, spec_path: Path) -> DatasetPreprocessSpec:
@@ -266,6 +329,16 @@ def load_dataset_spec(path: str | Path) -> DatasetSpec:
         filters = raw.get("filters")
         if filters is not None and not isinstance(filters, dict):
             raise ValueError(f"source {source_name!r} filters must be a mapping: {spec_path}")
+        seed_filter_preset = raw.get("seed_filter_preset")
+        if seed_filter_preset is not None:
+            seed_filter_preset = str(seed_filter_preset).strip() or None
+        seed_filter_preset = _validate_seed_filter_preset(
+            source_type,
+            seed_filter_preset,
+            metadata_csv,
+            spec_path=spec_path,
+            source_name=source_name,
+        )
 
         sources.append(
             DatasetSourceSpec(
@@ -278,6 +351,7 @@ def load_dataset_spec(path: str | Path) -> DatasetSpec:
                 max_frames=max_frames,
                 metadata_csv=metadata_csv,
                 filters=filters,
+                seed_filter_preset=seed_filter_preset,
             )
         )
 
@@ -346,10 +420,24 @@ def _filter_seed_csv_by_metadata(
     source: DatasetSourceSpec,
     all_files: list[SourceInputFile],
     input_dir: Path,
-) -> list[SourceInputFile]:
+    *,
+    quiet: bool = False,
+) -> tuple[list[SourceInputFile], dict[str, Any]]:
     """Filter seed_csv files using metadata_csv + filters from the source spec."""
-    if source.metadata_csv is None or source.filters is None:
-        return all_files
+    report: dict[str, Any] = {
+        "source": source.name,
+        "type": source.type,
+        "metadata_csv": source.metadata_csv,
+        "seed_filter_preset": source.seed_filter_preset,
+        "scanned_files": len(all_files),
+        "metadata_rows_matched": len(all_files),
+        "preset_rejected_rows": 0,
+        "kept_files": len(all_files),
+        "filtered_files": 0,
+        "preset_reject_reasons": {},
+    }
+    if source.metadata_csv is None or (source.filters is None and source.seed_filter_preset is None):
+        return all_files, report
 
     meta_path = Path(source.metadata_csv).expanduser()
     if not meta_path.is_absolute():
@@ -360,24 +448,53 @@ def _filter_seed_csv_by_metadata(
     with meta_path.open("r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         fieldnames = reader.fieldnames or []
-        for col in source.filters:
-            if col not in fieldnames:
-                raise ValueError(
-                    f"filter column {col!r} not found in metadata CSV for {source.name}. "
-                    f"Available: {sorted(fieldnames)}"
-                )
+        if source.filters is not None:
+            for col in source.filters:
+                if col not in fieldnames:
+                    raise ValueError(
+                        f"filter column {col!r} not found in metadata CSV for {source.name}. "
+                        f"Available: {sorted(fieldnames)}"
+                    )
         if "move_g1_path" not in fieldnames:
             raise ValueError(f"metadata CSV missing move_g1_path column for {source.name}")
+        if source.seed_filter_preset is not None:
+            for rule in _SEED_FILTER_PRESETS[source.seed_filter_preset]:
+                for col in rule.columns:
+                    if col not in fieldnames:
+                        raise ValueError(
+                            f"seed_filter_preset column {col!r} not found in metadata CSV for "
+                            f"{source.name}. Available: {sorted(fieldnames)}"
+                        )
 
         # Normalize filter values to strings for comparison
         str_filters: dict[str, set[str]] = {}
-        for col, allowed_values in source.filters.items():
+        for col, allowed_values in (source.filters or {}).items():
             str_filters[col] = {str(v) for v in allowed_values}
 
         rows = []
         for row in reader:
             if all(row.get(col, "") in vals for col, vals in str_filters.items()):
                 rows.append(row)
+    report["metadata_csv"] = str(meta_path)
+    report["metadata_rows_matched"] = len(rows)
+
+    if source.seed_filter_preset is not None:
+        reject_counts: Counter[str] = Counter()
+        kept_rows = []
+        for row in rows:
+            reasons: list[str] = []
+            for rule in _SEED_FILTER_PRESETS[source.seed_filter_preset]:
+                for pattern in rule.patterns:
+                    if any(pattern in row.get(col, "").lower() for col in rule.columns):
+                        reasons.append(f"{rule.label}:{pattern}")
+                        break
+            if reasons:
+                reject_counts.update(reasons)
+                continue
+            kept_rows.append(row)
+        report["preset_rejected_rows"] = len(rows) - len(kept_rows)
+        report["preset_reject_reasons"] = dict(sorted(reject_counts.items()))
+        rows = kept_rows
 
     # Build set of allowed relative paths (without .csv suffix)
     allowed_rels: set[str] = set()
@@ -395,14 +512,27 @@ def _filter_seed_csv_by_metadata(
             allowed_rels.add(Path(g1_path).stem)
 
     filtered = [f for f in all_files if f.rel_no_suffix.as_posix() in allowed_rels]
-    print(
-        f"[FILTER] source={source.name}: {len(filtered)}/{len(all_files)} files "
-        f"after metadata filtering"
-    )
-    return filtered
+    report["kept_files"] = len(filtered)
+    report["filtered_files"] = len(all_files) - len(filtered)
+    if not quiet:
+        print(
+            f"[FILTER] source={source.name}: {len(filtered)}/{len(all_files)} files "
+            f"after metadata filtering"
+        )
+        if source.seed_filter_preset is not None and report["preset_rejected_rows"] > 0:
+            print(
+                f"[FILTER] source={source.name}: preset={source.seed_filter_preset} "
+                f"rejected={report['preset_rejected_rows']} "
+                f"reasons={report['preset_reject_reasons']}"
+            )
+    return filtered, report
 
 
-def _collect_source_files(source: DatasetSourceSpec) -> tuple[list[SourceInputFile], Path]:
+def _collect_source_files_with_report(
+    source: DatasetSourceSpec,
+    *,
+    quiet: bool = False,
+) -> tuple[list[SourceInputFile], Path, dict[str, Any]]:
     input_path = resolve_source_input_path(source)
     _ensure_not_dataset_root_npz_input(source, input_path)
     suffix = _SOURCE_SUFFIXES[source.type]
@@ -412,7 +542,20 @@ def _collect_source_files(source: DatasetSourceSpec) -> tuple[list[SourceInputFi
             raise ValueError(
                 f"source {source.name} expected {suffix} input, got file {input_path.name}"
             )
-        return [SourceInputFile(path=input_path, rel_no_suffix=Path(input_path.stem))], input_path.parent
+        items = [SourceInputFile(path=input_path, rel_no_suffix=Path(input_path.stem))]
+        report: dict[str, Any] = {
+            "source": source.name,
+            "type": source.type,
+            "metadata_csv": source.metadata_csv,
+            "seed_filter_preset": source.seed_filter_preset,
+            "scanned_files": len(items),
+            "metadata_rows_matched": len(items),
+            "preset_rejected_rows": 0,
+            "kept_files": len(items),
+            "filtered_files": 0,
+            "preset_reject_reasons": {},
+        }
+        return items, input_path.parent, report
 
     if not input_path.is_dir():
         raise FileNotFoundError(f"source input is neither file nor directory: {input_path}")
@@ -430,14 +573,32 @@ def _collect_source_files(source: DatasetSourceSpec) -> tuple[list[SourceInputFi
         for path in files
     ]
 
+    report: dict[str, Any] = {
+        "source": source.name,
+        "type": source.type,
+        "metadata_csv": source.metadata_csv,
+        "seed_filter_preset": source.seed_filter_preset,
+        "scanned_files": len(items),
+        "metadata_rows_matched": len(items),
+        "preset_rejected_rows": 0,
+        "kept_files": len(items),
+        "filtered_files": 0,
+        "preset_reject_reasons": {},
+    }
+
     # Apply metadata filtering for seed_csv sources
     if source.type == "seed_csv" and source.metadata_csv is not None:
-        items = _filter_seed_csv_by_metadata(source, items, input_path)
+        items, report = _filter_seed_csv_by_metadata(source, items, input_path, quiet=quiet)
         if not items:
             raise ValueError(
                 f"no files remain after metadata filtering for source {source.name}: {input_path}"
             )
 
+    return items, input_path, report
+
+
+def _collect_source_files(source: DatasetSourceSpec) -> tuple[list[SourceInputFile], Path]:
+    items, input_path, _report = _collect_source_files_with_report(source, quiet=False)
     return items, input_path
 
 
@@ -486,6 +647,14 @@ def _source_has_cached_npz(out_dir: Path) -> bool:
 
 def _pending_tasks(tasks: list[ConversionTask]) -> list[ConversionTask]:
     return [task for task in tasks if not Path(task.output_path).is_file()]
+
+
+def _build_source_filter_reports(spec: DatasetSpec) -> list[dict[str, Any]]:
+    reports: list[dict[str, Any]] = []
+    for source in spec.sources:
+        _, _, report = _collect_source_files_with_report(source, quiet=True)
+        reports.append(report)
+    return reports
 
 
 def _get_fk_extractor() -> MotionFkExtractor:
@@ -1132,8 +1301,10 @@ def _build_dataset_batch(
 
     # 1. Enumerate all source files and pre-compute splits
     clip_entries: list[tuple[str, str, str, float, str]] = []
+    source_filter_reports: list[dict[str, Any]] = []
     for source in spec.sources:
-        items, _ = _collect_source_files(source)
+        items, _, filter_report = _collect_source_files_with_report(source, quiet=False)
+        source_filter_reports.append(filter_report)
         for item in items:
             clip_id = f"{source.name}:{item.rel_no_suffix.as_posix()}"
             split = hash_split(clip_id, spec.val_percent, spec.hash_salt)
@@ -1249,6 +1420,7 @@ def _build_dataset_batch(
         "jobs": int(jobs),
         "preprocess": spec.preprocess.to_dict(),
         "sources": [asdict(source) for source in spec.sources],
+        "source_filters": source_filter_reports,
         "splits": {
             "train": train_stats,
             "val": val_stats,
@@ -1293,6 +1465,7 @@ def build_dataset_from_spec(
         )
 
     # Legacy per-file mode for bvh/npz sources
+    source_filter_reports = _build_source_filter_reports(spec)
     convert_sources_to_npz(spec, paths=paths, force=force, jobs=jobs)
     rows = collect_clip_rows(spec, paths=paths)
 
@@ -1385,6 +1558,7 @@ def build_dataset_from_spec(
         "jobs": int(jobs),
         "preprocess": spec.preprocess.to_dict(),
         "sources": [asdict(source) for source in spec.sources],
+        "source_filters": source_filter_reports,
         "splits": {
             "train": train_stats,
             "val": val_stats,

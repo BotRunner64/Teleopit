@@ -4,24 +4,24 @@
 Usage:
     python train_mimic/scripts/train.py \
         --num_envs 4096 --max_iterations 18000 \
-        --motion_file data/datasets/twist2_full/train
+        --motion_file data/datasets/twist2/train
 
     # Quick verification
     python train_mimic/scripts/train.py \
         --num_envs 64 --max_iterations 100 \
-        --motion_file data/datasets/twist2_full/train
+        --motion_file data/datasets/twist2/train
 
     # With wandb logging
     python train_mimic/scripts/train.py \
         --num_envs 4096 --max_iterations 30000 \
-        --motion_file data/datasets/twist2_full/train \
+        --motion_file data/datasets/twist2/train \
         --wandb_project teleopit
 
     # Resume for additional iterations
     python train_mimic/scripts/train.py \
         --resume logs/rsl_rl/g1_general_tracking/<run>/model_12000.pt \
         --max_iterations 18000 \
-        --motion_file data/datasets/twist2_full/train
+        --motion_file data/datasets/twist2/train
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-name: twist2_full
+name: twist2
 target_fps: 30
 val_percent: 5
 hash_salt: ""

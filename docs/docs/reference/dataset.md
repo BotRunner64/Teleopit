@@ -26,7 +26,7 @@ Data pipeline: `typed source YAML -> preprocess/filter -> shard-only training da
 
 ```bash
 python train_mimic/scripts/data/build_dataset.py \
-    --spec train_mimic/configs/datasets/twist2_full.yaml
+    --spec train_mimic/configs/datasets/twist2.yaml
 ```
 
 ## Output Structure
@@ -48,10 +48,10 @@ data/datasets/<dataset>/
 
 ## YAML Spec Format
 
-Example (`train_mimic/configs/datasets/twist2_full.yaml`):
+Example (`train_mimic/configs/datasets/twist2.yaml`):
 
 ```yaml
-name: twist2_full
+name: twist2
 target_fps: 30
 val_percent: 5
 hash_salt: ""
@@ -62,7 +62,7 @@ sources:
   - name: OMOMO_g1_GMR
     type: pkl
     input: data/twist2_retarget_pkl/OMOMO_g1_GMR
-  - name: lafan1_v1
+  - name: lafan1
     type: bvh
     input: data/lafan1_bvh
     bvh_format: lafan1
@@ -105,20 +105,20 @@ Each shard contains: `clip_starts`, `clip_lengths`, `clip_fps`, `clip_weights`.
 ```bash
 # Force rebuild
 python train_mimic/scripts/data/build_dataset.py \
-    --spec train_mimic/configs/datasets/twist2_full.yaml --force
+    --spec train_mimic/configs/datasets/twist2.yaml --force
 
 # Parallel processing
 python train_mimic/scripts/data/build_dataset.py \
-    --spec train_mimic/configs/datasets/twist2_full.yaml --jobs 8
+    --spec train_mimic/configs/datasets/twist2.yaml --jobs 8
 
 # Custom output root
 python train_mimic/scripts/data/build_dataset.py \
-    --spec train_mimic/configs/datasets/twist2_full.yaml \
+    --spec train_mimic/configs/datasets/twist2.yaml \
     --output_root /tmp/my_datasets
 
 # Print build report
 python train_mimic/scripts/data/build_dataset.py \
-    --spec train_mimic/configs/datasets/twist2_full.yaml --json
+    --spec train_mimic/configs/datasets/twist2.yaml --json
 ```
 
 ## Batch Ingest to NPZ Clips
@@ -128,8 +128,8 @@ Convert raw data to standard NPZ clips without merging:
 ```bash
 python train_mimic/scripts/data/ingest_motion.py \
     --type bvh --input data/lafan1_bvh \
-    --output data/datasets/lafan1_v1/clips/lafan1_v1 \
-    --source lafan1_v1 --bvh_format lafan1 --jobs 8
+    --output data/datasets/lafan1/clips/lafan1 \
+    --source lafan1 --bvh_format lafan1 --jobs 8
 ```
 
 ## Check Clip FK Consistency

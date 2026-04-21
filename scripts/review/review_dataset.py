@@ -6,8 +6,8 @@ GUI controls for annotation (keep/drop/skip, difficulty, notes).
 
 Usage:
     python scripts/review/review_dataset.py \
-        --dataset lafan1_v1 \
-        --review data/datasets/review/lafan1_v1/review_state.csv
+        --dataset lafan1 \
+        --review data/datasets/review/lafan1/review_state.csv
 """
 
 from __future__ import annotations

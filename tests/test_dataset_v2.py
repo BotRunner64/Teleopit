@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import pickle
 from pathlib import Path
 
@@ -146,6 +147,77 @@ sources:
     assert spec.preprocess.min_frames == 10
 
 
+def test_load_dataset_spec_parses_seed_filter_preset(tmp_path: Path) -> None:
+    metadata_csv = tmp_path / "seed_metadata.csv"
+    metadata_csv.write_text("move_g1_path,is_mirror\n", encoding="utf-8")
+    spec_path = tmp_path / "seed.yaml"
+    spec_path.write_text(
+        f"""name: seed_demo
+target_fps: 30
+val_percent: 5
+hash_salt: ""
+sources:
+  - name: seed
+    type: seed_csv
+    input: {tmp_path / 'seed_source'}
+    metadata_csv: {metadata_csv}
+    seed_filter_preset: groot_strict
+    filters:
+      is_mirror: [false]
+""",
+        encoding="utf-8",
+    )
+
+    spec = load_dataset_spec(spec_path)
+    assert spec.sources[0].seed_filter_preset == "groot_strict"
+
+
+def test_load_dataset_spec_rejects_seed_filter_preset_on_non_seed_source(tmp_path: Path) -> None:
+    metadata_csv = tmp_path / "seed_metadata.csv"
+    metadata_csv.write_text("move_g1_path,is_mirror\n", encoding="utf-8")
+    spec_path = tmp_path / "bad_seed_preset.yaml"
+    spec_path.write_text(
+        f"""name: demo
+target_fps: 30
+val_percent: 5
+hash_salt: ""
+sources:
+  - name: clips
+    type: npz
+    input: {tmp_path / 'npz_source'}
+    metadata_csv: {metadata_csv}
+    seed_filter_preset: groot_strict
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="supported only for seed_csv sources"):
+        load_dataset_spec(spec_path)
+
+
+def test_load_dataset_spec_rejects_unknown_seed_filter_preset(tmp_path: Path) -> None:
+    metadata_csv = tmp_path / "seed_metadata.csv"
+    metadata_csv.write_text("move_g1_path,is_mirror\n", encoding="utf-8")
+    spec_path = tmp_path / "bad_seed_preset.yaml"
+    spec_path.write_text(
+        f"""name: demo
+target_fps: 30
+val_percent: 5
+hash_salt: ""
+sources:
+  - name: seed
+    type: seed_csv
+    input: {tmp_path / 'seed_source'}
+    metadata_csv: {metadata_csv}
+    seed_filter_preset: unknown_preset
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unknown seed_filter_preset"):
+        load_dataset_spec(spec_path)
+
+
 def test_load_dataset_spec_rejects_bvh_without_format(tmp_path: Path) -> None:
     spec_path = tmp_path / "bad.yaml"
     spec_path.write_text(
@@ -271,6 +343,89 @@ def test_convert_source_to_npz_clips_rejects_dataset_root_for_npz_source(tmp_pat
     source = DatasetSourceSpec(name="npz_src", type="npz", input=str(dataset_root))
     with pytest.raises(ValueError, match="points at dataset root"):
         convert_source_to_npz_clips(source, tmp_path / "dataset" / "clips" / "npz_src", jobs=1)
+
+
+def test_collect_source_files_with_report_applies_seed_filter_preset(tmp_path: Path) -> None:
+    metadata_csv = tmp_path / "seed_metadata.csv"
+    with metadata_csv.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "move_g1_path",
+                "is_mirror",
+                "content_body_position",
+                "content_type_of_movement",
+                "content_props",
+                "filename",
+                "move_name",
+            ],
+        )
+        writer.writeheader()
+        writer.writerow(
+            {
+                "move_g1_path": "g1/csv/240101/walk_forward.csv",
+                "is_mirror": "False",
+                "content_body_position": "standing",
+                "content_type_of_movement": "walking",
+                "content_props": "0",
+                "filename": "walk_forward",
+                "move_name": "walk_forward",
+            }
+        )
+        writer.writerow(
+            {
+                "move_g1_path": "g1/csv/240101/sit_pose.csv",
+                "is_mirror": "False",
+                "content_body_position": "sitting",
+                "content_type_of_movement": "sitting",
+                "content_props": "chair",
+                "filename": "sit_pose",
+                "move_name": "sit_pose",
+            }
+        )
+
+    source = DatasetSourceSpec(
+        name="seed",
+        type="seed_csv",
+        input=str(tmp_path / "seed_source" / "g1" / "csv"),
+        metadata_csv=str(metadata_csv),
+        filters={"is_mirror": [False]},
+        seed_filter_preset="groot_strict",
+    )
+
+    input_root = tmp_path / "seed_source" / "g1" / "csv"
+    input_root.mkdir(parents=True, exist_ok=True)
+    (input_root / "240101").mkdir(parents=True, exist_ok=True)
+    (input_root / "240101" / "walk_forward.csv").write_text("placeholder", encoding="utf-8")
+    (input_root / "240101" / "sit_pose.csv").write_text("placeholder", encoding="utf-8")
+
+    items, _scan_root, report = dataset_builder._collect_source_files_with_report(source, quiet=True)
+
+    assert [item.rel_no_suffix.as_posix() for item in items] == ["240101/walk_forward"]
+    assert report["scanned_files"] == 2
+    assert report["metadata_rows_matched"] == 2
+    assert report["preset_rejected_rows"] == 1
+    assert report["kept_files"] == 1
+    assert report["filtered_files"] == 1
+    assert report["preset_reject_reasons"]["content_body_position:sitting"] == 1
+
+
+def test_collect_source_files_with_report_handles_single_file_source(tmp_path: Path) -> None:
+    npz_path = tmp_path / "clip_a.npz"
+    _write_npz_from_pkl(npz_path)
+    source = DatasetSourceSpec(name="clip", type="npz", input=str(npz_path))
+
+    items, scan_root, report = dataset_builder._collect_source_files_with_report(
+        source, quiet=True
+    )
+    legacy_items, legacy_scan_root = dataset_builder._collect_source_files(source)
+
+    assert scan_root == tmp_path
+    assert [item.rel_no_suffix.as_posix() for item in items] == ["clip_a"]
+    assert report["scanned_files"] == 1
+    assert report["kept_files"] == 1
+    assert legacy_scan_root == scan_root
+    assert [item.rel_no_suffix.as_posix() for item in legacy_items] == ["clip_a"]
 
 
 def test_build_dataset_from_spec_writes_shard_directories(tmp_path: Path) -> None:
@@ -506,12 +661,24 @@ def test_build_dataset_batch_manifest_skips_filtered_entries(
     )
     dataset_dir = tmp_path / "datasets" / spec.name
 
-    def _collect(_source):
+    def _collect_with_report(_source, *, quiet=False):
+        _ = quiet
         return ([
             SourceInputFile(path=keep_train, rel_no_suffix=Path("keep_train")),
             SourceInputFile(path=drop_train, rel_no_suffix=Path("drop_train")),
             SourceInputFile(path=keep_val, rel_no_suffix=Path("keep_val")),
-        ], source_dir)
+        ], source_dir, {
+            "source": "seed",
+            "type": "seed_csv",
+            "metadata_csv": None,
+            "seed_filter_preset": "groot_strict",
+            "scanned_files": 3,
+            "metadata_rows_matched": 3,
+            "preset_rejected_rows": 1,
+            "kept_files": 2,
+            "filtered_files": 1,
+            "preset_reject_reasons": {"content_body_position:sitting": 1},
+        })
 
     def _hash_split(clip_id: str, _val_percent: int, _salt: str = "") -> str:
         return "val" if clip_id.endswith("keep_val") else "train"
@@ -582,7 +749,7 @@ def test_build_dataset_batch_manifest_skips_filtered_entries(
             "kept_file_paths": [str(keep_val)],
         }])
 
-    monkeypatch.setattr(dataset_builder, "_collect_source_files", _collect)
+    monkeypatch.setattr(dataset_builder, "_collect_source_files_with_report", _collect_with_report)
     monkeypatch.setattr(dataset_builder, "hash_split", _hash_split)
     monkeypatch.setattr(dataset_builder, "_batch_convert_split", _batch_convert_split)
 
@@ -601,3 +768,5 @@ def test_build_dataset_batch_manifest_skips_filtered_entries(
     assert "seed:drop_train" not in manifest
     assert report["clip_counts"] == {"total": 2, "train": 1, "val": 1}
     assert report["input_clip_counts"] == {"total": 3, "train": 2, "val": 1}
+    assert report["source_filters"][0]["seed_filter_preset"] == "groot_strict"
+    assert report["source_filters"][0]["preset_reject_reasons"] == {"content_body_position:sitting": 1}

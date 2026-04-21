@@ -3,8 +3,8 @@
 
 Usage:
     python scripts/data/init_review_manifest.py \
-        --dataset twist2_full \
-        --manifest data/datasets/builds/twist2_full/manifest_resolved.csv
+        --dataset twist2 \
+        --manifest data/datasets/builds/twist2/manifest_resolved.csv
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from train_mimic.data.review_lib import ReviewRow, save_review_state
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Initialize review state from manifest")
-    parser.add_argument("--dataset", type=str, required=True, help="Dataset name, e.g. twist2_full")
+    parser.add_argument("--dataset", type=str, required=True, help="Dataset name, e.g. twist2")
     parser.add_argument(
         "--manifest", type=str, required=True, help="Path to manifest_resolved.csv"
     )

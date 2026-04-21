@@ -100,3 +100,4 @@ data/modelscope_upload/
 
 # Codex local workspace state
 .codex
+.omx/

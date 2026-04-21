@@ -229,7 +229,7 @@ def test_build_dataset_from_review_resamples_mixed_fps_and_preserves_weights(
             ]
         )
 
-    output_dir = tmp_path / "twist2_full_cleaned"
+    output_dir = tmp_path / "twist2_cleaned"
     monkeypatch.setattr(
         sys,
         "argv",
