@@ -1,4 +1,4 @@
-name: seed
+name: seed_clean
 target_fps: 30
 val_percent: 5
 hash_salt: ""
@@ -11,6 +11,7 @@ sources:
     type: seed_csv
     input: data/SEED/g1/csv
     metadata_csv: data/SEED/seed_metadata_v003.csv
+    seed_filter_preset: groot_strict
     weight: 1.0
     filters:
       is_mirror: [false]
