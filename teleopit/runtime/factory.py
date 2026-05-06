@@ -190,13 +190,15 @@ def _prepare_input_cfg(input_cfg: Any, project_root: Path, *, sim2real: bool) ->
         )
     elif provider_kind == "zmq_pico4":
         pass  # no path normalization needed
+    elif provider_kind == "udp_bvh":
+        pass  # skeleton resolved automatically from bvh_format
     elif provider_kind != "pico4":
         raise ValueError(
             f"Unsupported input.provider='{provider_kind}'. "
-            "Supported providers are bvh, pico4, zmq_pico4."
+            "Supported providers are bvh, pico4, zmq_pico4, udp_bvh."
         )
 
-    if sim2real and provider_kind not in ("bvh", "pico4", "zmq_pico4"):
+    if sim2real and provider_kind not in ("bvh", "pico4", "zmq_pico4", "udp_bvh"):
         raise ValueError(
             f"Sim2real only supports bvh, pico4, or zmq_pico4 input providers; got '{provider_kind}'."
         )
@@ -211,6 +213,17 @@ def _build_input_provider(
     bvh_input_cls: type[Any],
     pico4_input_cls: type[Any],
 ) -> Any:
+    if provider_kind == "udp_bvh":
+        from teleopit.inputs.udp_bvh_provider import UDPBVHInputProvider
+
+        return UDPBVHInputProvider(
+            bvh_format=str(cfg_get(input_cfg, "bvh_format", "hc_mocap")),
+            human_height=float(cfg_get(input_cfg, "human_height", 1.75)),
+            udp_host=str(cfg_get(input_cfg, "udp_host", "")),
+            udp_port=int(cfg_get(input_cfg, "udp_port", 1118)),
+            udp_timeout=float(cfg_get(input_cfg, "udp_timeout", 30.0)),
+        )
+
     if provider_kind == "zmq_pico4":
         from teleopit.inputs.zmq_provider import ZMQInputProvider
 
@@ -260,12 +273,28 @@ def _resolve_human_format(input_cfg: Any, input_provider: Any) -> str:
     return f"bvh_{cfg_get(input_cfg, 'bvh_format', 'lafan1')}"
 
 
+def _resolve_actual_human_height(input_cfg: Any, input_provider: Any) -> float:
+    del input_provider
+    configured_height = cfg_get(input_cfg, "human_height", None)
+    if configured_height not in (None, "", "null"):
+        actual_human_height = float(configured_height)
+    else:
+        actual_human_height = 1.75
+
+    if actual_human_height <= 0.0:
+        raise ValueError(
+            f"Resolved human height must be > 0, got {actual_human_height}. "
+            "Set input.human_height or provide a valid input provider human_height."
+        )
+    return actual_human_height
+
+
 
 def _build_retargeter(input_cfg: Any, input_provider: Any, retargeter_cls: type[Any]) -> Any:
     return retargeter_cls(
         robot_name=str(cfg_get(input_cfg, "robot_name", "unitree_g1")),
         human_format=_resolve_human_format(input_cfg, input_provider),
-        actual_human_height=float(cfg_get(input_cfg, "human_height", 1.75)),
+        actual_human_height=_resolve_actual_human_height(input_cfg, input_provider),
     )
 
 
