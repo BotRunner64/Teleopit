@@ -89,6 +89,9 @@ class DummyRetargeter:
     def retarget(self, _frame: object) -> np.ndarray:
         return self._qpos.copy()
 
+    def reset(self) -> None:
+        pass
+
 
 class DummyPolicy:
     def __init__(self, expected_obs_dim: int = 166) -> None:
@@ -281,8 +284,8 @@ def test_mocap_step_episode_reset_on_transition(monkeypatch) -> None:
     ctrl = Sim2RealController(_make_cfg(transition_duration=2.0))
     ctrl._transition_to_mocap()
     monkeypatch.setattr(
-        ctrl,
-        "_compute_anchor_velocities",
+        ctrl._ref_proc,
+        "compute_anchor_velocities",
         lambda _qpos: (
             np.array([1.0, 2.0, 3.0], dtype=np.float32),
             np.array([4.0, 5.0, 6.0], dtype=np.float32),
@@ -312,8 +315,8 @@ def test_mocap_step_velcmd_applies_fixed_initial_yaw_alignment(monkeypatch) -> N
     ctrl = Sim2RealController(_make_cfg(transition_duration=0.0))
     ctrl.robot._state.quat = np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32)
     monkeypatch.setattr(
-        ctrl,
-        "_compute_anchor_velocities",
+        ctrl._ref_proc,
+        "compute_anchor_velocities",
         lambda _qpos: (
             np.zeros(3, dtype=np.float32),
             np.zeros(3, dtype=np.float32),
@@ -340,8 +343,8 @@ def test_mocap_step_velcmd_keeps_fixed_yaw_after_start(monkeypatch) -> None:
 
     ctrl = Sim2RealController(_make_cfg(transition_duration=0.0))
     monkeypatch.setattr(
-        ctrl,
-        "_compute_anchor_velocities",
+        ctrl._ref_proc,
+        "compute_anchor_velocities",
         lambda _qpos: (
             np.zeros(3, dtype=np.float32),
             np.zeros(3, dtype=np.float32),
@@ -374,8 +377,8 @@ def test_mocap_step_velcmd_can_disable_fixed_yaw_alignment(monkeypatch) -> None:
     ctrl = Sim2RealController(cfg)
     ctrl.robot._state.quat = np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32)
     monkeypatch.setattr(
-        ctrl,
-        "_compute_anchor_velocities",
+        ctrl._ref_proc,
+        "compute_anchor_velocities",
         lambda _qpos: (
             np.zeros(3, dtype=np.float32),
             np.zeros(3, dtype=np.float32),
@@ -404,8 +407,8 @@ def test_mocap_step_waits_for_realtime_warmup_before_running_policy(monkeypatch)
     cfg['realtime_buffer_warmup_steps'] = 2
     ctrl = Sim2RealController(cfg)
     monkeypatch.setattr(
-        ctrl,
-        '_compute_anchor_velocities',
+        ctrl._ref_proc,
+        'compute_anchor_velocities',
         lambda _qpos: (
             np.zeros(3, dtype=np.float32),
             np.zeros(3, dtype=np.float32),
@@ -441,8 +444,8 @@ def test_sim2real_allows_future_reference_steps_without_explicit_high_watermark(
 
     ctrl = Sim2RealController(cfg)
 
-    assert ctrl._realtime_buffer_low_watermark_steps == 0
-    assert ctrl._realtime_buffer_high_watermark_steps is None
+    assert ctrl._ref_cfg.realtime_buffer_low_watermark_steps == 0
+    assert ctrl._ref_cfg.realtime_buffer_high_watermark_steps is None
 
 
 def test_mocap_step_reference_qpos_smoothing_filters_motion_change(monkeypatch) -> None:
@@ -460,8 +463,8 @@ def test_mocap_step_reference_qpos_smoothing_filters_motion_change(monkeypatch) 
     cfg["reference_qpos_smoothing_alpha"] = 0.5
     ctrl = Sim2RealController(cfg)
     monkeypatch.setattr(
-        ctrl,
-        "_compute_anchor_velocities",
+        ctrl._ref_proc,
+        "compute_anchor_velocities",
         lambda _qpos: (
             np.zeros(3, dtype=np.float32),
             np.zeros(3, dtype=np.float32),
@@ -493,8 +496,8 @@ def test_mocap_pause_freezes_reference_and_zeroes_velocities(monkeypatch) -> Non
     cfg["velcmd_fixed_ref_yaw_alignment"] = False
     ctrl = Sim2RealController(cfg)
     monkeypatch.setattr(
-        ctrl,
-        "_compute_anchor_velocities",
+        ctrl._ref_proc,
+        "compute_anchor_velocities",
         lambda _qpos: (
             np.zeros(3, dtype=np.float32),
             np.zeros(3, dtype=np.float32),
@@ -547,8 +550,8 @@ def test_mocap_resume_uses_episode_reset_semantics(monkeypatch) -> None:
     cfg["pause_resume_warmup_steps"] = 0
     ctrl = Sim2RealController(cfg)
     monkeypatch.setattr(
-        ctrl,
-        "_compute_anchor_velocities",
+        ctrl._ref_proc,
+        "compute_anchor_velocities",
         lambda _qpos: (
             np.zeros(3, dtype=np.float32),
             np.zeros(3, dtype=np.float32),

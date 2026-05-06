@@ -224,6 +224,18 @@ class Pico4InputProvider(RealtimeInputProvider):
             control_events=control_events,
         )
 
+    def pop_control_events(self) -> tuple[ControlEvent, ...]:
+        """Return pending control events without blocking on frame availability."""
+        with self._lock:
+            control_events = tuple(self._pending_control_events)
+            self._pending_control_events.clear()
+        return control_events
+
+    def has_frame(self) -> bool:
+        """Whether at least one realtime frame is cached locally."""
+        with self._lock:
+            return len(self._frame_cache) > 0
+
     def sample_frame(self, query_time_s: float, delay_s: float) -> HumanFrame:
         """Sample a delayed interpolated realtime frame from the polling buffer."""
         if not self._frame_ready.wait(timeout=self._timeout):

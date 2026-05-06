@@ -11,6 +11,7 @@ import time
 import numpy as np
 from numpy.typing import NDArray
 
+from teleopit.interfaces import SupportsReferenceWindow
 from teleopit.sim.reference_motion import OfflineReferenceMotion
 from teleopit.sim.reference_timeline import ReferenceSample, ReferenceWindow, ReferenceWindowBuilder
 
@@ -19,9 +20,7 @@ Float64Array = NDArray[np.float64]
 
 def obs_builder_requires_reference_window(obs_builder: object) -> bool:
     """Return True if *obs_builder* consumes a reference window."""
-    return bool(getattr(obs_builder, "requires_reference_window", False)) or callable(
-        getattr(obs_builder, "build_with_reference_window", None)
-    )
+    return isinstance(obs_builder, SupportsReferenceWindow)
 
 
 def sample_offline_reference_at(

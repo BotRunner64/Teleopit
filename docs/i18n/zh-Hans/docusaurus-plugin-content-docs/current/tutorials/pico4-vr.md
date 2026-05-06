@@ -80,9 +80,20 @@ python scripts/run/run_sim.py \
 - PC Service 正在运行
 - 两台设备处于同一网络
 
+### 键盘模式流程
+
+在 `teleopit/configs/pico4_sim.yaml` 中，实时键盘模式默认开启：
+
+- 按 **Y** 进入 `MOCAP`
+- 按 **A** 暂停/恢复实时动捕
+- 按 **X** 返回 `STANDING`
+- 按 **Q** 退出仿真循环
+
+循环会直接进入 `STANDING`，等追踪准备好后按 **Y** 即可进入 `MOCAP`。
+
 ### 暂停与恢复
 
-- 按手柄 **A** 键冻结追踪
+- 按键盘 **A** 或 Pico 手柄 **A** 键冻结追踪
 - 再次按 **A** 键清除实时参考缓冲区，平滑恢复实时动捕
 
 ## 第四步：真机部署（Pico sim2real）
@@ -123,6 +134,9 @@ input.pico4_timeout=30
 
 # 调整暂停/恢复过渡时长
 pause_resume_transition_duration=1.0
+
+# 关闭实时键盘模式状态机
+keyboard.enabled=false
 
 # 修改策略推理频率
 policy_hz=30

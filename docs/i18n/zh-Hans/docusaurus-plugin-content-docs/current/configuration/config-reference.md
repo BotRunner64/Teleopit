@@ -16,6 +16,7 @@ sidebar_position: 2
 | `realtime` | bool | `false` | 是否启用实时模式（实机部署时需开启） |
 | `num_steps` | int | — | 仿真总步数；设为 `-1` 表示无限运行 |
 | `transition_duration` | float | — | 从静止姿态过渡到策略控制的时长（秒） |
+| `keyboard.enabled` | bool | `false` | 是否启用 sim2sim 实时键盘模式控制 |
 | `playback.pause_on_end` | bool | `false` | 回放结束后是否暂停（而非退出） |
 | `playback.keyboard.enabled` | bool | `false` | 是否启用键盘控制回放进度 |
 

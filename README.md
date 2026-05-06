@@ -53,7 +53,7 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 
 ### v0.2.0 (2026-04-03)
 
-Onboard Sim2Real (G1 NX + ZMQ Pico4), G1 Bridge SDK (C++ DDS), simplified offline playback with keyboard controls, standalone standing controller, realtime mocap catch-up; model upgraded to 30k checkpoint.
+Onboard Sim2Real (G1 NX + ZMQ Pico4), G1 Bridge SDK (C++ DDS), simplified offline playback with keyboard controls, Pico sim2sim keyboard mode state machine, standalone standing controller, realtime mocap catch-up; model upgraded to 30k checkpoint.
 
 ### v0.1.1 (2025-03-28)
 

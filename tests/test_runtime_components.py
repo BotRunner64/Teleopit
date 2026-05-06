@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from types import SimpleNamespace
 
 import numpy as np
@@ -7,6 +8,19 @@ import numpy as np
 from teleopit.controllers.observation import VelCmdObservationBuilder
 from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.sim.runtime_components import PolicyStepRunner
+
+
+def test_runtime_package_reexports_public_helpers() -> None:
+    from teleopit.runtime import build_inference_components, cfg_get, validate_policy_path
+
+    assert callable(build_inference_components)
+    assert callable(cfg_get)
+    assert callable(validate_policy_path)
+
+
+def test_observation_module_imports_without_runtime_cycle() -> None:
+    module = importlib.import_module("teleopit.controllers.observation")
+    assert hasattr(module, "VelCmdObservationBuilder")
 
 
 def _make_runner(
