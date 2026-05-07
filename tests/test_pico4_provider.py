@@ -113,6 +113,17 @@ def test_pico4_provider_starts_pico_bridge_receiver_with_config() -> None:
     assert bridge.closed is True
 
 
+def test_pico4_provider_normalizes_pico_bridge_body_pose_convention() -> None:
+    body_poses = _body_poses(0.0)
+    body_poses[0] = [1.0, 2.0, 3.0, 0.1, 0.2, 0.3, 0.9]
+
+    converted = Pico4InputProvider._normalize_pico_bridge_body_joints(body_poses)
+    np.testing.assert_allclose(converted[0], [1.0, 2.0, -3.0, 0.1, 0.2, -0.3, -0.9])
+
+    frame = Pico4InputProvider._convert_body_joints_to_frame(body_poses)
+    np.testing.assert_allclose(frame["Pelvis"][0], [1.0, 3.0, 2.0], atol=1e-6)
+
+
 def test_pico4_provider_drops_duplicate_raw_body_pose() -> None:
     provider = _make_provider()
     body_poses = _body_poses(1.0)

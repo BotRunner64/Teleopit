@@ -10,9 +10,13 @@ from teleopit.runtime.common import parse_viewers
 from teleopit.sim.mocap_mujoco import (
     MocapSkeletonSceneDrawer,
     configure_mocap_camera,
+    compute_ground_lift_offset,
     fit_mocap_camera,
     create_mocap_viewer_model,
     frame_positions_from_human_frame,
+    has_non_degenerate_mocap_positions,
+    resolve_mocap_ground_lift_offset,
+    lift_positions_above_ground,
 )
 
 
@@ -37,6 +41,41 @@ def test_frame_positions_from_human_frame_preserves_bone_order() -> None:
             dtype=np.float64,
         ),
     )
+
+
+def test_mocap_ground_lift_waits_for_real_frame() -> None:
+    zero_frame = np.zeros((4, 3), dtype=np.float64)
+    actual_frame = np.array(
+        [
+            [0.0, 0.0, -1.2],
+            [0.2, 0.0, -0.8],
+            [0.4, 0.1, -0.5],
+            [0.6, 0.0, -0.2],
+        ],
+        dtype=np.float64,
+    )
+
+    assert not has_non_degenerate_mocap_positions(zero_frame)
+    assert resolve_mocap_ground_lift_offset(zero_frame, None) is None
+
+    assert has_non_degenerate_mocap_positions(actual_frame)
+    offset = resolve_mocap_ground_lift_offset(actual_frame, None)
+    assert offset == pytest.approx(1.2)
+    np.testing.assert_allclose(
+        lift_positions_above_ground(actual_frame, lift_offset=offset),
+        np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.2, 0.0, 0.4],
+                [0.4, 0.1, 0.7],
+                [0.6, 0.0, 1.0],
+            ],
+            dtype=np.float64,
+        ),
+    )
+
+    assert resolve_mocap_ground_lift_offset(actual_frame, offset) == offset
+    assert compute_ground_lift_offset(actual_frame) == pytest.approx(1.2)
 
 
 @requires_mujoco

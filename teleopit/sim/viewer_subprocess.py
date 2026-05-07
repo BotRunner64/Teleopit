@@ -118,10 +118,10 @@ def mocap_viewer_proc(
 
     from teleopit.sim.mocap_mujoco import (
         MocapSkeletonSceneDrawer,
-        compute_ground_lift_offset,
         create_mocap_viewer_model,
         fit_mocap_camera,
         lift_positions_above_ground,
+        resolve_mocap_ground_lift_offset,
     )
 
     model = create_mocap_viewer_model()
@@ -149,8 +149,7 @@ def mocap_viewer_proc(
         while viewer.is_running() and not shutdown.is_set():
             with pos_arr.get_lock():
                 pos = np.array(pos_arr[:n_bones * 3], dtype=np.float64).reshape(n_bones, 3)
-            if ground_lift_offset is None:
-                ground_lift_offset = compute_ground_lift_offset(pos)
+            ground_lift_offset = resolve_mocap_ground_lift_offset(pos, ground_lift_offset)
             pos = lift_positions_above_ground(pos, lift_offset=ground_lift_offset)
 
             data.qvel[:] = 0

@@ -339,6 +339,7 @@ class Pico4InputProvider(RealtimeInputProvider):
 
     @staticmethod
     def _convert_body_joints_to_frame(body_joints: NDArray[np.float64]) -> HumanFrame:
+        body_joints = Pico4InputProvider._normalize_pico_bridge_body_joints(body_joints)
         body_pose_dict: dict[str, list] = {}
         for i, joint_name in enumerate(BODY_JOINT_NAMES):
             pos = [body_joints[i][0], body_joints[i][1], body_joints[i][2]]
@@ -352,3 +353,12 @@ class Pico4InputProvider(RealtimeInputProvider):
         for name, (pos, quat) in body_pose_dict.items():
             result[name] = (np.asarray(pos, dtype=np.float64), np.asarray(quat, dtype=np.float64))
         return result
+
+    @staticmethod
+    def _normalize_pico_bridge_body_joints(body_joints: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Match Teleopit's calibrated Pico body-pose convention."""
+        converted = np.array(body_joints, dtype=np.float64, copy=True)
+        converted[:, 2] *= -1.0
+        converted[:, 5] *= -1.0
+        converted[:, 6] *= -1.0
+        return converted
