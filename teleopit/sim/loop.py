@@ -233,6 +233,16 @@ class SimulationLoop:
         hold_qpos[7:7 + self._num_actions] = np.asarray(state.qpos, dtype=np.float64)[: self._num_actions]
         return hold_qpos
 
+    def _build_robot_state_qpos(self, state: RobotState) -> Float64Array:
+        qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
+        if state.base_pos is not None:
+            qpos[0:3] = np.asarray(state.base_pos, dtype=np.float64)[:3]
+        qpos[3:7] = np.asarray(state.quat, dtype=np.float64)[:4]
+        qpos[ROOT_DIM:ROOT_DIM + self._num_actions] = np.asarray(
+            state.qpos, dtype=np.float64,
+        )[: self._num_actions]
+        return qpos
+
     def _restart_offline_playback(
         self,
         *,
@@ -258,9 +268,12 @@ class SimulationLoop:
         retargeter: Retargeter,
     ) -> None:
         offline_playback.pause()
-        mocap_session.pause(hold_qpos)
-        self._step_runner.qpos_interpolator.reset()
+        self._step_runner.reset()
+        self._last_action = np.zeros((self._num_actions,), dtype=np.float32)
+        self.controller.reset()
+        self.obs_builder.reset()
         retargeter.reset()
+        mocap_session.pause(hold_qpos)
 
     def _resume_offline_playback(
         self,
@@ -268,18 +281,23 @@ class SimulationLoop:
         offline_playback: OfflinePlaybackController,
         mocap_session: MocapSessionManager,
         retargeter: Retargeter,
+        state: RobotState,
     ) -> None:
-        start_qpos = mocap_session.begin_resume()
+        if mocap_session.hold_qpos is None:
+            raise RuntimeError("Cannot resume offline playback without a paused hold qpos")
+        resume_qpos = self._build_robot_state_qpos(state)
         offline_playback.resume()
-        self._step_runner.soft_reset_reference_state(
-            reset_alignment=self._ref_cfg.pause_reset_alignment_on_resume
-        )
-        self._step_runner.last_retarget_qpos = start_qpos.copy()
+        mocap_session.reset()
+        self._step_runner.reset()
+        self._last_action = np.zeros((self._num_actions,), dtype=np.float32)
+        self.controller.reset()
+        self.obs_builder.reset()
+        retargeter.reset()
+        self._step_runner.last_retarget_qpos = resume_qpos.copy()
         self._step_runner.arm_motion_transition(
-            start_qpos,
+            resume_qpos,
             duration_s=self._pause_resume_transition_duration,
         )
-        retargeter.reset()
 
     def _build_observation(
         self,

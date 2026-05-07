@@ -270,38 +270,26 @@ class SimLoopSession:
     def toggle_realtime_mocap_pause(self) -> None:
         loop = self._loop
         if self.mocap_session.state == MocapSessionState.PAUSED:
-            start_qpos = self.mocap_session.begin_resume()
-            if self.reference_timeline is not None:
-                self.reference_timeline.clear()
-            if self.realtime_reference_manager is not None:
-                self.realtime_reference_manager.set_warmup_steps(loop._ref_cfg.pause_resume_warmup_steps)
-                self.realtime_reference_manager.reset()
-            self._step_runner.soft_reset_reference_state(
-                reset_alignment=loop._ref_cfg.pause_reset_alignment_on_resume
-            )
-            self._step_runner.last_retarget_qpos = start_qpos.copy()
+            if self.mocap_session.hold_qpos is None:
+                raise RuntimeError("Cannot resume mocap without a paused hold qpos")
+            resume_qpos = loop._build_robot_state_qpos(loop.robot.get_state())
+            self.full_policy_reset(warmup_steps=loop._ref_cfg.pause_resume_warmup_steps)
+            self._step_runner.last_retarget_qpos = resume_qpos.copy()
             self._step_runner.arm_motion_transition(
-                start_qpos,
+                resume_qpos,
                 duration_s=loop._pause_resume_transition_duration,
             )
-            self._retargeter.reset()
-            self.previous_live_human_frame = None
-            self.previous_live_retargeted = None
-            self.previous_live_timestamp = None
-            self.latest_live_human_frame = None
-            self.latest_live_retargeted = None
-            self.latest_live_timestamp = None
-            self.last_live_packet_seq = -1
+            self.last_commanded_motion_qpos = resume_qpos.copy()
             return
-        self.mocap_session.pause(
-            loop._resolve_hold_qpos(
-                self.last_commanded_motion_qpos,
-                self._step_runner.last_retarget_qpos,
-                self.latest_live_retargeted,
-                loop.robot.get_state(),
-            )
+        hold_qpos = loop._resolve_hold_qpos(
+            self.last_commanded_motion_qpos,
+            self._step_runner.last_retarget_qpos,
+            self.latest_live_retargeted,
+            loop.robot.get_state(),
         )
-        self._step_runner.qpos_interpolator.reset()
+        self.full_policy_reset()
+        self.mocap_session.pause(hold_qpos)
+        self.last_commanded_motion_qpos = hold_qpos.copy()
 
     # ------------------------------------------------------------------
     # Keyboard handling
@@ -359,6 +347,7 @@ class SimLoopSession:
                         offline_playback=self.offline_playback,
                         mocap_session=self.mocap_session,
                         retargeter=self._retargeter,
+                        state=loop.robot.get_state(),
                     )
                     self.last_commanded_motion_qpos = None
             else:

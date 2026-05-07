@@ -372,6 +372,12 @@ def test_simulation_loop_allows_future_reference_steps_without_explicit_high_wat
 
 @requires_mujoco
 def test_simulation_loop_pause_resume_freezes_then_blends_back(monkeypatch) -> None:
+    """Sim2sim pause/resume follows sim2real episode-reset semantics.
+
+    Pause freezes the reference at the hold pose. Resume resets policy/reference
+    state and starts the blend from the current robot state, not the stale hold
+    pose, before moving toward the live retargeted input.
+    """
     from teleopit.sim.loop import SimulationLoop
 
     class _RealtimeInputProvider:
@@ -477,8 +483,8 @@ def test_simulation_loop_pause_resume_freezes_then_blends_back(monkeypatch) -> N
     assert result["steps"] == 4
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[0], np.array([0.2], dtype=np.float32), atol=1e-6)
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[1], np.array([0.2], dtype=np.float32), atol=1e-6)
-    np.testing.assert_allclose(obs_builder.mimic_obs_calls[2], np.array([0.2], dtype=np.float32), atol=1e-6)
-    assert obs_builder.mimic_obs_calls[3][0] > 0.2
+    np.testing.assert_allclose(obs_builder.mimic_obs_calls[2], np.array([0.0], dtype=np.float32), atol=1e-6)
+    assert obs_builder.mimic_obs_calls[3][0] > 0.0
     assert obs_builder.mimic_obs_calls[3][0] < 1.0
 
 
