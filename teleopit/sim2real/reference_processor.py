@@ -33,7 +33,6 @@ class Sim2RealReferenceProcessor:
         policy: Any,
         policy_hz: float,
         num_actions: int,
-        fixed_ref_yaw_alignment: bool,
         reference_velocity_smoothing_alpha: float,
         reference_anchor_velocity_smoothing_alpha: float,
         reference_qpos_smoothing_alpha: float,
@@ -43,12 +42,13 @@ class Sim2RealReferenceProcessor:
         self._policy = policy
         self._policy_hz = policy_hz
         self._num_actions = num_actions
-        self._fixed_ref_yaw_alignment = fixed_ref_yaw_alignment
         self._max_pos_value = max_pos_value
 
         # Yaw alignment state (lazy-init)
         self._fixed_reference_yaw_quat: Float32Array | None = None
         self._fixed_reference_pivot_pos_w: Float32Array | None = None
+        self._fixed_reference_xy_offset_w: Float32Array | None = None
+        self._reference_alignment_target_xy_w: Float32Array | None = None
 
         # Smoothers
         self._motion_joint_vel_smoother = ExponentialVecSmoother(reference_velocity_smoothing_alpha)
@@ -101,11 +101,18 @@ class Sim2RealReferenceProcessor:
         if robot_state is None:
             raise ValueError("robot_state required for yaw alignment")
         robot_quat = np.asarray(getattr(robot_state, "quat"), dtype=np.float32)
-        aligned, self._fixed_reference_yaw_quat, self._fixed_reference_pivot_pos_w = (
-            ref_proc.align_reference_yaw(
-                qpos, robot_quat,
-                self._fixed_reference_yaw_quat, self._fixed_reference_pivot_pos_w,
-            )
+        (
+            aligned,
+            self._fixed_reference_yaw_quat,
+            self._fixed_reference_pivot_pos_w,
+            self._fixed_reference_xy_offset_w,
+        ) = ref_proc.align_reference_yaw(
+            qpos,
+            robot_quat,
+            self._fixed_reference_yaw_quat,
+            self._fixed_reference_pivot_pos_w,
+            self._fixed_reference_xy_offset_w,
+            self._reference_alignment_target_xy_w,
         )
         return aligned
 
@@ -114,20 +121,33 @@ class Sim2RealReferenceProcessor:
         reference_window: ReferenceWindow | None,
         robot_state: object,
     ) -> ReferenceWindow | None:
-        if reference_window is None or not self._fixed_ref_yaw_alignment:
+        if reference_window is None:
             return reference_window
         robot_quat = np.asarray(getattr(robot_state, "quat"), dtype=np.float32)
-        aligned, self._fixed_reference_yaw_quat, self._fixed_reference_pivot_pos_w = (
-            ref_proc.align_reference_window(
-                reference_window, self._fixed_ref_yaw_alignment, robot_quat,
-                self._fixed_reference_yaw_quat, self._fixed_reference_pivot_pos_w,
-            )
+        (
+            aligned,
+            self._fixed_reference_yaw_quat,
+            self._fixed_reference_pivot_pos_w,
+            self._fixed_reference_xy_offset_w,
+        ) = ref_proc.align_reference_window(
+            reference_window,
+            robot_quat,
+            self._fixed_reference_yaw_quat,
+            self._fixed_reference_pivot_pos_w,
+            self._fixed_reference_xy_offset_w,
+            self._reference_alignment_target_xy_w,
         )
         return aligned
 
-    def reset_alignment(self) -> None:
+    def reset_alignment(self, target_qpos: Float64Array | None = None) -> None:
         self._fixed_reference_yaw_quat = None
         self._fixed_reference_pivot_pos_w = None
+        self._fixed_reference_xy_offset_w = None
+        self._reference_alignment_target_xy_w = (
+            None
+            if target_qpos is None
+            else np.asarray(target_qpos[0:2], dtype=np.float32).reshape(2).copy()
+        )
 
     # ------------------------------------------------------------------
     # Anchor velocity computation

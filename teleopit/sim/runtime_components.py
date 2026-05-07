@@ -95,7 +95,6 @@ class PolicyStepRunner:
         torque_limits: Float32Array,
         default_dof_pos: Float32Array,
         qpos_interpolator: QposInterpolator,
-        fixed_ref_yaw_alignment: bool = True,
         reference_velocity_smoothing_alpha: float = 1.0,
         reference_anchor_velocity_smoothing_alpha: float = 1.0,
         reference_qpos_smoothing_alpha: float = 1.0,
@@ -111,7 +110,6 @@ class PolicyStepRunner:
         self.torque_limits = torque_limits
         self.default_dof_pos = default_dof_pos
         self.qpos_interpolator = qpos_interpolator
-        self.fixed_ref_yaw_alignment = bool(fixed_ref_yaw_alignment)
         self._motion_joint_vel_smoother = ExponentialVecSmoother(reference_velocity_smoothing_alpha)
         self._motion_anchor_lin_vel_smoother = ExponentialVecSmoother(reference_anchor_velocity_smoothing_alpha)
         self._motion_anchor_ang_vel_smoother = ExponentialVecSmoother(reference_anchor_velocity_smoothing_alpha)
@@ -122,6 +120,8 @@ class PolicyStepRunner:
         self._pending_reference_qpos: Float64Array | None = None
         self._fixed_reference_yaw_quat: Float32Array | None = None
         self._fixed_reference_pivot_pos_w: Float32Array | None = None
+        self._fixed_reference_xy_offset_w: Float32Array | None = None
+        self._reference_alignment_target_xy_w: Float32Array | None = None
 
     def reset(self) -> None:
         self.last_action = np.zeros((self.num_actions,), dtype=np.float32)
@@ -130,6 +130,8 @@ class PolicyStepRunner:
         self._pending_reference_qpos = None
         self._fixed_reference_yaw_quat = None
         self._fixed_reference_pivot_pos_w = None
+        self._fixed_reference_xy_offset_w = None
+        self._reference_alignment_target_xy_w = None
         self._motion_joint_vel_smoother.reset()
         self._motion_anchor_lin_vel_smoother.reset()
         self._motion_anchor_ang_vel_smoother.reset()
@@ -142,10 +144,22 @@ class PolicyStepRunner:
         if reset_alignment:
             self._fixed_reference_yaw_quat = None
             self._fixed_reference_pivot_pos_w = None
+            self._fixed_reference_xy_offset_w = None
+            self._reference_alignment_target_xy_w = None
         self._motion_joint_vel_smoother.reset()
         self._motion_anchor_lin_vel_smoother.reset()
         self._motion_anchor_ang_vel_smoother.reset()
         self._reference_qpos_smoother.reset()
+
+    def reset_reference_alignment(self, target_qpos: Float64Array | None = None) -> None:
+        self._fixed_reference_yaw_quat = None
+        self._fixed_reference_pivot_pos_w = None
+        self._fixed_reference_xy_offset_w = None
+        self._reference_alignment_target_xy_w = (
+            None
+            if target_qpos is None
+            else np.asarray(target_qpos[0:2], dtype=np.float32).reshape(2).copy()
+        )
 
     def arm_motion_transition(self, start_qpos: Float64Array, *, duration_s: float) -> None:
         self.qpos_interpolator.reset()
@@ -176,8 +190,7 @@ class PolicyStepRunner:
 
     def prepare_motion_command(self, retargeted: object, state: object) -> MotionPreparation:
         reference_qpos = self._retarget_to_qpos(retargeted)
-        if self.fixed_ref_yaw_alignment:
-            reference_qpos = self._align_velcmd_reference_yaw(reference_qpos, state)
+        reference_qpos = self._align_velcmd_reference_yaw(reference_qpos, state)
         reference_qpos = self._reference_qpos_smoother.apply(reference_qpos)
         self._pending_reference_qpos = reference_qpos.copy()
 
@@ -227,11 +240,18 @@ class PolicyStepRunner:
 
     def _align_velcmd_reference_yaw(self, reference_qpos: Float64Array, state: RobotState) -> Float64Array:
         robot_quat = np.asarray(state.quat, dtype=np.float32)
-        aligned, self._fixed_reference_yaw_quat, self._fixed_reference_pivot_pos_w = (
-            ref_proc.align_reference_yaw(
-                reference_qpos, robot_quat,
-                self._fixed_reference_yaw_quat, self._fixed_reference_pivot_pos_w,
-            )
+        (
+            aligned,
+            self._fixed_reference_yaw_quat,
+            self._fixed_reference_pivot_pos_w,
+            self._fixed_reference_xy_offset_w,
+        ) = ref_proc.align_reference_yaw(
+            reference_qpos,
+            robot_quat,
+            self._fixed_reference_yaw_quat,
+            self._fixed_reference_pivot_pos_w,
+            self._fixed_reference_xy_offset_w,
+            self._reference_alignment_target_xy_w,
         )
         return aligned
 
@@ -264,11 +284,18 @@ class PolicyStepRunner:
         state: RobotState,
     ) -> ReferenceWindow | None:
         robot_quat = np.asarray(state.quat, dtype=np.float32)
-        aligned, self._fixed_reference_yaw_quat, self._fixed_reference_pivot_pos_w = (
-            ref_proc.align_reference_window(
-                reference_window, self.fixed_ref_yaw_alignment, robot_quat,
-                self._fixed_reference_yaw_quat, self._fixed_reference_pivot_pos_w,
-            )
+        (
+            aligned,
+            self._fixed_reference_yaw_quat,
+            self._fixed_reference_pivot_pos_w,
+            self._fixed_reference_xy_offset_w,
+        ) = ref_proc.align_reference_window(
+            reference_window,
+            robot_quat,
+            self._fixed_reference_yaw_quat,
+            self._fixed_reference_pivot_pos_w,
+            self._fixed_reference_xy_offset_w,
+            self._reference_alignment_target_xy_w,
         )
         return aligned
 

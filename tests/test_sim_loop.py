@@ -371,12 +371,12 @@ def test_simulation_loop_allows_future_reference_steps_without_explicit_high_wat
 
 
 @requires_mujoco
-def test_simulation_loop_pause_resume_freezes_then_blends_back(monkeypatch) -> None:
-    """Sim2sim pause/resume follows sim2real episode-reset semantics.
+def test_simulation_loop_pause_resume_freezes_then_reanchors_live_retarget(monkeypatch) -> None:
+    """Sim2sim pause/resume follows realtime retarget-reset semantics.
 
     Pause freezes the reference at the hold pose. Resume resets policy/reference
-    state and starts the blend from the current robot state, not the stale hold
-    pose, before moving toward the live retargeted input.
+    state and directly accepts the live retarget pose, with root XY reanchored
+    to the current robot state instead of interpolating from the stale hold pose.
     """
     from teleopit.sim.loop import SimulationLoop
 
@@ -467,7 +467,6 @@ def test_simulation_loop_pause_resume_freezes_then_blends_back(monkeypatch) -> N
             "transition_duration": 0.0,
             "retarget_buffer_enabled": False,
             "realtime_input_delay_s": 0.0,
-            "velcmd_fixed_ref_yaw_alignment": False,
             "pause_resume_transition_duration": 1.0,
             "pause_resume_warmup_steps": 0,
         },
@@ -484,8 +483,7 @@ def test_simulation_loop_pause_resume_freezes_then_blends_back(monkeypatch) -> N
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[0], np.array([0.2], dtype=np.float32), atol=1e-6)
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[1], np.array([0.2], dtype=np.float32), atol=1e-6)
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[2], np.array([0.0], dtype=np.float32), atol=1e-6)
-    assert obs_builder.mimic_obs_calls[3][0] > 0.0
-    assert obs_builder.mimic_obs_calls[3][0] < 1.0
+    np.testing.assert_allclose(obs_builder.mimic_obs_calls[3], np.array([0.0], dtype=np.float32), atol=1e-6)
 
 
 @requires_mujoco
@@ -567,7 +565,6 @@ def test_simulation_loop_realtime_keyboard_mode_transitions(monkeypatch) -> None
             "transition_duration": 0.0,
             "retarget_buffer_enabled": False,
             "realtime_input_delay_s": 0.0,
-            "velcmd_fixed_ref_yaw_alignment": False,
             "keyboard": {"enabled": True},
         },
         viewers=set(),
@@ -669,7 +666,6 @@ def test_simulation_loop_realtime_keyboard_mode_drains_stale_pause_events(monkey
             "transition_duration": 0.0,
             "retarget_buffer_enabled": False,
             "realtime_input_delay_s": 0.0,
-            "velcmd_fixed_ref_yaw_alignment": False,
             "keyboard": {"enabled": True},
         },
         viewers=set(),
@@ -738,7 +734,6 @@ def test_simulation_loop_realtime_keyboard_mode_keeps_standing_when_input_not_re
             "transition_duration": 0.0,
             "retarget_buffer_enabled": False,
             "realtime_input_delay_s": 0.0,
-            "velcmd_fixed_ref_yaw_alignment": False,
             "keyboard": {"enabled": True},
         },
         viewers=set(),

@@ -82,7 +82,8 @@ When using `input.provider=pico4`, the MOCAP mode has additional sub-states:
 
 - **ACTIVE**: Normal live mocap tracking
 - **PAUSED**: Freeze reference pose; robot maintains balance but stops following
-- **RESUMING**: Clear realtime reference buffer, rebuild yaw/pivot alignment, smooth transition back to live mocap
+
+Resume returns from `PAUSED` to `ACTIVE` after collecting fresh tracking frames and re-centering heading and ground-plane position. The operator should keep still and stay as close as practical to the paused pose to reduce sudden reference changes.
 
 ## Common Parameters
 
@@ -96,8 +97,7 @@ input.bvh_file=data/sample_bvh/aiming1_subject1.bvh
 # Pico timeout
 input.pico4_timeout=30
 
-# Pause/resume transition
-pause_resume_transition_duration=1.5
+# Pause/resume tracking warmup
 pause_resume_warmup_steps=3
 
 # Network interface

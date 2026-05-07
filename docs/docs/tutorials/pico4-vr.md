@@ -86,7 +86,7 @@ The loop starts directly in `STANDING`, so you can press **Y** once tracking is 
 ### Pause/Resume
 
 - Press keyboard **A** or Pico controller **A** to freeze tracking
-- Press **A** again to clear the realtime reference buffer and smoothly resume live mocap
+- Press **A** again to resume tracking. Teleopit re-centers heading and ground-plane position before following again.
 
 ## Step 4: Hardware Deployment (Pico sim2real)
 
@@ -113,7 +113,7 @@ python scripts/run/run_sim2real.py \
 7. **L1+R1** -> emergency stop (`DAMPING`)
 
 :::warning
-When resuming from pause, keep still and match the paused pose as closely as possible. If distortion occurs, pause again immediately and adjust your pose before resuming.
+When resuming from pause, keep still and stay as close as practical to the paused pose while new mocap frames arrive. This reduces sudden reference changes when tracking resumes.
 :::
 
 See [Sim2Real](sim2real) for the full state machine documentation.
@@ -124,8 +124,8 @@ See [Sim2Real](sim2real) for the full state machine documentation.
 # Adjust Pico wait timeout (default 60s)
 input.pico4_timeout=30
 
-# Adjust pause/resume transition
-pause_resume_transition_duration=1.0
+# Adjust how many fresh tracking frames are collected before resume
+pause_resume_warmup_steps=2
 
 # Disable realtime keyboard mode state machine
 keyboard.enabled=false

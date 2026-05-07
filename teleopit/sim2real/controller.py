@@ -84,7 +84,6 @@ class Sim2RealController:
             cfg_get(cfg, "pause_resume_transition_duration", transition_dur) or 0.0
         )
         self._qpos_interpolator = QposInterpolator(transition_dur, self.policy_hz)
-        self._fixed_ref_yaw_alignment = bool(cfg_get(cfg, "velcmd_fixed_ref_yaw_alignment", True))
 
         self._init_components(cfg)
         self._init_reference_config(cfg)
@@ -194,7 +193,6 @@ class Sim2RealController:
             policy=self.policy,
             policy_hz=self.policy_hz,
             num_actions=self.num_actions,
-            fixed_ref_yaw_alignment=self._fixed_ref_yaw_alignment,
             reference_velocity_smoothing_alpha=rc.reference_velocity_smoothing_alpha,
             reference_anchor_velocity_smoothing_alpha=rc.reference_anchor_velocity_smoothing_alpha,
             reference_qpos_smoothing_alpha=rc.reference_qpos_smoothing_alpha,
@@ -405,13 +403,9 @@ class Sim2RealController:
         reference_window: ReferenceWindow | None,
     ) -> None:
         """Shared mocap control pipeline: align → smooth → interpolate → infer → send."""
-        if self._fixed_ref_yaw_alignment:
-            reference_qpos = self._ref_proc.align_reference_yaw(reference_qpos, robot_state=robot_state)
+        reference_qpos = self._ref_proc.align_reference_yaw(reference_qpos, robot_state=robot_state)
         reference_qpos = self._ref_proc.apply_qpos_smoothing(reference_qpos)
         qpos = self._qpos_interpolator.apply(reference_qpos)
-        if self._mocap_session.state == MocapSessionState.RESUMING and not self._qpos_interpolator.is_active:
-            self._mocap_session.finish_resume()
-            logger.info("Mocap session -> ACTIVE")
 
         # Compute joint velocities via finite difference
         if qpos.shape[0] < 7 + self.num_actions:
@@ -707,6 +701,17 @@ class Sim2RealController:
         self._ref_proc.reset_smoothers()
         self._last_live_packet_seq = -1
 
+    def _build_resume_alignment_qpos(self, hold_qpos: Float64Array | None, state: object) -> Float64Array:
+        qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
+        if hold_qpos is not None:
+            qpos[0:2] = np.asarray(hold_qpos, dtype=np.float64).reshape(-1)[0:2]
+        base_pos = getattr(state, "base_pos", None)
+        if base_pos is not None:
+            qpos[0:2] = np.asarray(base_pos, dtype=np.float64).reshape(-1)[0:2]
+        qpos[3:7] = np.asarray(getattr(state, "quat"), dtype=np.float64)
+        qpos[ROOT_DIM:FULL_QPOS_DIM] = np.asarray(getattr(state, "qpos"), dtype=np.float64)
+        return qpos
+
     def _restart_offline_playback(self) -> None:
         if self._offline_playback is None:
             raise RuntimeError("Offline playback replay is only available for indexed BVH input")
@@ -791,39 +796,32 @@ class Sim2RealController:
             logger.info("Offline playback already ended; press B to replay from the start")
             return
 
-        # Episode-reset + reference-side interpolation.
-        #
-        # 1. Reference starts at current robot state (not hold_qpos) so there
-        #    is no reference-state mismatch at the moment of resume.
-        # 2. Full policy reset ensures clean TemporalCNN history.
-        # 3. QposInterpolator smoothly blends reference from robot state
-        #    toward incoming live mocap so the policy never sees a large
-        #    instantaneous tracking error.
-
+        hold_qpos = self._mocap_session.hold_qpos
+        if hold_qpos is None:
+            raise RuntimeError("Cannot resume mocap without a paused hold qpos")
         state = self.robot.get_state()
-        resume_qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
-        resume_qpos[3:7] = state.quat.astype(np.float64)
-        resume_qpos[ROOT_DIM:FULL_QPOS_DIM] = state.qpos.astype(np.float64)
+        resume_qpos = self._build_resume_alignment_qpos(hold_qpos, state)
 
-        self._last_retarget_qpos = resume_qpos.copy()
         self._last_commanded_motion_qpos = resume_qpos.copy()
 
         # Full policy reset -- clean history, zero last_action, smoothers,
         # timeline, alignment.  Also resets _mocap_session to ACTIVE.
         self._reset_policy_state()
+        self._last_retarget_qpos = None
+        self._last_commanded_motion_qpos = resume_qpos.copy()
 
         # Override warmup steps for the resume-specific buffer warmup.
         if self._reference_manager is not None:
             self._reference_manager.set_warmup_steps(self._ref_cfg.pause_resume_warmup_steps)
             self._reference_manager.reset()
 
-        # Reference-side interpolation: smoothly blend from current robot
-        # state toward incoming live mocap.
-        self._arm_qpos_transition(resume_qpos, duration_s=self._pause_resume_transition_duration)
+        self._ref_proc.reset_alignment(target_qpos=resume_qpos)
         if self._offline_playback is not None:
+            self._last_retarget_qpos = resume_qpos.copy()
+            self._arm_qpos_transition(resume_qpos, duration_s=self._pause_resume_transition_duration)
             self._offline_playback.resume()
 
-        logger.info("Mocap session -> ACTIVE (episode-reset + reference interpolation)")
+        logger.info("Mocap session -> ACTIVE (episode-reset + reference realignment)")
 
     def _resolve_mocap_hold_qpos(self) -> Float64Array:
         if self._last_commanded_motion_qpos is not None:

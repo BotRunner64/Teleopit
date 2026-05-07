@@ -26,7 +26,6 @@ def test_observation_module_imports_without_runtime_cycle() -> None:
 def _make_runner(
     obs_builder: object,
     *,
-    fixed_ref_yaw_alignment: bool = True,
     reference_velocity_smoothing_alpha: float = 1.0,
 ) -> PolicyStepRunner:
     return PolicyStepRunner(
@@ -41,7 +40,6 @@ def _make_runner(
         torque_limits=np.ones(29, dtype=np.float32),
         default_dof_pos=np.zeros(29, dtype=np.float32),
         qpos_interpolator=QposInterpolator(0.0, 50.0),
-        fixed_ref_yaw_alignment=fixed_ref_yaw_alignment,
         reference_velocity_smoothing_alpha=reference_velocity_smoothing_alpha,
     )
 
@@ -99,6 +97,40 @@ def test_prepare_motion_command_velcmd_keeps_fixed_yaw_after_start(monkeypatch) 
 
     np.testing.assert_allclose(second.qpos[:2], np.array([1.5, 4.5]), atol=1e-6)
     np.testing.assert_allclose(second.qpos[3:7], first_state.quat, atol=1e-6)
+
+
+def test_prepare_motion_command_can_reanchor_reference_xy(monkeypatch) -> None:
+    velcmd_builder = VelCmdObservationBuilder.__new__(VelCmdObservationBuilder)
+    runner = _make_runner(velcmd_builder)
+    monkeypatch.setattr(
+        runner,
+        '_compute_anchor_velocities',
+        lambda qpos: (np.zeros(3, dtype=np.float32), np.zeros(3, dtype=np.float32)),
+    )
+
+    target_qpos = np.zeros(36, dtype=np.float64)
+    target_qpos[:2] = np.array([10.0, 20.0], dtype=np.float64)
+    runner.reset_reference_alignment(target_qpos)
+
+    retarget_qpos = np.zeros(36, dtype=np.float64)
+    retarget_qpos[:3] = np.array([1.5, 4.5, 0.82], dtype=np.float64)
+    retarget_qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    state = SimpleNamespace(
+        base_pos=np.array([10.0, 20.0, 0.8], dtype=np.float32),
+        quat=np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32),
+        qpos=np.zeros(29, dtype=np.float32),
+    )
+
+    first = runner.prepare_motion_command(retarget_qpos, state)
+    runner.finish_step(np.zeros(29, dtype=np.float32), first.qpos)
+
+    moved_qpos = retarget_qpos.copy()
+    moved_qpos[0] += 1.0
+    second = runner.prepare_motion_command(moved_qpos, state)
+
+    np.testing.assert_allclose(first.qpos[:2], np.array([10.0, 20.0]), atol=1e-6)
+    np.testing.assert_allclose(second.qpos[:2], np.array([10.0, 21.0]), atol=1e-6)
+    np.testing.assert_allclose(first.qpos[3:7], state.quat, atol=1e-6)
 
 
 def test_prepare_motion_command_smooths_joint_velocity_spikes(monkeypatch) -> None:

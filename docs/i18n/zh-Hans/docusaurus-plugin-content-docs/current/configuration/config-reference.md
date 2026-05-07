@@ -133,9 +133,10 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 
 | 字段 | 说明 | 默认值 |
 |---|---|---|
-| `pause_resume_transition_duration` | 从暂停姿态混合回实时动捕的时长（秒） | `1.0` |
-| `pause_resume_warmup_steps` | 恢复前需要积累的动捕帧数 | `2` |
-| `pause_reset_alignment_on_resume` | 暂停后重建偏航/轴心对齐 | `true` |
+| `pause_resume_transition_duration` | 离线回放恢复时的混合时长；实时 Pico 恢复使用实时追踪重新居中 | `1.0` |
+| `pause_resume_warmup_steps` | 恢复追踪前采集的实时动捕帧数 | `2` |
+
+实时 Pico 恢复追踪时会先重新居中航向和地面平面位置。操作者应保持静止，并尽量贴近暂停时的姿态，以减少参考突变。
 
 ### 实时追赶（Pico sim2real）
 

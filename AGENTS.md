@@ -126,10 +126,10 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - The provider applies an input-space transform to match the current retarget config
 - Do not hardcode that transform as a public coordinate-system contract; validate against actual retarget/sim2sim behavior when SDK or firmware changes
 - Pico4 realtime control uses the same retargeted-reference timeline path as the shared realtime input stack
-- Pico sim2sim now adds a keyboard-driven top-level mode state machine: `STANDING → MOCAP → STANDING`
+- Pico sim2sim supports a keyboard-driven top-level mode state machine: `STANDING → MOCAP → STANDING`
 - Default Pico sim2sim keyboard mappings are `Y` → `MOCAP`, `A` → pause/resume mocap, `X` → back to `STANDING`, `Q` → quit
 - Pico4 sim2real pause/resume is handled as a mocap-session control event (`toggle_pause`), not as a mode switch to `STANDING`
-- Default Pico pause button is `A`; restore tracking by rebuilding realtime buffer + yaw/pivot alignment and blending back into live mocap
+- Default Pico pause button is `A`; restore tracking by rebuilding the realtime buffer and yaw/XY root-offset alignment, then accept the current live mocap retarget reference directly
 
 ### SimulationLoop Runtime Behavior
 - `realtime=true` enforces wall-clock pacing even without a viewer
@@ -138,7 +138,7 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - BVH frame alignment is time-based: `bvh_idx = int(policy_time × input_fps)`
 - Realtime reference buffering is controlled by `retarget_buffer_enabled`, `retarget_buffer_window_s`, `retarget_buffer_delay_s`, `reference_steps`, `realtime_buffer_warmup_steps`, and the low/high watermark knobs
 - Realtime inferred `motion_joint_vel`, anchor linear velocity, and anchor angular velocity can be EMA-smoothed via `reference_velocity_smoothing_alpha` and `reference_anchor_velocity_smoothing_alpha`
-- Sim2real Pico pause/resume adds a mocap-session sub-state machine: `ACTIVE → PAUSED → RESUMING → ACTIVE`
+- Sim2real Pico pause/resume uses mocap-session states `ACTIVE ↔ PAUSED`; resume clears policy/reference state, warms the realtime buffer, rebuilds yaw/XY root alignment, and does not interpolate retarget qpos from the paused pose
 - Realtime sim2sim with Pico control events uses the same mocap-session pause/resume semantics and rebuilds the realtime reference path on resume
 - Realtime Pico sim2sim can start directly in `STANDING` with keyboard mode control enabled via top-level `keyboard.enabled`
 
@@ -253,6 +253,7 @@ Critical note: align robot root orientation to the BVH human forward direction b
 - Use the default git user as commit author
 - After major feature changes, update `AGENTS.md` and `README.md` together with the code
 - English docs (`docs/docs/`), Chinese docs (`docs/i18n/zh-Hans/`), and code implementation must stay in sync. Chinese docs are translations of the English originals — never generate Chinese content independently; always translate from the corresponding English page
+- Documentation updates must be written for users and developers as stable product/development guidance, not as explanations of the current code patch or implementation diff
 
 ```bash
 pip install -e .

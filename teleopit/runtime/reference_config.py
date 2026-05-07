@@ -27,7 +27,6 @@ class ReferenceConfig:
     realtime_buffer_high_watermark_steps: int | None
     realtime_buffer_warmup_steps: int
     pause_resume_warmup_steps: int
-    pause_reset_alignment_on_resume: bool
     realtime_catchup_enabled: bool
     realtime_catchup_trigger_steps: int | None
     realtime_catchup_release_steps: int | None
@@ -103,8 +102,6 @@ def parse_reference_config(
         field_name="pause_resume_warmup_steps",
         default=warmup,
     )
-    pause_reset_alignment = bool(cfg_get(cfg, "pause_reset_alignment_on_resume", True))
-
     catchup_enabled = bool(cfg_get(cfg, "realtime_catchup_enabled", False))
     catchup_trigger = parse_optional_nonnegative_int(
         cfg_get(cfg, "realtime_catchup_trigger_steps", None),
@@ -141,7 +138,6 @@ def parse_reference_config(
         realtime_buffer_high_watermark_steps=high,
         realtime_buffer_warmup_steps=warmup,
         pause_resume_warmup_steps=pause_resume_warmup,
-        pause_reset_alignment_on_resume=pause_reset_alignment,
         realtime_catchup_enabled=catchup_enabled,
         realtime_catchup_trigger_steps=catchup_trigger,
         realtime_catchup_release_steps=catchup_release,

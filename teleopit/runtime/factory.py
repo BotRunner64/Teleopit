@@ -41,8 +41,6 @@ def build_simulation_cfg(cfg: Any) -> dict[str, object]:
             cfg_get(cfg, "pause_resume_transition_duration", cfg_get(cfg, "transition_duration", 0.0)) or 0.0
         ),
         "pause_resume_warmup_steps": cfg_get(cfg, "pause_resume_warmup_steps", None),
-        "pause_reset_alignment_on_resume": cfg_get(cfg, "pause_reset_alignment_on_resume", None),
-        "velcmd_fixed_ref_yaw_alignment": bool(cfg_get(cfg, "velcmd_fixed_ref_yaw_alignment", True)),
         "retarget_buffer_enabled": bool(cfg_get(cfg, "retarget_buffer_enabled", True)),
         "retarget_buffer_window_s": float(cfg_get(cfg, "retarget_buffer_window_s", 0.5)),
         "retarget_buffer_delay_s": cfg_get(cfg, "retarget_buffer_delay_s", None),

@@ -93,8 +93,6 @@ class SimulationLoop:
     def _init_reference_config(self) -> None:
         """Parse reference-window / realtime-buffer configuration from self.cfg."""
         # SIM-only config keys (not in shared ReferenceConfig)
-        raw_fixed_ref_yaw_alignment = self._try_get_cfg("velcmd_fixed_ref_yaw_alignment")
-        self._fixed_ref_yaw_alignment = True if raw_fixed_ref_yaw_alignment is None else bool(raw_fixed_ref_yaw_alignment)
         self._playback_pause_on_end = bool(self._try_get_cfg("playback.pause_on_end", False))
         self._playback_keyboard_enabled = bool(self._try_get_cfg("playback.keyboard.enabled", False))
         self._realtime_keyboard_enabled = bool(self._try_get_cfg("keyboard.enabled", False))
@@ -129,7 +127,6 @@ class SimulationLoop:
             torque_limits=self._torque_limits,
             default_dof_pos=self._default_dof_pos,
             qpos_interpolator=self._qpos_interpolator,
-            fixed_ref_yaw_alignment=self._fixed_ref_yaw_alignment,
             reference_velocity_smoothing_alpha=self._ref_cfg.reference_velocity_smoothing_alpha,
             reference_anchor_velocity_smoothing_alpha=self._ref_cfg.reference_anchor_velocity_smoothing_alpha,
             reference_qpos_smoothing_alpha=self._ref_cfg.reference_qpos_smoothing_alpha,
@@ -241,6 +238,16 @@ class SimulationLoop:
         qpos[ROOT_DIM:ROOT_DIM + self._num_actions] = np.asarray(
             state.qpos, dtype=np.float64,
         )[: self._num_actions]
+        return qpos
+
+    def _build_resume_alignment_qpos(
+        self,
+        hold_qpos: Float64Array | None,
+        state: RobotState,
+    ) -> Float64Array:
+        qpos = self._build_robot_state_qpos(state)
+        if state.base_pos is None and hold_qpos is not None:
+            qpos[0:2] = np.asarray(hold_qpos, dtype=np.float64).reshape(-1)[0:2]
         return qpos
 
     def _restart_offline_playback(

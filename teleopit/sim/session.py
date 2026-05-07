@@ -270,15 +270,12 @@ class SimLoopSession:
     def toggle_realtime_mocap_pause(self) -> None:
         loop = self._loop
         if self.mocap_session.state == MocapSessionState.PAUSED:
-            if self.mocap_session.hold_qpos is None:
+            hold_qpos = self.mocap_session.hold_qpos
+            if hold_qpos is None:
                 raise RuntimeError("Cannot resume mocap without a paused hold qpos")
-            resume_qpos = loop._build_robot_state_qpos(loop.robot.get_state())
+            resume_qpos = loop._build_resume_alignment_qpos(hold_qpos, loop.robot.get_state())
             self.full_policy_reset(warmup_steps=loop._ref_cfg.pause_resume_warmup_steps)
-            self._step_runner.last_retarget_qpos = resume_qpos.copy()
-            self._step_runner.arm_motion_transition(
-                resume_qpos,
-                duration_s=loop._pause_resume_transition_duration,
-            )
+            self._step_runner.reset_reference_alignment(resume_qpos)
             self.last_commanded_motion_qpos = resume_qpos.copy()
             return
         hold_qpos = loop._resolve_hold_qpos(
@@ -617,12 +614,6 @@ class SimLoopSession:
                         )
                 else:
                     preparation = self._step_runner.prepare_motion_command(self.cached_retargeted, state)
-                    if (
-                        self.realtime_interpolated_input
-                        and self.mocap_session.state == MocapSessionState.RESUMING
-                        and not loop._qpos_interpolator.is_active
-                    ):
-                        self.mocap_session.finish_resume()
 
                 obs = self._step_runner.build_observation(
                     state, preparation, self._step_runner.last_action, reference_window=reference_window,

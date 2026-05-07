@@ -390,37 +390,6 @@ def test_mocap_step_velcmd_keeps_fixed_yaw_after_start(monkeypatch) -> None:
     )
 
 
-def test_mocap_step_velcmd_can_disable_fixed_yaw_alignment(monkeypatch) -> None:
-    from teleopit.sim2real.controller import Sim2RealController
-
-    policy = DummyPolicy()
-    obs_builder = DummyVelCmdObservationBuilder()
-    target_qpos = np.zeros(36, dtype=np.float64)
-    target_qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
-
-    cfg = _make_cfg(transition_duration=0.0)
-    cfg["velcmd_fixed_ref_yaw_alignment"] = False
-    ctrl = Sim2RealController(cfg)
-    ctrl.robot._state.quat = np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32)
-    monkeypatch.setattr(
-        ctrl._ref_proc,
-        "compute_anchor_velocities",
-        lambda _qpos: (
-            np.zeros(3, dtype=np.float32),
-            np.zeros(3, dtype=np.float32),
-        ),
-    )
-
-    ctrl._mocap_step()
-
-    np.testing.assert_allclose(
-        obs_builder.build_calls[0]["motion_qpos"][3:7],
-        np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
-        atol=1e-6,
-    )
-
-
 def test_mocap_step_waits_for_realtime_warmup_before_running_policy(monkeypatch) -> None:
     from teleopit.sim2real.controller import Sim2RealController
 
@@ -486,7 +455,6 @@ def test_mocap_step_reference_qpos_smoothing_filters_motion_change(monkeypatch) 
 
     cfg = _make_cfg(transition_duration=0.0)
     cfg["retarget_buffer_enabled"] = False
-    cfg["velcmd_fixed_ref_yaw_alignment"] = False
     cfg["reference_qpos_smoothing_alpha"] = 0.5
     ctrl = Sim2RealController(cfg)
     monkeypatch.setattr(
@@ -520,7 +488,6 @@ def test_mocap_pause_freezes_reference_and_zeroes_velocities(monkeypatch) -> Non
 
     cfg = _make_cfg(transition_duration=0.0)
     cfg["retarget_buffer_enabled"] = False
-    cfg["velcmd_fixed_ref_yaw_alignment"] = False
     ctrl = Sim2RealController(cfg)
     monkeypatch.setattr(
         ctrl._ref_proc,
@@ -558,8 +525,7 @@ def test_mocap_pause_freezes_reference_and_zeroes_velocities(monkeypatch) -> Non
 
 
 def test_mocap_resume_uses_episode_reset_semantics(monkeypatch) -> None:
-    """Resume now does an episode-reset: state goes directly to ACTIVE (not
-    RESUMING) and reference starts from the current robot state."""
+    """Resume does an episode reset and reanchors live mocap root XY."""
     from teleopit.sim2real.controller import Sim2RealController
     from teleopit.runtime.mocap_session import MocapSessionState
 
@@ -572,7 +538,6 @@ def test_mocap_resume_uses_episode_reset_semantics(monkeypatch) -> None:
 
     cfg = _make_cfg(transition_duration=0.0)
     cfg["retarget_buffer_enabled"] = False
-    cfg["velcmd_fixed_ref_yaw_alignment"] = False
     cfg["pause_resume_transition_duration"] = 1.0
     cfg["pause_resume_warmup_steps"] = 0
     ctrl = Sim2RealController(cfg)
@@ -599,8 +564,9 @@ def test_mocap_resume_uses_episode_reset_semantics(monkeypatch) -> None:
     ctrl._mocap_step()
     assert ctrl._mocap_session.state == MocapSessionState.PAUSED
 
-    # Resume: should go directly to ACTIVE (no RESUMING state)
+    # Resume: should stay on the ACTIVE/PAUSED state model.
     ctrl.retargeter._qpos[0] = 1.0
+    ctrl.retargeter._qpos[7] = 1.0
     ctrl.input_provider._control_events = (
         ControlEvent(
             event_type=ControlEventType.TOGGLE_PAUSE,
@@ -616,3 +582,8 @@ def test_mocap_resume_uses_episode_reset_semantics(monkeypatch) -> None:
     assert ctrl._mocap_session.state == MocapSessionState.ACTIVE
     # Policy was reset (last_action zeroed, history cleared)
     assert np.allclose(ctrl._last_action, 0.0)
+    # Retarget reference jumps to the live mocap pose (joint 0), while root XY
+    # is reanchored to the paused reference because real-robot XY is unobserved.
+    np.testing.assert_allclose(obs_builder.build_calls[-1]["motion_qpos"][0], 0.2, atol=1e-6)
+    np.testing.assert_allclose(obs_builder.build_calls[-1]["motion_qpos"][7], 1.0, atol=1e-6)
+    np.testing.assert_allclose(obs_builder.build_calls[-1]["motion_joint_vel"], np.zeros(29, dtype=np.float32))

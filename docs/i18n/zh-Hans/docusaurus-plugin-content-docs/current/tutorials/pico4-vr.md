@@ -86,7 +86,7 @@ python scripts/run/run_sim.py \
 ### 暂停与恢复
 
 - 按键盘 **A** 或 Pico 手柄 **A** 键冻结追踪
-- 再次按 **A** 键清除实时参考缓冲区，平滑恢复实时动捕
+- 再次按 **A** 键恢复追踪。Teleopit 会先重新居中航向和地面平面位置，然后继续跟随。
 
 ## 第四步：真机部署（Pico sim2real）
 
@@ -113,7 +113,7 @@ python scripts/run/run_sim2real.py \
 7. **L1+R1** → 急停（`DAMPING`）
 
 :::warning
-从暂停恢复时，请尽量保持静止并使身体姿态与暂停时的姿态一致。如果出现姿态畸变，请立即再次暂停，调整姿态后重新恢复。
+从暂停恢复时，请在新的动捕帧到达期间保持静止，并尽量贴近暂停时的姿态。这样可以减少恢复追踪时的参考突变。
 :::
 
 完整状态机文档请参见 [Sim2Real 部署](sim2real)。
@@ -124,8 +124,8 @@ python scripts/run/run_sim2real.py \
 # 调整 Pico 等待超时时间（默认 60s）
 input.pico4_timeout=30
 
-# 调整暂停/恢复过渡时长
-pause_resume_transition_duration=1.0
+# 调整恢复前采集的新追踪帧数
+pause_resume_warmup_steps=2
 
 # 关闭实时键盘模式状态机
 keyboard.enabled=false

@@ -49,11 +49,15 @@ def align_reference_yaw(
     robot_quat: Float32Array,
     fixed_yaw_quat: Float32Array | None,
     fixed_pivot_pos: Float32Array | None,
-) -> tuple[Float64Array, Float32Array, Float32Array]:
+    fixed_xy_offset: Float32Array | None = None,
+    target_root_xy: Float32Array | None = None,
+) -> tuple[Float64Array, Float32Array, Float32Array, Float32Array]:
     """Apply fixed yaw alignment to reference qpos.
 
     On first call (when fixed_yaw_quat is None), initializes the alignment
-    from the robot's current orientation. Returns (aligned_qpos, yaw_quat, pivot_pos).
+    from the robot's current orientation. If target_root_xy is provided, also
+    initializes a fixed XY translation so the first aligned reference root is
+    anchored to that target. Returns (aligned_qpos, yaw_quat, pivot_pos, xy_offset).
     """
     if fixed_yaw_quat is None:
         fixed_yaw_quat = compute_fixed_yaw_alignment_quat(
@@ -64,22 +68,33 @@ def align_reference_yaw(
 
     aligned_qpos = qpos.copy()
     rotate_motion_qpos_by_yaw(aligned_qpos, fixed_yaw_quat, fixed_pivot_pos)
-    return aligned_qpos, fixed_yaw_quat, cast(Float32Array, fixed_pivot_pos)
+    if fixed_xy_offset is None:
+        if target_root_xy is None:
+            fixed_xy_offset = np.zeros(2, dtype=np.float32)
+        else:
+            target_xy = np.asarray(target_root_xy, dtype=np.float32).reshape(2)
+            fixed_xy_offset = target_xy - np.asarray(aligned_qpos[0:2], dtype=np.float32)
+    aligned_qpos[0:2] = (
+        np.asarray(aligned_qpos[0:2], dtype=np.float32)
+        + np.asarray(fixed_xy_offset, dtype=np.float32).reshape(2)
+    ).astype(aligned_qpos.dtype)
+    return aligned_qpos, fixed_yaw_quat, cast(Float32Array, fixed_pivot_pos), fixed_xy_offset
 
 
 def align_reference_window(
     reference_window: ReferenceWindow | None,
-    fixed_ref_yaw_alignment: bool,
     robot_quat: Float32Array,
     fixed_yaw_quat: Float32Array | None,
     fixed_pivot_pos: Float32Array | None,
-) -> tuple[ReferenceWindow | None, Float32Array | None, Float32Array | None]:
+    fixed_xy_offset: Float32Array | None = None,
+    target_root_xy: Float32Array | None = None,
+) -> tuple[ReferenceWindow | None, Float32Array | None, Float32Array | None, Float32Array | None]:
     """Align all samples in a reference window by fixed yaw.
 
-    Returns (aligned_window, updated_yaw_quat, updated_pivot_pos).
+    Returns (aligned_window, updated_yaw_quat, updated_pivot_pos, updated_xy_offset).
     """
-    if reference_window is None or not fixed_ref_yaw_alignment:
-        return reference_window, fixed_yaw_quat, fixed_pivot_pos
+    if reference_window is None:
+        return reference_window, fixed_yaw_quat, fixed_pivot_pos, fixed_xy_offset
 
     current_qpos = np.asarray(reference_window.current_sample().qpos, dtype=np.float64).reshape(-1)
     if fixed_yaw_quat is None:
@@ -88,6 +103,18 @@ def align_reference_window(
             np.asarray(current_qpos[3:7], dtype=np.float32),
         )
         fixed_pivot_pos = np.asarray(current_qpos[0:3], dtype=np.float32).copy()
+    if fixed_xy_offset is None:
+        aligned_current = current_qpos.copy()
+        rotate_motion_qpos_by_yaw(
+            aligned_current,
+            cast(Float32Array, fixed_yaw_quat),
+            cast(Float32Array, fixed_pivot_pos),
+        )
+        if target_root_xy is None:
+            fixed_xy_offset = np.zeros(2, dtype=np.float32)
+        else:
+            target_xy = np.asarray(target_root_xy, dtype=np.float32).reshape(2)
+            fixed_xy_offset = target_xy - np.asarray(aligned_current[0:2], dtype=np.float32)
 
     aligned_samples: list[ReferenceSample] = []
     for sample in reference_window.samples:
@@ -97,6 +124,10 @@ def align_reference_window(
             cast(Float32Array, fixed_yaw_quat),
             cast(Float32Array, fixed_pivot_pos),
         )
+        aligned_qpos[0:2] = (
+            np.asarray(aligned_qpos[0:2], dtype=np.float32)
+            + np.asarray(fixed_xy_offset, dtype=np.float32).reshape(2)
+        ).astype(aligned_qpos.dtype)
         aligned_samples.append(
             ReferenceSample(
                 qpos=aligned_qpos,
@@ -115,7 +146,7 @@ def align_reference_window(
         reference_steps=tuple(reference_window.reference_steps),
         samples=tuple(aligned_samples),
     )
-    return aligned_window, fixed_yaw_quat, fixed_pivot_pos
+    return aligned_window, fixed_yaw_quat, fixed_pivot_pos, fixed_xy_offset
 
 
 def compute_anchor_velocities(

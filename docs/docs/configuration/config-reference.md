@@ -114,9 +114,10 @@ Fields used by sim2real configs (`sim2real.yaml`, `pico4_sim2real.yaml`).
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `pause_resume_transition_duration` | Seconds to blend from paused pose back to live mocap | `1.0` |
-| `pause_resume_warmup_steps` | Mocap frames to accumulate before resuming | `2` |
-| `pause_reset_alignment_on_resume` | Rebuild yaw/pivot alignment after pause | `true` |
+| `pause_resume_transition_duration` | Resume blend duration for offline playback; realtime Pico resume uses live tracking re-centering | `1.0` |
+| `pause_resume_warmup_steps` | Realtime mocap frames to collect before tracking resumes | `2` |
+
+Realtime Pico resume re-centers heading and ground-plane position before tracking continues. Operators should keep still and stay as close as practical to the paused pose to reduce sudden reference changes.
 
 ### Realtime Catch-up (Pico sim2real)
 

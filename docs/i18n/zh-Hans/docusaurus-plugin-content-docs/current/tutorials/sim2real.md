@@ -82,7 +82,8 @@ python scripts/run/run_sim2real.py \
 
 - **ACTIVE**：正常的实时动捕追踪
 - **PAUSED**：冻结参考姿态；机器人保持平衡但停止跟随
-- **RESUMING**：清除实时参考缓冲区，重建偏航/轴心对齐，平滑过渡回实时动捕
+
+恢复会在采集新的追踪帧并重新居中航向和地面平面位置后，从 `PAUSED` 回到 `ACTIVE`。操作者应保持静止，并尽量贴近暂停时的姿态，以减少参考突变。
 
 ## 常用参数
 
@@ -96,8 +97,7 @@ input.bvh_file=data/sample_bvh/aiming1_subject1.bvh
 # Pico 超时时间
 input.pico4_timeout=30
 
-# 暂停/恢复过渡参数
-pause_resume_transition_duration=1.5
+# 暂停/恢复追踪预热
 pause_resume_warmup_steps=3
 
 # 网络接口

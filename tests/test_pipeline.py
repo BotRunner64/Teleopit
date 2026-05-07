@@ -84,7 +84,6 @@ def test_pipeline_inherits_robot_action_decode_config(monkeypatch, tmp_path: Pat
             "transition_duration": 1.5,
             "pause_resume_transition_duration": 0.75,
             "pause_resume_warmup_steps": 3,
-            "pause_reset_alignment_on_resume": False,
             "keyboard": {"enabled": True},
             "retarget_buffer_enabled": True,
             "retarget_buffer_window_s": 0.75,
@@ -112,7 +111,6 @@ def test_pipeline_inherits_robot_action_decode_config(monkeypatch, tmp_path: Pat
     assert loop_cfg["transition_duration"] == pytest.approx(1.5)
     assert loop_cfg["pause_resume_transition_duration"] == pytest.approx(0.75)
     assert loop_cfg["pause_resume_warmup_steps"] == 3
-    assert loop_cfg["pause_reset_alignment_on_resume"] is False
     assert loop_cfg["keyboard"]["enabled"] is True
     assert loop_cfg["retarget_buffer_enabled"] is True
     assert loop_cfg["retarget_buffer_window_s"] == pytest.approx(0.75)
