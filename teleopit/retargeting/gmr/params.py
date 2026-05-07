@@ -78,8 +78,8 @@ IK_CONFIG_DICT = {
     "fbx_offline": {
         "unitree_g1": _resolve_path("ik_configs/fbx_offline_to_g1.json"),
     },
-    "xrobot": {
-        "unitree_g1": _resolve_path("ik_configs/xrobot_to_g1.json"),
+    "pico_bridge": {
+        "unitree_g1": _resolve_path("ik_configs/pico_bridge_to_g1.json"),
     },
 }
 

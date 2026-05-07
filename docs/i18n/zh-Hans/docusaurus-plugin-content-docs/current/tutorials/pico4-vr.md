@@ -14,19 +14,19 @@ sidebar_position: 2
 ## 系统架构
 
 ```text
-Pico 头显 (XRoboToolkit App, 全身追踪)
-    --WiFi--> PC (XRoboToolkit PC Service + xrobotoolkit_sdk)
+Pico 头显（pico-bridge client，全身追踪）
+    --WiFi--> PC（pico-bridge PC receiver）
                 --> Teleopit (retarget -> RL policy -> MuJoCo / G1)
 ```
 
 ## 第一步：VR 头显设置
 
-1. 从 [XRoboToolkit-Unity-Client Releases](https://github.com/XR-Robotics/XRoboToolkit-Unity-Client/releases) 下载最新 APK
+1. 从 [pico-bridge Releases](https://github.com/BotRunner64/pico-bridge/releases) 下载头显端 APK
 2. 通过 adb 安装：
    ```bash
-   adb install XRoboToolkit-Unity-Client.apk
+   adb install pico-bridge.apk
    ```
-3. 在头显上启动 XRoboToolkit，开启**全身追踪**模式
+3. 启动 pico-bridge 头显端 client，并开启**全身追踪**模式
 4. 确保头显与控制 PC 处于**同一网络**
 
 ## 第二步：PC 端环境配置
@@ -34,29 +34,21 @@ Pico 头显 (XRoboToolkit App, 全身追踪)
 ### 前置要求
 
 - Ubuntu 22.04
-- Python 3.10+，已安装 Teleopit：`pip install -e .`
-- pybind11：`conda install -c conda-forge pybind11`
-- [XRoboToolkit PC Service](https://github.com/XR-Robotics/XRoboToolkit-PC-Service)：
-  ```bash
-  wget https://github.com/XR-Robotics/XRoboToolkit-PC-Service/releases/download/v1.0.0/XRoboToolkit_PC_Service_1.0.0_ubuntu_22.04_amd64.deb
-  sudo dpkg -i XRoboToolkit_PC_Service_1.0.0_ubuntu_22.04_amd64.deb
-  ```
+- Python 3.10+
+- 安装带 Pico extra 的 Teleopit：`pip install -e '.[pico4]'`
 
-### 安装 SDK
+### 安装 pico-bridge PC Receiver
 
 ```bash
-bash scripts/setup/setup_pico4.sh
+pip install -e '.[pico4]'
 ```
-
-该脚本会完成以下操作：
-- 检测 `libPXREARobotSDK.so` 是否已安装
-- 向系统链接器注册动态库
-- 编译并安装 `xrobotoolkit_sdk` Python 绑定
 
 验证安装：
 ```bash
-python -c "import xrobotoolkit_sdk; print('OK')"
+python -c "from pico_bridge import PicoBridge; print('OK')"
 ```
+
+Teleopit 会在 `Pico4InputProvider` 中启动 PC receiver。
 
 ## 第三步：仿真验证（Pico sim2sim）
 
@@ -76,8 +68,8 @@ python scripts/run/run_sim.py \
 ```
 
 正常运行后，虚拟机器人会跟随你的 VR 动作。如果机器人没有响应，请检查：
-- 头显上 XRoboToolkit 显示 "Connected"
-- PC Service 正在运行
+- 头显上的 pico-bridge client 已连接到 PC receiver
+- `input.bridge_host`、`input.bridge_port` 以及可选的 `input.bridge_advertise_ip` 与当前网络匹配
 - 两台设备处于同一网络
 
 ### 键盘模式流程
@@ -152,7 +144,7 @@ real_robot.network_interface=enp3s0
 
 | 现象 | 可能原因 | 解决方法 |
 |------|---------|---------|
-| `ImportError: xrobotoolkit_sdk` | SDK 未安装 | 执行 `bash scripts/setup/setup_pico4.sh` |
-| `TimeoutError: No Pico4 body data` | 头显未连接或未开启追踪 | 检查 XRoboToolkit 应用状态和网络连接 |
+| `ImportError: pico_bridge` | PC receiver 包未安装 | 执行 `pip install -e '.[pico4]'` |
+| `TimeoutError: No Pico4 body data` | 头显未连接或未开启追踪 | 检查 pico-bridge 头显 app 状态和网络连接 |
 | 机器人不跟随 VR 动作 | 仍处于 STANDING 模式 | 按遥控器 **Y** 进入 MOCAP |
-| `libPXREARobotSDK.so not found` | PC Service 未安装 | 安装 deb 包后重新执行安装脚本 |
+| 发现广播找不到 PC | 网卡不对或 UDP 被阻断 | 设置 `input.bridge_advertise_ip=<pc-ip>`，确认 UDP 端口 `63901` 可达 |

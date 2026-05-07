@@ -53,6 +53,5 @@ bridge = g1_bridge_sdk.G1Bridge(
 
 ## 使用场景
 
-- **Onboard sim2real**：`scripts/run/run_onboard_sim2real.py`（G1 NX 机载端）
 - **Pico4 真机遥操作**：`scripts/run/run_sim2real.py`
 - **独立站立测试**：`scripts/run/standalone_standing.py`

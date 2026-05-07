@@ -3,7 +3,7 @@ from scipy.spatial.transform import Rotation as R
 
 def get_human_neck_orientation(head_pose=None):
       """
-      从XRoboToolkit SDK获取头戴设备姿态并计算neck的roll, pitch, yaw角度
+      从头戴设备姿态计算neck的roll, pitch, yaw角度
       
       Returns:
           tuple: (roll, pitch, yaw) 以度为单位

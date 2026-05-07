@@ -53,18 +53,10 @@ See [G1 Bridge SDK](../reference/g1-bridge-sdk) for details.
 
 ```bash
 pip install -e '.[pico4]'
-bash scripts/setup/setup_pico4.sh
 ```
 
+Teleopit uses the PC-side `pico_bridge.PicoBridge` receiver for Pico tracking.
 See [Pico 4 VR Tutorial](../tutorials/pico4-vr) for the full setup guide.
-
-### Onboard (G1 NX)
-
-```bash
-bash scripts/setup/setup_onboard.sh
-```
-
-This script installs system dependencies, builds `g1_bridge_sdk`, and installs `teleopit[onboard]`.
 
 ## Verify Installation
 

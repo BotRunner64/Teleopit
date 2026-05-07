@@ -14,19 +14,19 @@ Real-time whole-body teleoperation using Pico 4 / Pico 4 Ultra full body trackin
 ## Architecture
 
 ```text
-Pico Headset (XRoboToolkit App, Full Body Tracking)
-    --WiFi--> PC (XRoboToolkit PC Service + xrobotoolkit_sdk)
+Pico Headset (pico-bridge client, full body tracking)
+    --WiFi--> PC (pico-bridge PC receiver)
                 --> Teleopit (retarget -> RL policy -> MuJoCo / G1)
 ```
 
 ## Step 1: VR Headset Setup
 
-1. Download the latest APK from [XRoboToolkit-Unity-Client Releases](https://github.com/XR-Robotics/XRoboToolkit-Unity-Client/releases)
+1. Download the headset client APK from [pico-bridge Releases](https://github.com/BotRunner64/pico-bridge/releases).
 2. Install via adb:
    ```bash
-   adb install XRoboToolkit-Unity-Client.apk
+   adb install pico-bridge.apk
    ```
-3. Launch XRoboToolkit on the headset and enable **Full Body Tracking** mode
+3. Launch the pico-bridge headset client and enable full body tracking.
 4. Ensure the headset and control PC are on the **same network**
 
 ## Step 2: PC Environment Setup
@@ -34,29 +34,21 @@ Pico Headset (XRoboToolkit App, Full Body Tracking)
 ### Prerequisites
 
 - Ubuntu 22.04
-- Python 3.10+, Teleopit installed: `pip install -e .`
-- pybind11: `conda install -c conda-forge pybind11`
-- [XRoboToolkit PC Service](https://github.com/XR-Robotics/XRoboToolkit-PC-Service):
-  ```bash
-  wget https://github.com/XR-Robotics/XRoboToolkit-PC-Service/releases/download/v1.0.0/XRoboToolkit_PC_Service_1.0.0_ubuntu_22.04_amd64.deb
-  sudo dpkg -i XRoboToolkit_PC_Service_1.0.0_ubuntu_22.04_amd64.deb
-  ```
+- Python 3.10+
+- Teleopit with the Pico extra: `pip install -e '.[pico4]'`
 
-### Install SDK
+### Install pico-bridge PC Receiver
 
 ```bash
-bash scripts/setup/setup_pico4.sh
+pip install -e '.[pico4]'
 ```
-
-The script will:
-- Detect if `libPXREARobotSDK.so` is installed
-- Register the dynamic library with the system linker
-- Build and install `xrobotoolkit_sdk` Python bindings
 
 Verify:
 ```bash
-python -c "import xrobotoolkit_sdk; print('OK')"
+python -c "from pico_bridge import PicoBridge; print('OK')"
 ```
+
+Teleopit starts the PC receiver from `Pico4InputProvider`.
 
 ## Step 3: Simulation Verification (Pico sim2sim)
 
@@ -76,8 +68,8 @@ python scripts/run/run_sim.py \
 ```
 
 You should see the virtual robot following your VR movements. If the robot doesn't respond, check:
-- XRoboToolkit shows "Connected" on the headset
-- PC Service is running
+- The pico-bridge headset client shows a connection to the PC receiver
+- `input.bridge_host`, `input.bridge_port`, and optional `input.bridge_advertise_ip` match your network
 - Both devices are on the same network
 
 ### Keyboard Mode Flow
@@ -152,7 +144,7 @@ real_robot.network_interface=enp3s0
 
 | Symptom | Possible Cause | Solution |
 |---------|---------------|----------|
-| `ImportError: xrobotoolkit_sdk` | SDK not installed | Run `bash scripts/setup/setup_pico4.sh` |
-| `TimeoutError: No Pico4 body data` | Headset not connected or tracking not started | Check XRoboToolkit app status and network |
+| `ImportError: pico_bridge` | PC receiver package not installed | Run `pip install -e '.[pico4]'` |
+| `TimeoutError: No Pico4 body data` | Headset not connected or tracking not started | Check pico-bridge headset app status and network |
 | Robot doesn't follow VR | Still in STANDING mode | Press **Y** on remote to enter MOCAP |
-| `libPXREARobotSDK.so not found` | PC Service not installed | Install deb package and re-run setup script |
+| Discovery does not find the PC | Wrong network interface or blocked UDP | Set `input.bridge_advertise_ip=<pc-ip>` and confirm UDP port `63901` is reachable |

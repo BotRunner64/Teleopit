@@ -32,7 +32,7 @@ bash scripts/setup/setup_g1_bridge.sh
 pip install -e '.[sim2real]'
 ```
 
-使用 Pico 路线时，还需执行：`bash scripts/setup/setup_pico4.sh`
+使用 Pico 路线时，还需安装 pico-bridge：`pip install -e '.[pico4]'`。
 
 ## 离线 BVH 播放
 

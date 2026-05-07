@@ -32,7 +32,7 @@ bash scripts/setup/setup_g1_bridge.sh
 pip install -e '.[sim2real]'
 ```
 
-For Pico path, also run: `bash scripts/setup/setup_pico4.sh`
+For Pico path, install pico-bridge as well: `pip install -e '.[pico4]'`.
 
 ## Offline BVH Playback
 

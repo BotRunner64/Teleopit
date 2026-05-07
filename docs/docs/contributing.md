@@ -30,7 +30,7 @@ teleopit/           # Core inference & deployment package
 ├── pipeline.py     # TeleopPipeline facade
 ├── controllers/    # RL policy controller + observation builder
 ├── robots/         # MuJoCoRobot implementation
-├── inputs/         # BVHInputProvider, Pico4InputProvider, ZMQInputProvider
+├── inputs/         # BVHInputProvider, Pico4InputProvider, UDPBVHInputProvider
 ├── retargeting/    # GMR motion retargeting
 ├── sim/            # SimulationLoop, reference motion utilities
 ├── sim2real/       # Hardware state machines
@@ -45,7 +45,7 @@ train_mimic/        # Training pipeline & RL framework
 └── data/           # Dataset construction tools
 
 scripts/            # Entry points
-├── run/            # run_sim.py, run_sim2real.py, run_onboard_sim2real.py
+├── run/            # run_sim.py, run_sim2real.py
 ├── setup/          # Asset download and setup
 ├── dev/            # Development utilities
 └── render/         # Video rendering

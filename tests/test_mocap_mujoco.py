@@ -6,7 +6,6 @@ import pytest
 
 from conftest import requires_mujoco
 from teleopit.inputs.pico4_provider import BODY_JOINT_NAMES, BODY_JOINT_PARENTS, Pico4InputProvider
-from teleopit.inputs.zmq_provider import ZMQInputProvider
 from teleopit.runtime.common import parse_viewers
 from teleopit.sim.mocap_mujoco import (
     MocapSkeletonSceneDrawer,
@@ -113,11 +112,8 @@ def test_parse_viewers_accepts_mocap_and_rejects_bvh() -> None:
         parse_viewers({"viewers": ["bvh", "retarget"]})
 
 
-def test_pico4_and_zmq_providers_expose_mocap_skeleton_metadata() -> None:
+def test_pico4_provider_exposes_mocap_skeleton_metadata() -> None:
     pico4 = object.__new__(Pico4InputProvider)
-    zmq = object.__new__(ZMQInputProvider)
 
     assert pico4.bone_names == list(BODY_JOINT_NAMES)
     np.testing.assert_array_equal(pico4.bone_parents, BODY_JOINT_PARENTS)
-    assert zmq.bone_names == list(BODY_JOINT_NAMES)
-    np.testing.assert_array_equal(zmq.bone_parents, BODY_JOINT_PARENTS)

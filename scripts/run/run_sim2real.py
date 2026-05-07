@@ -16,7 +16,7 @@ def _print_sim2real_controls(cfg: DictConfig) -> None:
     print("  Remote Y: enter MOCAP.")
     print("  Remote X: return to STANDING.")
     print("  Remote L1+R1: DAMPING / estop.")
-    if provider in ("pico4", "zmq_pico4"):
+    if provider == "pico4":
         print("  Mocap pause/resume: Pico/controller A.")
     else:
         print("  Offline playback: A pause/resume, B replay from start.")

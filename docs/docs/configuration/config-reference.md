@@ -57,20 +57,19 @@ Complete reference for all configurable fields.
 | Field | Description | Default |
 |-------|-------------|---------|
 | `input.provider` | `pico4` | `pico4` |
+| `input.human_format` | Retarget skeleton format | `pico_bridge` |
 | `input.pico4_timeout` | Wait timeout in seconds | `60` |
 | `input.pico4_buffer_size` | Frame buffer size | `60` |
 | `input.pause_button` | Button for pause/resume | `A` |
 | `input.pause_debounce_s` | Debounce time for pause button | `0.25` |
-
-### ZMQ Pico 4 (Onboard)
-
-| Field | Description | Default |
-|-------|-------------|---------|
-| `input.provider` | `zmq_pico4` | `zmq_pico4` |
-| `input.zmq_host` | IP of the PC running ZMQ publisher | `192.168.1.100` |
-| `input.zmq_port` | ZMQ PUB port | `5555` |
-| `input.zmq_topic` | ZMQ topic | `pico4` |
-| `input.zmq_timeout` | Wait timeout for first ZMQ frame (seconds) | `30` |
+| `input.bridge_host` | PC receiver bind host | `0.0.0.0` |
+| `input.bridge_port` | PC receiver UDP port | `63901` |
+| `input.bridge_discovery` | Enable pico-bridge discovery advertising | `true` |
+| `input.bridge_advertise_ip` | Optional advertised PC IP override | `null` |
+| `input.bridge_video` | Optional pico-bridge video mode | `null` |
+| `input.bridge_camera_device` | Optional camera device for bridge video | `null` |
+| `input.bridge_start_timeout` | Timeout while starting the bridge | `10.0` |
+| `input.bridge_history_size` | Pico frame history retained by the bridge | `120` |
 
 ### Realtime
 
@@ -88,7 +87,7 @@ Complete reference for all configurable fields.
 
 ## Sim2Real
 
-Fields used by sim2real configs (`sim2real.yaml`, `pico4_sim2real.yaml`, `onboard_sim2real.yaml`).
+Fields used by sim2real configs (`sim2real.yaml`, `pico4_sim2real.yaml`).
 
 ### Safety
 
@@ -119,7 +118,7 @@ Fields used by sim2real configs (`sim2real.yaml`, `pico4_sim2real.yaml`, `onboar
 | `pause_resume_warmup_steps` | Mocap frames to accumulate before resuming | `2` |
 | `pause_reset_alignment_on_resume` | Rebuild yaw/pivot alignment after pause | `true` |
 
-### Realtime Catch-up (Pico sim2real / Onboard)
+### Realtime Catch-up (Pico sim2real)
 
 | Field | Description | Default |
 |-------|-------------|---------|

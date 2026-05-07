@@ -53,6 +53,5 @@ bridge = g1_bridge_sdk.G1Bridge(
 
 ## Usage
 
-- **Onboard sim2real**: `scripts/run/run_onboard_sim2real.py`
 - **Pico4 hardware teleoperation**: `scripts/run/run_sim2real.py`
 - **Standalone standing test**: `scripts/run/standalone_standing.py`

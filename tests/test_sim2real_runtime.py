@@ -270,6 +270,33 @@ def test_state_machine_allows_mocap_reentry_after_returning_to_standing(monkeypa
     assert ctrl.mode == RobotMode.MOCAP
 
 
+def test_can_switch_to_mocap_returns_false_without_blocking_when_realtime_has_no_frame(monkeypatch) -> None:
+    from teleopit.sim2real.controller import Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    _install_controller_mocks(
+        monkeypatch,
+        policy=policy,
+        obs_builder=obs_builder,
+        qpos=np.zeros(36, dtype=np.float64),
+    )
+
+    ctrl = Sim2RealController(_make_cfg())
+    get_frame_calls = 0
+
+    def blocking_get_frame() -> dict[str, tuple[np.ndarray, np.ndarray]]:
+        nonlocal get_frame_calls
+        get_frame_calls += 1
+        raise AssertionError("get_frame should not be called before a realtime frame is available")
+
+    ctrl.input_provider.has_frame = lambda: False
+    ctrl.input_provider.get_frame = blocking_get_frame
+
+    assert ctrl._can_switch_to_mocap() is False
+    assert get_frame_calls == 0
+
+
 def test_mocap_step_episode_reset_on_transition(monkeypatch) -> None:
     """After _transition_to_mocap (episode-reset), the first mocap step should
     produce zero anchor velocities because _last_reference_qpos is None."""

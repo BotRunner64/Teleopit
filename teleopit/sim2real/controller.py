@@ -590,12 +590,14 @@ class Sim2RealController:
             logger.warning("Mocap check: only %d/%d valid offline frames", valid_count, frame_count)
             return False
 
-        # For Pico4 provider, check SDK data availability before calling
-        # get_frame() to avoid blocking the control loop for up to
-        # pico4_timeout on first frame.
-        if hasattr(self.input_provider, "_xrt"):
-            if not self.input_provider._xrt.is_body_data_available():
-                logger.warning("Mocap check: Pico4 body data not available yet")
+        has_frame = getattr(self.input_provider, "has_frame", None)
+        if callable(has_frame):
+            try:
+                if not bool(has_frame()):
+                    logger.warning("Mocap check: realtime input has no frame available yet")
+                    return False
+            except Exception:
+                logger.warning("Mocap check: failed to query realtime input availability")
                 return False
 
         valid_count = 0

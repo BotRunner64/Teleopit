@@ -74,20 +74,19 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `provider` | str | `pico4` | 输入源类型 |
+| `human_format` | str | `pico_bridge` | 重定向骨架格式 |
 | `pico4_timeout` | float | `60` | 等待设备连接的超时时间（秒） |
 | `pico4_buffer_size` | int | `60` | 帧缓冲区大小 |
 | `pause_button` | str | `A` | 用于暂停/恢复的手柄按钮名称 |
 | `pause_debounce_s` | float | `0.25` | 暂停按钮防抖时间 |
-
-### ZMQ Pico 4 输入（`input/zmq_pico4.yaml`，机载模式）
-
-| 字段 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `provider` | str | `zmq_pico4` | 输入源类型 |
-| `zmq_host` | str | `192.168.1.100` | 运行 ZMQ 发布端的 PC IP |
-| `zmq_port` | int | `5555` | ZMQ PUB 端口 |
-| `zmq_topic` | str | `pico4` | ZMQ 主题 |
-| `zmq_timeout` | float | `30` | 等待首帧 ZMQ 数据的超时时间（秒） |
+| `bridge_host` | str | `0.0.0.0` | PC receiver 绑定地址 |
+| `bridge_port` | int | `63901` | PC receiver UDP 端口 |
+| `bridge_discovery` | bool | `true` | 是否启用 pico-bridge 发现广播 |
+| `bridge_advertise_ip` | str/null | `null` | 可选的 PC 广播 IP 覆盖 |
+| `bridge_video` | str/null | `null` | 可选的 pico-bridge 视频模式 |
+| `bridge_camera_device` | str/null | `null` | 可选的视频相机设备 |
+| `bridge_start_timeout` | float | `10.0` | 启动 bridge 的超时时间 |
+| `bridge_history_size` | int | `120` | bridge 保留的 Pico 帧历史长度 |
 
 ## Realtime 字段
 
@@ -107,7 +106,7 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 
 ## Sim2Real 字段
 
-以下字段用于 sim2real 配置（`sim2real.yaml`、`pico4_sim2real.yaml`、`onboard_sim2real.yaml`）。
+以下字段用于 sim2real 配置（`sim2real.yaml`、`pico4_sim2real.yaml`）。
 
 ### 安全相关
 
@@ -138,7 +137,7 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 | `pause_resume_warmup_steps` | 恢复前需要积累的动捕帧数 | `2` |
 | `pause_reset_alignment_on_resume` | 暂停后重建偏航/轴心对齐 | `true` |
 
-### 实时追赶（Pico sim2real / 机载模式）
+### 实时追赶（Pico sim2real）
 
 | 字段 | 说明 | 默认值 |
 |---|---|---|

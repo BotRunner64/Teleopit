@@ -53,18 +53,10 @@ bash scripts/setup/setup_g1_bridge.sh
 
 ```bash
 pip install -e '.[pico4]'
-bash scripts/setup/setup_pico4.sh
 ```
 
+Teleopit 使用 PC 端的 `pico_bridge.PicoBridge` receiver 接收 Pico 追踪数据。
 完整设置流程详见 [Pico 4 VR 教程](../tutorials/pico4-vr)。
-
-### 机载部署（G1 NX）
-
-```bash
-bash scripts/setup/setup_onboard.sh
-```
-
-该脚本会安装系统依赖、编译 `g1_bridge_sdk`，并安装 `teleopit[onboard]`。
 
 ## 验证安装
 

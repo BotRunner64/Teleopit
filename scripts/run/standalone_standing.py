@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone G1 standing script with RL policy -- no Teleopit/xrobotoolkit dependency.
+"""Standalone G1 standing script with RL policy -- no Teleopit/Pico dependency.
 
 Uses ONNX RL policy inference to maintain balanced standing, matching the
 STANDING mode in Sim2RealController. Only depends on:

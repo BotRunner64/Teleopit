@@ -1,8 +1,8 @@
 """Pico4 VR full-body motion capture input provider.
 
-Uses xrobotoolkit_sdk to receive real-time body tracking data from a Pico4
-headset. Outputs the same ``{joint_name: (position, quat)}`` dict format as
-the BVH providers, so downstream retargeting is unchanged.
+Uses the PC-side ``pico_bridge`` receiver to collect PICO tracking frames.
+The provider converts native PICO/Unity poses (meters, xyzw quaternions) into
+Teleopit's realtime ``HumanFrame`` format.
 """
 
 from __future__ import annotations
@@ -11,25 +11,29 @@ from collections import deque
 import logging
 import threading
 import time
-from typing import Any, Callable, Dict, Tuple
+from typing import Any, Callable
 
 import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial.transform import Rotation as R
 
 from teleopit.inputs.realtime_frame_cache import RealtimeFrameCache
-from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType, HumanFrame, RealtimeInputPacket
+from teleopit.inputs.realtime_packet import (
+    ControlEvent,
+    ControlEventType,
+    HumanFrame,
+    RealtimeInputPacket,
+)
 from teleopit.inputs.rot_utils import quat_mul_np
 from teleopit.interfaces import RealtimeInputProvider
 from teleopit.sim.reference_motion import interpolate_human_frames
 
 logger = logging.getLogger(__name__)
 
-# Pre-compute the provider-space to Teleopit-space transform.
+# PICO/Unity -> Teleopit retarget input space.
 _INPUT_TO_TELEOPIT_MATRIX = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float64)
 _INPUT_TO_TELEOPIT_QUAT = R.from_matrix(_INPUT_TO_TELEOPIT_MATRIX).as_quat(scalar_first=True)
 
-# SMPL-X 24 body joint names from xrobotoolkit_sdk
 BODY_JOINT_NAMES = [
     "Pelvis", "Left_Hip", "Right_Hip", "Spine1", "Left_Knee", "Right_Knee",
     "Spine2", "Left_Ankle", "Right_Ankle", "Spine3", "Left_Foot", "Right_Foot",
@@ -47,19 +51,19 @@ BODY_JOINT_PARENTS = np.array(
     dtype=np.int32,
 )
 
-_PICO_BUTTON_GETTERS: dict[str, str] = {
-    "A": "get_A_button",
-    "B": "get_B_button",
-    "X": "get_X_button",
-    "Y": "get_Y_button",
-    "left_axis_click": "get_left_axis_click",
-    "right_axis_click": "get_right_axis_click",
-    "left_menu_button": "get_left_menu_button",
-    "right_menu_button": "get_right_menu_button",
+_PAUSE_BUTTON_MAP: dict[str, tuple[str, str]] = {
+    "A": ("right", "primaryButton"),
+    "B": ("right", "secondaryButton"),
+    "X": ("left", "primaryButton"),
+    "Y": ("left", "secondaryButton"),
+    "left_axis_click": ("left", "axisClick"),
+    "right_axis_click": ("right", "axisClick"),
+    "left_menu_button": ("left", "menuButton"),
+    "right_menu_button": ("right", "menuButton"),
 }
 
 
-def _coordinate_transform_input(body_pose_dict: dict) -> dict:
+def _coordinate_transform_input(body_pose_dict: dict[str, list]) -> dict[str, list]:
     """Transform provider-space poses into Teleopit's expected coordinates."""
     for body_name, value in body_pose_dict.items():
         x, y, z = value[0]
@@ -76,60 +80,74 @@ def _coordinate_transform_input(body_pose_dict: dict) -> dict:
 
 
 class Pico4InputProvider(RealtimeInputProvider):
-    """Real-time input provider using Pico4 full-body tracking via xrobotoolkit_sdk.
-
-    Implements the same interface expected by the shared Teleopit motion
-    pipeline, while also exposing realtime packet helpers.
-    """
+    """Realtime input provider backed by the ``pico_bridge`` PC receiver."""
 
     def __init__(
         self,
-        human_format: str = "xrobot",
+        human_format: str = "pico_bridge",
         timeout: float = 60.0,
         buffer_size: int = 60,
         timestamp_gap_reset_s: float = 0.15,
-        poll_sleep_s: float = 0.002,
         pause_button: str | None = "A",
         pause_debounce_s: float = 0.25,
+        bridge_host: str = "0.0.0.0",
+        bridge_port: int = 63901,
+        bridge_discovery: bool = True,
+        bridge_advertise_ip: str | None = None,
+        bridge_video: str | None = None,
+        bridge_camera_device: str | None = None,
+        bridge_start_timeout: float = 10.0,
+        bridge_history_size: int = 120,
+        bridge_cls: type[Any] | None = None,
     ) -> None:
-        try:
-            import xrobotoolkit_sdk as xrt
-        except ImportError as exc:
-            raise ImportError(
-                "xrobotoolkit_sdk is required for Pico4 input. "
-                "Install the Pico4 SDK or use a different input provider."
-            ) from exc
+        if bridge_cls is None:
+            try:
+                from pico_bridge import PicoBridge
+            except ImportError as exc:
+                raise ImportError(
+                    "pico_bridge is required for Pico4 input. Install the PC receiver package, "
+                    "for example: pip install -e '.[pico4]'"
+                ) from exc
+            bridge_cls = PicoBridge
 
-        self._xrt = xrt
-        self._xrt.init()
         self._human_format = human_format
-        self._timeout = timeout
+        self._timeout = float(timeout)
         self._closed = False
         self._frame_ready = threading.Event()
         self._lock = threading.Lock()
         self._frame_cache = RealtimeFrameCache[HumanFrame](buffer_size=buffer_size, fps_window=30)
         self._timestamp_gap_reset_s = float(timestamp_gap_reset_s)
-        self._poll_sleep_s = max(float(poll_sleep_s), 0.0)
         self._pending_control_events: deque[ControlEvent] = deque()
         self._pause_button = None if pause_button in (None, "", "null") else str(pause_button)
         self._pause_debounce_s = max(float(pause_debounce_s), 0.0)
-        self._pause_button_reader = self._resolve_button_reader(self._pause_button)
+        self._pause_button_path = self._resolve_button_path(self._pause_button)
         self._last_pause_button_pressed = False
         self._last_pause_toggle_timestamp: float | None = None
-        self._last_raw_body_poses: NDArray[np.float64] | None = None
+        self._last_raw_body_joints: NDArray[np.float64] | None = None
         self._last_frame_timestamp: float | None = None
+        self._last_source_seq: int | None = None
+        self._bridge = bridge_cls(
+            host=bridge_host,
+            port=int(bridge_port),
+            discovery=bool(bridge_discovery),
+            advertise_ip=bridge_advertise_ip,
+            video=bridge_video,
+            camera_device=bridge_camera_device,
+            history_size=int(bridge_history_size),
+            start_timeout=float(bridge_start_timeout),
+        )
+        self._bridge.start()
         self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True, name="pico4_input")
         self._poll_thread.start()
-        if self._pause_button is not None and self._pause_button_reader is None:
+        if self._pause_button is not None and self._pause_button_path is None:
             logger.warning(
-                "Pico4InputProvider pause button '%s' is unsupported by xrobotoolkit_sdk; pause events disabled",
+                "Pico4InputProvider pause button '%s' is unsupported by pico_bridge; pause events disabled",
                 self._pause_button,
             )
-        logger.info("Pico4InputProvider initialized (xrobotoolkit_sdk)")
+        logger.info("Pico4InputProvider initialized (pico_bridge)")
 
     @property
     def fps(self) -> float:
-        """Measured body tracking fps (falls back to 30.0 until enough samples)."""
         with self._lock:
             return self._frame_cache.fps()
 
@@ -146,75 +164,33 @@ class Pico4InputProvider(RealtimeInputProvider):
         return BODY_JOINT_PARENTS.copy()
 
     def is_available(self) -> bool:
-        """Whether the provider is healthy and can be polled.
-
-        Returns ``True`` as long as the provider has not been closed.
-        For realtime providers, ``is_available()`` means "provider is
-        alive" (not "data ready right now"). The actual
-        blocking-until-data logic lives in ``get_frame()``.
-        """
         return not self._closed and self._poll_thread.is_alive()
 
     def get_frame(self) -> HumanFrame:
-        """Get the current body tracking frame.
-
-        Blocks up to ``timeout`` seconds waiting for the first tracked
-        frame, then returns the latest cached realtime frame.
-
-        Returns:
-            Dict mapping joint name to (position_3d, quaternion_wxyz) tuples
-            after Teleopit's input-space transform.
-
-        Raises:
-            TimeoutError: If no body data arrives within the timeout.
-        """
         with self._lock:
             if len(self._frame_cache) > 0:
                 return self._frame_cache.latest()
         if not self._frame_ready.wait(timeout=self._timeout):
-            raise TimeoutError(
-                f"No Pico4 body data received within {self._timeout:.1f}s timeout"
-            )
+            raise TimeoutError(f"No Pico4 body data received within {self._timeout:.1f}s timeout")
         with self._lock:
             if len(self._frame_cache) <= 0:
                 raise RuntimeError("Pico4 frame buffer signaled ready without a latest frame")
             return self._frame_cache.latest()
 
     def get_frame_packet(self) -> tuple[HumanFrame, float, int]:
-        """Return the latest cached frame together with timestamp and sequence."""
         with self._lock:
             if len(self._frame_cache) > 0:
                 return self._frame_cache.latest_packet()
         if not self._frame_ready.wait(timeout=self._timeout):
-            raise TimeoutError(
-                f"No Pico4 body data received within {self._timeout:.1f}s timeout"
-            )
+            raise TimeoutError(f"No Pico4 body data received within {self._timeout:.1f}s timeout")
         with self._lock:
             if len(self._frame_cache) <= 0:
                 raise RuntimeError("Pico4 frame buffer signaled ready without a latest frame")
             return self._frame_cache.latest_packet()
 
     def get_realtime_input_packet(self) -> RealtimeInputPacket[HumanFrame]:
-        """Return the latest frame packet together with pending control events."""
+        frame, timestamp_s, seq = self.get_frame_packet()
         with self._lock:
-            if len(self._frame_cache) > 0:
-                frame, timestamp_s, seq = self._frame_cache.latest_packet()
-                control_events = tuple(self._pending_control_events)
-                self._pending_control_events.clear()
-                return RealtimeInputPacket(
-                    frame=frame,
-                    timestamp_s=timestamp_s,
-                    seq=seq,
-                    control_events=control_events,
-                )
-        if not self._frame_ready.wait(timeout=self._timeout):
-            raise TimeoutError(
-                f"No Pico4 body data received within {self._timeout:.1f}s timeout"
-            )
-        with self._lock:
-            if len(self._frame_cache) <= 0:
-                raise RuntimeError("Pico4 frame buffer signaled ready without a latest frame")
-            frame, timestamp_s, seq = self._frame_cache.latest_packet()
             control_events = tuple(self._pending_control_events)
             self._pending_control_events.clear()
         return RealtimeInputPacket(
@@ -225,23 +201,18 @@ class Pico4InputProvider(RealtimeInputProvider):
         )
 
     def pop_control_events(self) -> tuple[ControlEvent, ...]:
-        """Return pending control events without blocking on frame availability."""
         with self._lock:
             control_events = tuple(self._pending_control_events)
             self._pending_control_events.clear()
         return control_events
 
     def has_frame(self) -> bool:
-        """Whether at least one realtime frame is cached locally."""
         with self._lock:
             return len(self._frame_cache) > 0
 
     def sample_frame(self, query_time_s: float, delay_s: float) -> HumanFrame:
-        """Sample a delayed interpolated realtime frame from the polling buffer."""
         if not self._frame_ready.wait(timeout=self._timeout):
-            raise TimeoutError(
-                f"No Pico4 body data received within {self._timeout:.1f}s timeout"
-            )
+            raise TimeoutError(f"No Pico4 body data received within {self._timeout:.1f}s timeout")
         with self._lock:
             buf = self._frame_cache.snapshot()
 
@@ -251,7 +222,6 @@ class Pico4InputProvider(RealtimeInputProvider):
             return buf[0][0]
 
         target_time = float(query_time_s - max(delay_s, 0.0))
-
         if target_time <= buf[0][1]:
             return buf[0][0]
         if target_time >= buf[-1][1]:
@@ -270,44 +240,78 @@ class Pico4InputProvider(RealtimeInputProvider):
         return buf[-1][0]
 
     def close(self) -> None:
-        """Mark provider as closed."""
         self._closed = True
-        self._poll_thread.join(timeout=1.0)
+        self._poll_thread.join(timeout=3.0)
+        close = getattr(self._bridge, "close", None)
+        if callable(close):
+            close()
         logger.info("Pico4InputProvider closed")
 
     def _poll_loop(self) -> None:
         while not self._closed:
-            timestamp = time.monotonic()
-            emitted_control_event = self._poll_control_events(timestamp=timestamp)
-            if not self._xrt.is_body_data_available():
-                time.sleep(self._poll_sleep_s if emitted_control_event else 0.001)
-                continue
-
             try:
-                body_poses = np.asarray(self._xrt.get_body_joints_pose(), dtype=np.float64)
+                frame = self._bridge.wait_frame(timeout=0.1, after_seq=self._last_source_seq)
+            except TimeoutError:
+                continue
             except Exception:
-                logger.exception("Failed to read Pico4 body data")
-                time.sleep(0.05)
+                if not self._closed:
+                    logger.exception("Failed to read pico_bridge frame")
+                    time.sleep(0.05)
                 continue
 
-            if not self._accept_body_poses(body_poses, timestamp=timestamp):
-                time.sleep(self._poll_sleep_s if emitted_control_event else 0.001)
-                continue
+            self._accept_pico_frame(frame)
 
-            time.sleep(self._poll_sleep_s)
+    def _accept_pico_frame(self, frame: Any) -> bool:
+        timestamp = float(getattr(frame, "receive_time_s", time.monotonic()))
+        self._poll_control_events(frame, timestamp=timestamp)
 
-    def _poll_control_events(self, *, timestamp: float) -> bool:
-        if self._pause_button_reader is None:
+        body = getattr(frame, "body", None)
+        if body is None or not bool(getattr(body, "active", False)):
+            self._last_source_seq = int(getattr(frame, "seq", self._last_source_seq or -1))
             return False
 
-        try:
-            raw_value = self._pause_button_reader()
-        except Exception:
-            logger.exception("Failed to read Pico4 pause button '%s'; disabling pause events", self._pause_button)
-            self._pause_button_reader = None
+        body_joints = np.asarray(getattr(body, "joints"), dtype=np.float64)
+        if body_joints.shape != (len(BODY_JOINT_NAMES), 7):
+            logger.warning("Unexpected pico_bridge body joint shape: %s", body_joints.shape)
+            self._last_source_seq = int(getattr(frame, "seq", self._last_source_seq or -1))
             return False
 
-        pressed = self._normalize_button_value(raw_value)
+        if self._last_raw_body_joints is not None and np.array_equal(body_joints, self._last_raw_body_joints):
+            self._last_source_seq = int(getattr(frame, "seq", self._last_source_seq or -1))
+            return False
+
+        human_frame = self._convert_body_joints_to_frame(body_joints)
+        with self._lock:
+            if (
+                self._last_frame_timestamp is not None
+                and self._timestamp_gap_reset_s > 0.0
+                and timestamp - self._last_frame_timestamp > self._timestamp_gap_reset_s
+            ):
+                self._frame_cache.clear()
+                logger.warning(
+                    "Pico4InputProvider timestamp-gap reset | gap=%.4fs",
+                    timestamp - self._last_frame_timestamp,
+                )
+            if self._last_frame_timestamp is not None and timestamp <= self._last_frame_timestamp + 1e-9:
+                timestamp = self._last_frame_timestamp + 1e-6
+
+            self._frame_cache.append(human_frame, timestamp, fps_timestamp=timestamp)
+            self._last_raw_body_joints = body_joints.copy()
+            self._last_frame_timestamp = timestamp
+            self._last_source_seq = int(getattr(frame, "seq", self._last_source_seq or -1))
+
+        self._frame_ready.set()
+        return True
+
+    def _poll_control_events(self, frame: Any, *, timestamp: float) -> bool:
+        if self._pause_button_path is None:
+            return False
+
+        side, button_name = self._pause_button_path
+        controllers = getattr(frame, "controllers", None)
+        controller = None if controllers is None else getattr(controllers, side, None)
+        buttons = {} if controller is None else getattr(controller, "buttons", {}) or {}
+        pressed = bool(buttons.get(button_name, False))
         emitted = False
         if pressed and not self._last_pause_button_pressed:
             if (
@@ -327,68 +331,19 @@ class Pico4InputProvider(RealtimeInputProvider):
         self._last_pause_button_pressed = pressed
         return emitted
 
-    def _accept_body_poses(self, body_poses: NDArray[np.float64], *, timestamp: float) -> bool:
-        if self._last_raw_body_poses is not None and np.array_equal(body_poses, self._last_raw_body_poses):
-            return False
-
-        frame = self._convert_body_poses_to_frame(body_poses)
-        frame_timestamp = float(timestamp)
-
-        with self._lock:
-            if (
-                self._last_frame_timestamp is not None
-                and self._timestamp_gap_reset_s > 0.0
-                and frame_timestamp - self._last_frame_timestamp > self._timestamp_gap_reset_s
-            ):
-                self._frame_cache.clear()
-                logger.warning(
-                    "Pico4InputProvider timestamp-gap reset | gap=%.4fs",
-                    frame_timestamp - self._last_frame_timestamp,
-                )
-            if self._last_frame_timestamp is not None and frame_timestamp <= self._last_frame_timestamp + 1e-9:
-                frame_timestamp = self._last_frame_timestamp + 1e-6
-
-            self._frame_cache.append(frame, frame_timestamp, fps_timestamp=frame_timestamp)
-            self._last_raw_body_poses = body_poses.copy()
-            self._last_frame_timestamp = frame_timestamp
-
-        self._frame_ready.set()
-        return True
-
-    def _resolve_button_reader(self, pause_button: str | None) -> Callable[[], object] | None:
+    @staticmethod
+    def _resolve_button_path(pause_button: str | None) -> tuple[str, str] | None:
         if pause_button is None:
             return None
-        getter_name = _PICO_BUTTON_GETTERS.get(pause_button, pause_button)
-        if not getter_name.startswith("get_"):
-            getter_name = f"get_{getter_name}"
-        getter = getattr(self._xrt, getter_name, None)
-        if not callable(getter):
-            return None
-        return getter
+        return _PAUSE_BUTTON_MAP.get(pause_button)
 
     @staticmethod
-    def _normalize_button_value(raw_value: object) -> bool:
-        if isinstance(raw_value, np.ndarray):
-            if raw_value.size <= 0:
-                return False
-            raw_value = raw_value.reshape(-1)[0]
-        if isinstance(raw_value, (tuple, list)):
-            if not raw_value:
-                return False
-            raw_value = raw_value[0]
-        if isinstance(raw_value, (bool, np.bool_)):
-            return bool(raw_value)
-        if isinstance(raw_value, (int, float, np.integer, np.floating)):
-            return float(raw_value) > 0.5
-        return bool(raw_value)
-
-    @staticmethod
-    def _convert_body_poses_to_frame(body_poses: NDArray[np.float64]) -> HumanFrame:
+    def _convert_body_joints_to_frame(body_joints: NDArray[np.float64]) -> HumanFrame:
         body_pose_dict: dict[str, list] = {}
         for i, joint_name in enumerate(BODY_JOINT_NAMES):
-            pos = [body_poses[i][0], body_poses[i][1], body_poses[i][2]]
-            # SDK returns [x,y,z,qx,qy,qz,qw] — convert to scalar-first [w,x,y,z]
-            rot = [body_poses[i][6], body_poses[i][3], body_poses[i][4], body_poses[i][5]]
+            pos = [body_joints[i][0], body_joints[i][1], body_joints[i][2]]
+            # pico_bridge returns [x, y, z, qx, qy, qz, qw].
+            rot = [body_joints[i][6], body_joints[i][3], body_joints[i][4], body_joints[i][5]]
             body_pose_dict[joint_name] = [pos, rot]
 
         body_pose_dict = _coordinate_transform_input(body_pose_dict)

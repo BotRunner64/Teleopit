@@ -25,7 +25,7 @@ class InputProvider(Protocol):
     """Minimal interface shared by all human-motion input sources.
 
     Satisfied by both offline providers (``BVHInputProvider``)
-    and realtime providers (``Pico4InputProvider``, ``ZMQInputProvider``).
+    and realtime providers such as ``Pico4InputProvider``.
     """
 
     @property
@@ -44,7 +44,7 @@ class InputProvider(Protocol):
 
 @runtime_checkable
 class RealtimeInputProvider(InputProvider, Protocol):
-    """Extended interface for realtime streaming providers (Pico4, ZMQ).
+    """Extended interface for realtime streaming providers such as Pico4.
 
     Adds methods required by the realtime buffering pipeline that offline
     providers (BVH, looping wrappers) do not implement.

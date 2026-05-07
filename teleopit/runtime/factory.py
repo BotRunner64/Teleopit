@@ -188,19 +188,17 @@ def _prepare_input_cfg(input_cfg: Any, project_root: Path, *, sim2real: bool) ->
             required=True,
             missing_message="input.bvh_file must be set for offline BVH input",
         )
-    elif provider_kind == "zmq_pico4":
-        pass  # no path normalization needed
     elif provider_kind == "udp_bvh":
         pass  # skeleton resolved automatically from bvh_format
     elif provider_kind != "pico4":
         raise ValueError(
             f"Unsupported input.provider='{provider_kind}'. "
-            "Supported providers are bvh, pico4, zmq_pico4, udp_bvh."
+            "Supported providers are bvh, pico4, udp_bvh."
         )
 
-    if sim2real and provider_kind not in ("bvh", "pico4", "zmq_pico4", "udp_bvh"):
+    if sim2real and provider_kind not in ("bvh", "pico4", "udp_bvh"):
         raise ValueError(
-            f"Sim2real only supports bvh, pico4, or zmq_pico4 input providers; got '{provider_kind}'."
+            f"Sim2real only supports bvh, pico4, or udp_bvh input providers; got '{provider_kind}'."
         )
     return provider_kind
 
@@ -224,29 +222,22 @@ def _build_input_provider(
             udp_timeout=float(cfg_get(input_cfg, "udp_timeout", 30.0)),
         )
 
-    if provider_kind == "zmq_pico4":
-        from teleopit.inputs.zmq_provider import ZMQInputProvider
-
-        return ZMQInputProvider(
-            host=str(cfg_get(input_cfg, "zmq_host", "192.168.1.100")),
-            port=int(cfg_get(input_cfg, "zmq_port", 5555)),
-            topic=str(cfg_get(input_cfg, "zmq_topic", "pico4")),
-            human_format=str(cfg_get(input_cfg, "human_format", "xrobot")),
-            timeout=float(cfg_get(input_cfg, "zmq_timeout", 30.0)),
-            conflate=bool(cfg_get(input_cfg, "zmq_conflate", True)),
-            recv_hwm=int(cfg_get(input_cfg, "zmq_rcv_hwm", 1)),
-            seq_gap_reset_threshold=int(cfg_get(input_cfg, "zmq_seq_gap_reset_threshold", 4)),
-        )
-
     if provider_kind == "pico4":
         return pico4_input_cls(
-            human_format=str(cfg_get(input_cfg, "human_format", "xrobot")),
+            human_format=str(cfg_get(input_cfg, "human_format", "pico_bridge")),
             timeout=float(cfg_get(input_cfg, "pico4_timeout", 60.0)),
             buffer_size=int(cfg_get(input_cfg, "pico4_buffer_size", 60)),
             timestamp_gap_reset_s=float(cfg_get(input_cfg, "pico4_timestamp_gap_reset_s", 0.15)),
-            poll_sleep_s=float(cfg_get(input_cfg, "pico4_poll_sleep_s", 0.002)),
             pause_button=cfg_get(input_cfg, "pause_button", "A"),
             pause_debounce_s=float(cfg_get(input_cfg, "pause_debounce_s", 0.25)),
+            bridge_host=str(cfg_get(input_cfg, "bridge_host", "0.0.0.0")),
+            bridge_port=int(cfg_get(input_cfg, "bridge_port", 63901)),
+            bridge_discovery=bool(cfg_get(input_cfg, "bridge_discovery", True)),
+            bridge_advertise_ip=cfg_get(input_cfg, "bridge_advertise_ip", None),
+            bridge_video=cfg_get(input_cfg, "bridge_video", None),
+            bridge_camera_device=cfg_get(input_cfg, "bridge_camera_device", None),
+            bridge_start_timeout=float(cfg_get(input_cfg, "bridge_start_timeout", 10.0)),
+            bridge_history_size=int(cfg_get(input_cfg, "bridge_history_size", 120)),
         )
 
     return bvh_input_cls(
@@ -260,7 +251,7 @@ def _resolve_human_format(input_cfg: Any, input_provider: Any) -> str:
     if hasattr(input_provider, "human_format"):
         provider_format = input_provider.human_format
         provider_kind = str(cfg_get(input_cfg, "provider", "bvh")).lower()
-        if provider_kind in ("pico4", "zmq_pico4"):
+        if provider_kind == "pico4":
             return str(provider_format)
         return f"bvh_{provider_format}"
 
@@ -268,8 +259,8 @@ def _resolve_human_format(input_cfg: Any, input_provider: Any) -> str:
     if human_format and str(human_format) != "null":
         return str(human_format)
 
-    if str(cfg_get(input_cfg, "provider", "bvh")).lower() in ("pico4", "zmq_pico4"):
-        return str(cfg_get(input_cfg, "human_format", "xrobot"))
+    if str(cfg_get(input_cfg, "provider", "bvh")).lower() == "pico4":
+        return str(cfg_get(input_cfg, "human_format", "pico_bridge"))
     return f"bvh_{cfg_get(input_cfg, 'bvh_format', 'lafan1')}"
 
 

@@ -43,9 +43,9 @@ teleopit/                 # Core inference package
 │   └── observation.py    # VelCmdObservationBuilder
 ├── inputs/
 │   ├── bvh_provider.py       # BVHInputProvider — offline BVH file
-│   ├── pico4_provider.py     # Pico4InputProvider — xrobotoolkit_sdk realtime body tracking input
+│   ├── pico4_provider.py     # Pico4InputProvider — pico_bridge PC receiver input
 │   ├── rot_utils.py          # Quaternion helpers for input-space transforms
-│   └── zmq_provider.py       # ZMQInputProvider — onboard Pico4 realtime receiver
+│   └── udp_bvh_provider.py   # UDPBVHInputProvider — realtime BVH packet input
 ├── retargeting/
 │   ├── core.py           # RetargetingModule + extract_mimic_obs()
 │   └── gmr/              # Self-contained GMR code; heavyweight assets are downloaded into an ignored path
@@ -58,8 +58,7 @@ scripts/
 ├── run_sim.py            # Offline sim2sim pipeline
 ├── run_sim2real.py       # G1 sim2real control; supports offline BVH playback and Pico4
 ├── render_sim.py         # Render single BVH → 3 MuJoCo videos (mocap input, retarget, sim2sim)
-├── compute_ik_offsets.py # Compute IK quaternion offsets for new BVH formats
-└── setup_pico4.sh        # Pico4 environment setup helper
+└── compute_ik_offsets.py # Compute IK quaternion offsets for new BVH formats
 train_mimic/              # Training package
 ├── app.py                # Shared app helpers for train/play/benchmark
 ├── tasks/tracking/config/
@@ -122,8 +121,8 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - `playback.pause_on_end=true` keeps the final pose and waits for manual replay
 
 ### Pico4 Realtime Input
-- `Pico4InputProvider` reads realtime body tracking from `xrobotoolkit_sdk`
-- Bone naming follows `xrobot_to_g1.json`
+- `Pico4InputProvider` reads realtime body tracking from the PC-side `pico_bridge.PicoBridge`
+- Bone naming follows `pico_bridge_to_g1.json`
 - The provider applies an input-space transform to match the current retarget config
 - Do not hardcode that transform as a public coordinate-system contract; validate against actual retarget/sim2sim behavior when SDK or firmware changes
 - Pico4 realtime control uses the same retargeted-reference timeline path as the shared realtime input stack
@@ -140,7 +139,7 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - Realtime reference buffering is controlled by `retarget_buffer_enabled`, `retarget_buffer_window_s`, `retarget_buffer_delay_s`, `reference_steps`, `realtime_buffer_warmup_steps`, and the low/high watermark knobs
 - Realtime inferred `motion_joint_vel`, anchor linear velocity, and anchor angular velocity can be EMA-smoothed via `reference_velocity_smoothing_alpha` and `reference_anchor_velocity_smoothing_alpha`
 - Sim2real Pico pause/resume adds a mocap-session sub-state machine: `ACTIVE → PAUSED → RESUMING → ACTIVE`
-- Realtime sim2sim with Pico/ZMQ control events uses the same mocap-session pause/resume semantics and rebuilds the realtime reference path on resume
+- Realtime sim2sim with Pico control events uses the same mocap-session pause/resume semantics and rebuilds the realtime reference path on resume
 - Realtime Pico sim2sim can start directly in `STANDING` with keyboard mode control enabled via top-level `keyboard.enabled`
 
 ### Inference Observation
