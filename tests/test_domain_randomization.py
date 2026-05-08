@@ -24,7 +24,7 @@ def test_general_tracking_domain_randomization_matches_gr00t_active_set() -> Non
     push_robot = events["push_robot"]
     assert push_robot.func is mdp.push_by_setting_velocity
     assert push_robot.mode == "interval"
-    assert push_robot.interval_range_s == (4.0, 6.0)
+    assert push_robot.interval_range_s == (1.0, 3.0)
     assert push_robot.params["velocity_range"] == {
         "x": (-0.5, 0.5),
         "y": (-0.5, 0.5),

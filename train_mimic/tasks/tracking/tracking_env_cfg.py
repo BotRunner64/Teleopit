@@ -163,7 +163,7 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
         "push_robot": EventTermCfg(
             func=mdp.push_by_setting_velocity,
             mode="interval",
-            interval_range_s=(4.0, 6.0),
+            interval_range_s=(1.0, 3.0),
             params={"velocity_range": VELOCITY_RANGE},
         ),
         "base_com": EventTermCfg(
@@ -256,13 +256,8 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
     terminations: dict[str, TerminationTermCfg] = {
         "time_out": TerminationTermCfg(func=mdp.time_out, time_out=True),
         "anchor_pos": TerminationTermCfg(
-            func=mdp.bad_anchor_pos_z_only_adaptive,
-            params={
-                "command_name": "motion",
-                "threshold": 0.15,
-                "down_threshold": 0.4,
-                "root_height_threshold": 0.5,
-            },
+            func=mdp.bad_anchor_pos_z_only,
+            params={"command_name": "motion", "threshold": 0.25},
         ),
         "anchor_ori": TerminationTermCfg(
             func=mdp.bad_anchor_ori,
@@ -273,20 +268,10 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
             },
         ),
         "ee_body_pos": TerminationTermCfg(
-            func=mdp.bad_motion_body_pos_z_only_adaptive,
+            func=mdp.bad_motion_body_pos_z_only,
             params={
                 "command_name": "motion",
-                "threshold": 0.15,
-                "down_threshold": 0.4,
-                "root_height_threshold": 0.5,
-                "body_names": (),  # Set per-robot.
-            },
-        ),
-        "foot_pos_xyz": TerminationTermCfg(
-            func=mdp.bad_motion_body_pos,
-            params={
-                "command_name": "motion",
-                "threshold": 0.2,
+                "threshold": 0.25,
                 "body_names": (),  # Set per-robot.
             },
         ),

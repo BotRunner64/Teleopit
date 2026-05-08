@@ -34,20 +34,6 @@ def bad_anchor_pos_z_only(
     )
 
 
-def bad_anchor_pos_z_only_adaptive(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    threshold: float,
-    down_threshold: float,
-    root_height_threshold: float,
-) -> torch.Tensor:
-    command = cast(MotionCommand, env.command_manager.get_term(command_name))
-    height_err = torch.abs(command.anchor_pos_w[:, -1] - command.robot_anchor_pos_w[:, -1])
-    threshold_tensor = torch.full_like(height_err, threshold)
-    threshold_tensor[command.anchor_pos_w[:, -1] < root_height_threshold] = down_threshold
-    return height_err > threshold_tensor
-
-
 def bad_anchor_ori(
     env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg, command_name: str, threshold: float
 ) -> torch.Tensor:
@@ -98,23 +84,3 @@ def bad_motion_body_pos_z_only(
         - command.robot_body_pos_w[:, body_indexes, -1]
     )
     return torch.any(error > threshold, dim=-1)
-
-
-def bad_motion_body_pos_z_only_adaptive(
-    env: ManagerBasedRlEnv,
-    command_name: str,
-    threshold: float,
-    down_threshold: float,
-    root_height_threshold: float,
-    body_names: tuple[str, ...] | None = None,
-) -> torch.Tensor:
-    command = cast(MotionCommand, env.command_manager.get_term(command_name))
-
-    body_indexes = _get_body_indexes(command, body_names)
-    error = torch.abs(
-        command.body_pos_relative_w[:, body_indexes, -1]
-        - command.robot_body_pos_w[:, body_indexes, -1]
-    )
-    threshold_tensor = torch.full_like(error, threshold)
-    threshold_tensor[command.anchor_pos_w[:, -1] < root_height_threshold] = down_threshold
-    return torch.any(error > threshold_tensor, dim=-1)

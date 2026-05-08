@@ -288,7 +288,6 @@ def main() -> int:
         env_cfg.terminations.pop("anchor_pos", None)
         env_cfg.terminations.pop("anchor_ori", None)
         env_cfg.terminations.pop("ee_body_pos", None)
-        env_cfg.terminations.pop("foot_pos_xyz", None)
         env_cfg.terminations.pop("body_z_tracking_failure", None)
         env_cfg.terminations.pop("gravity_tracking_failure", None)
 
