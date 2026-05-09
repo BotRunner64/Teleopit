@@ -143,6 +143,44 @@ def motion_global_body_angular_velocity_error_exp(
     return torch.exp(-error.mean(-1) / std**2)
 
 
+def self_collision_cost(
+    env: ManagerBasedRlEnv,
+    sensor_name: str | tuple[str, ...],
+    force_threshold: float = 10.0,
+) -> torch.Tensor:
+    """Penalize self-collision history frames above the configured force threshold."""
+    hit = _self_collision_hits(env, sensor_name, force_threshold)
+    return hit.sum(dim=-1).float()
+
+
+def _self_collision_hits(
+    env: ManagerBasedRlEnv,
+    sensor_name: str | tuple[str, ...],
+    force_threshold: float,
+) -> torch.Tensor:
+    sensor_names = (sensor_name,) if isinstance(sensor_name, str) else sensor_name
+    force_histories = []
+    found_values = []
+    for name in sensor_names:
+        data = env.scene[name].data
+        if data.force_history is not None:
+            force_histories.append(data.force_history)
+        else:
+            assert data.found is not None
+            found = data.found
+            if found.ndim == 1:
+                found = found.unsqueeze(-1)
+            found_values.append(found)
+
+    if force_histories:
+        force_history = torch.cat(force_histories, dim=1)
+        force_mag = torch.norm(force_history, dim=-1)
+        return (force_mag > force_threshold).any(dim=1)
+
+    found = torch.cat(found_values, dim=1)
+    return (found > 0).any(dim=1, keepdim=True)
+
+
 class joint_torque_limits:
     """Penalize actuator-force limit violations with a configurable soft margin."""
 
