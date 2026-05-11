@@ -30,10 +30,12 @@ bash scripts/setup/setup_g1_bridge.sh
 import g1_bridge_sdk
 
 bridge = g1_bridge_sdk.G1Bridge(
-    network_interface="eth0",   # 连接 G1 的网卡
+    network_interface="enp130s0",  # PC 上连接 G1 的以太网接口
     publish_hz=200              # 指令发布频率（默认 200 Hz）
 )
 ```
+
+PC 通过网线连接 G1 控制时，先在 PC 上运行 `ifconfig`，填写这根 G1 网线对应的接口名。在机器人 onboard 计算机上运行时，`eth0` 通常就是正确接口。
 
 | 方法 | 说明 |
 |------|------|

@@ -106,7 +106,7 @@ Fields used by sim2real configs (`sim2real.yaml`, `pico4_sim2real.yaml`).
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `real_robot.network_interface` | Network interface for DDS communication | `eth0` |
+| `real_robot.network_interface` | Network interface for Unitree DDS communication. For wired PC-to-G1 control, find the cable interface with `ifconfig` and set that name, for example `enp130s0`; for onboard robot execution, `eth0` is usually correct. | `eth0` |
 | `real_robot.kp_real` | Real-robot proportional gains (per joint) | - |
 | `real_robot.kd_real` | Real-robot derivative gains (per joint) | - |
 | `real_robot.kd_damping` | Damping mode kd | `8.0` |

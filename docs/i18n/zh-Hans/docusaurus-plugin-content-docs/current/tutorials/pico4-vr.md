@@ -129,8 +129,10 @@ git submodule update --init --recursive
 python scripts/run/run_sim2real.py \
     --config-name pico4_sim2real \
     controller.policy_path=track.onnx \
-    real_robot.network_interface=eth0
+    real_robot.network_interface=enp130s0
 ```
+
+PC 通过网线连接 G1 控制时，先在 PC 上运行 `ifconfig`，将 `real_robot.network_interface` 设置为连接 G1 的以太网接口名，例如 `enp130s0`。在机器人 onboard 计算机上运行时，默认的 `eth0` 通常是正确值。
 
 ### 操作流程
 
@@ -170,7 +172,7 @@ input.pause_button=right_axis_click
 input.video.enabled=true
 
 # 指定网络接口
-real_robot.network_interface=enp3s0
+real_robot.network_interface=enp130s0
 ```
 
 ## 故障排查

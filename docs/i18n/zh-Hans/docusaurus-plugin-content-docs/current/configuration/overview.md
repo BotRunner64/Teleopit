@@ -55,10 +55,12 @@ python scripts/run/run_sim.py \
 
 ### 修改网络接口（sim2real）
 
+PC 通过网线连接 G1 控制时，先在 PC 上运行 `ifconfig`，将此字段设置为连接机器人的网线接口名，例如 `enp130s0`。在机器人 onboard 计算机上运行时，默认的 `eth0` 通常是正确值。
+
 ```bash
 python scripts/run/run_sim2real.py \
     controller.policy_path=policy.onnx \
-    real_robot.network_interface=enp3s0
+    real_robot.network_interface=enp130s0
 ```
 
 ## 设计原则：Fail-Fast

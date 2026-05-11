@@ -30,10 +30,12 @@ The script clones `unitree_sdk2`, installs `pybind11`, and builds the C++ bridge
 import g1_bridge_sdk
 
 bridge = g1_bridge_sdk.G1Bridge(
-    network_interface="eth0",   # Network interface connected to G1
+    network_interface="enp130s0",  # PC Ethernet interface connected to G1
     publish_hz=200              # Command publish rate (default 200 Hz)
 )
 ```
+
+For wired PC-to-G1 control, run `ifconfig` on the PC and use the interface name for the G1 cable connection. When running onboard on the robot computer, `eth0` is usually the correct interface.
 
 | Method | Description |
 |--------|-------------|

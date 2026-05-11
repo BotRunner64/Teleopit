@@ -125,7 +125,7 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 
 | 字段 | 说明 | 默认值 |
 |---|---|---|
-| `real_robot.network_interface` | DDS 通信网络接口 | `eth0` |
+| `real_robot.network_interface` | Unitree DDS 通信网络接口。PC 通过网线连接 G1 控制时，用 `ifconfig` 找到这根网线对应的接口名并填写，例如 `enp130s0`；在机器人 onboard 计算机上运行时通常使用 `eth0` | `eth0` |
 | `real_robot.kp_real` | 真机比例增益（各关节） | — |
 | `real_robot.kd_real` | 真机微分增益（各关节） | — |
 | `real_robot.kd_damping` | 阻尼模式 kd | `8.0` |

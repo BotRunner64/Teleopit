@@ -131,8 +131,10 @@ git submodule update --init --recursive
 python scripts/run/run_sim2real.py \
     --config-name pico4_sim2real \
     controller.policy_path=track.onnx \
-    real_robot.network_interface=eth0
+    real_robot.network_interface=enp130s0
 ```
+
+For wired control from a PC, run `ifconfig` on the PC and set `real_robot.network_interface` to the Ethernet interface connected to the G1, such as `enp130s0`. For onboard execution on the robot computer, the default `eth0` is usually correct.
 
 ### Operation Flow
 
@@ -172,7 +174,7 @@ input.pause_button=right_axis_click
 input.video.enabled=true
 
 # Specify network interface
-real_robot.network_interface=enp3s0
+real_robot.network_interface=enp130s0
 ```
 
 ## Troubleshooting

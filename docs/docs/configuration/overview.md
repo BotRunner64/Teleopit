@@ -55,10 +55,12 @@ python scripts/run/run_sim.py \
 
 ### Change Network Interface (sim2real)
 
+For wired PC-to-G1 control, run `ifconfig` on the PC and set this to the interface connected to the robot, such as `enp130s0`. For onboard execution on the robot computer, the default `eth0` is usually correct.
+
 ```bash
 python scripts/run/run_sim2real.py \
     controller.policy_path=policy.onnx \
-    real_robot.network_interface=enp3s0
+    real_robot.network_interface=enp130s0
 ```
 
 ## Design Principle: Fail-Fast
