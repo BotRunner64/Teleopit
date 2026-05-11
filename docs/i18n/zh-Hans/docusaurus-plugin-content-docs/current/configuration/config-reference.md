@@ -12,7 +12,7 @@ sidebar_position: 2
 |---|---|---|---|
 | `policy_hz` | int | — | 策略推理频率（Hz） |
 | `pd_hz` | int | `200` | PD 控制器频率（Hz，仅仿真），通常高于 `policy_hz` |
-| `viewers` | bool | `false` | 是否启用可视化窗口 |
+| `viewers` | str/list | `sim2sim` | 可视化窗口集合：`mocap`、`retarget`、`sim2sim`、`camera`、`all`、`none`。`all` 打开 `mocap`、`retarget` 和 `sim2sim`；如需相机画面需显式加入 `camera` |
 | `realtime` | bool | `false` | 是否启用实时模式（实机部署时需开启） |
 | `num_steps` | int | — | 仿真总步数；设为 `-1` 表示无限运行 |
 | `transition_duration` | float | — | 从静止姿态过渡到策略控制的时长（秒） |
@@ -28,6 +28,7 @@ sidebar_position: 2
 |---|---|---|
 | `num_actions` | int | 策略输出的动作维度（即受控关节数） |
 | `xml_path` | str | MuJoCo MJCF 模型文件路径 |
+| `d435i_rgb` | camera | G1 MJCF 中的固定 RGB 相机；配合 `viewers=[sim2sim,camera]` 显示画面 |
 | `kps` | list[float] | 各关节的比例增益（P 增益） |
 | `kds` | list[float] | 各关节的微分增益（D 增益） |
 | `default_angles` | list[float] | 默认关节角度（弧度），也是策略动作的零点 |

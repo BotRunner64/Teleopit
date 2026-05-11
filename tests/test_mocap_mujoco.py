@@ -146,7 +146,8 @@ def test_fit_mocap_camera_ignores_far_outlier_from_root() -> None:
 
 
 def test_parse_viewers_accepts_mocap_and_rejects_bvh() -> None:
-    assert parse_viewers({"viewers": ["mocap", "retarget"]}) == {"mocap", "retarget"}
+    assert parse_viewers({"viewers": ["mocap", "retarget", "camera"]}) == {"mocap", "retarget", "camera"}
+    assert parse_viewers({"viewers": "all"}) == {"mocap", "retarget", "sim2sim"}
     with pytest.raises(ValueError, match="Unsupported viewers"):
         parse_viewers({"viewers": ["bvh", "retarget"]})
 

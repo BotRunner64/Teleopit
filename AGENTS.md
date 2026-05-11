@@ -85,20 +85,23 @@ train_mimic/              # Training package
 - Must use `g1_mjlab.xml` for sim2sim; `g1_mocap_29dof.xml` clamps torques to `±1 Nm` and is only for kinematic retarget visualization
 
 ### Multi-Viewer Support
-`SimulationLoop` supports three simultaneous viewer windows controlled by the `viewers` config:
+`SimulationLoop` supports multiple simultaneous viewer windows controlled by the `viewers` config:
 
 ```bash
 python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=sim2sim
 python scripts/run/run_sim.py controller.policy_path=policy.onnx 'viewers=[mocap,retarget,sim2sim]'
 python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=all
 python scripts/run/run_sim.py controller.policy_path=policy.onnx 'viewers=[retarget,sim2sim]'
+python scripts/run/run_sim.py controller.policy_path=policy.onnx 'viewers=[sim2sim,camera]'
 python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=none
 ```
 
 - `sim2sim`: MuJoCo physics result
 - `retarget`: kinematic retarget result
 - `mocap`: retargeting input skeleton rendered by MuJoCo custom geoms
+- `camera`: G1 `d435i_rgb` fixed RGB camera view
 - `bvh` viewer naming is removed; use `mocap`
+- `viewers=all` opens `mocap`, `retarget`, and `sim2sim`; add `camera` explicitly when needed
 - All viewers run in separate subprocesses because GLFW/GLX only supports one window per process
 - Simulation exits when all active viewer windows are closed
 - `viewers` is the only supported viewer key; legacy `viewer` alias is removed

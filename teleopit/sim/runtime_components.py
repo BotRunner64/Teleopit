@@ -392,11 +392,13 @@ class ViewerManager:
         robot: Robot,
         viewers: set[str],
         start_robot_viewer: Callable[[str, int, bool, str, int, int], tuple[mp.Process, mp.Array, mp.Value, mp.Event]],
+        start_camera_viewer: Callable[[str, int, str, int, int, str], tuple[mp.Process, mp.Array, mp.Value, mp.Event]],
         mocap_viewer_proc: Callable[[list[int], mp.Array, int, mp.Event, mp.Value, int, int], None],
     ) -> None:
         self._robot = robot
         self._viewers = set(viewers)
         self._start_robot_viewer = start_robot_viewer
+        self._start_camera_viewer = start_camera_viewer
         self._mocap_viewer_proc = mocap_viewer_proc
         self._sub_viewers: dict[str, tuple[mp.Process, mp.Array, mp.Value, mp.Event]] = {}
         self._mocap_pos_arr: mp.Array | None = None
@@ -430,6 +432,25 @@ class ViewerManager:
                 "Retarget",
                 wx,
                 wy,
+            )
+
+        if "camera" in self._viewers:
+            import mujoco
+
+            camera_name = "d435i_rgb"
+            camera_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name)
+            if camera_id < 0:
+                raise ValueError(
+                    f"viewers includes 'camera', but named camera '{camera_name}' was not found in {xml_path}. "
+                    "Use a G1 MJCF that defines this camera."
+                )
+            self._sub_viewers["camera"] = self._start_camera_viewer(
+                xml_path,
+                nq,
+                camera_name,
+                640,
+                480,
+                "D435i RGB",
             )
 
     def has_viewers(self) -> bool:
@@ -482,6 +503,18 @@ class ViewerManager:
             return
         sim_qpos = np.asarray(robot_data.qpos, dtype=np.float64)
         arr = sim2sim_entry[1]
+        with arr.get_lock():
+            arr[:len(sim_qpos)] = sim_qpos.tolist()
+
+    def write_camera(self, robot: Robot) -> None:
+        camera_entry = self._sub_viewers.get("camera")
+        if camera_entry is None or not camera_entry[2].value:
+            return
+        robot_data = getattr(robot, "data", None)
+        if robot_data is None:
+            return
+        sim_qpos = np.asarray(robot_data.qpos, dtype=np.float64)
+        arr = camera_entry[1]
         with arr.get_lock():
             arr[:len(sim_qpos)] = sim_qpos.tolist()
 

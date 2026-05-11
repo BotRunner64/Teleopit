@@ -5,7 +5,8 @@ from typing import Any
 
 _MISSING = object()
 
-_VALID_VIEWERS = frozenset({"mocap", "retarget", "sim2sim"})
+_ALL_VIEWERS = frozenset({"mocap", "retarget", "sim2sim"})
+_VALID_VIEWERS = _ALL_VIEWERS | frozenset({"camera"})
 
 
 def cfg_get(cfg: Any, key: str, default: Any = _MISSING) -> Any:
@@ -58,7 +59,7 @@ def parse_viewers(cfg: Any) -> set[str]:
     else:
         raw = str(viewers_raw).strip().lower()
         if raw == "all":
-            return set(_VALID_VIEWERS)
+            return set(_ALL_VIEWERS)
         if raw in ("none", "false", ""):
             return set()
         raw = raw.strip("'\"[]")

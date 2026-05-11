@@ -630,6 +630,7 @@ class SimLoopSession:
                 loop._publisher.publish(preparation.mimic_obs, action, final_state)
                 loop._recorder_helper.record(self._recorder, final_state, preparation.mimic_obs, action, target_dof_pos, torque)
                 self._viewer_manager.write_sim2sim(loop.robot)
+                self._viewer_manager.write_camera(loop.robot)
                 self._viewer_manager.write_retarget(preparation.retarget_viewer_qpos)
                 if self.cached_human_frame is not None and (
                     self.offline_reference is not None or new_bvh_frame or self.realtime_interpolated_input

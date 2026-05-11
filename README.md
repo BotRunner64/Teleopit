@@ -45,6 +45,15 @@ python scripts/run/run_sim.py \
 
 You should see a MuJoCo viewer with the robot tracking the BVH motion.
 
+To show the simulated D435i RGB camera view, add the explicit `camera` viewer:
+
+```bash
+python scripts/run/run_sim.py \
+    controller.policy_path=track.onnx \
+    input.bvh_file=data/sample_bvh/aiming1_subject1.bvh \
+    'viewers=[sim2sim,camera]'
+```
+
 ## Documentation
 
 Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Teleopit/)**, covering installation profiles, all tutorials, configuration reference, and architecture.

@@ -12,7 +12,7 @@ Complete reference for all configurable fields.
 |-------|-------------|---------|
 | `policy_hz` | Policy inference frequency | `50` |
 | `pd_hz` | PD control frequency (simulation only) | `200` |
-| `viewers` | Viewer set: `mocap`, `retarget`, `sim2sim`, `all`, `none` | `sim2sim` |
+| `viewers` | Viewer set: `mocap`, `retarget`, `sim2sim`, `camera`, `all`, `none`. `all` opens `mocap`, `retarget`, and `sim2sim`; add `camera` explicitly. | `sim2sim` |
 | `realtime` | Rate-limit to wall clock | `false` |
 | `num_steps` | Number of steps; `0` = infinite | `0` |
 | `transition_duration` | Smooth transition time (seconds) from current pose to retarget command | - |
@@ -26,6 +26,7 @@ Complete reference for all configurable fields.
 |-------|-------------|---------|
 | `robot.num_actions` | Joint action dimension | `29` |
 | `robot.xml_path` | MuJoCo XML path | - |
+| `d435i_rgb` | Fixed RGB camera in the G1 MJCF; use `viewers=[sim2sim,camera]` to display it | - |
 | `robot.kps` / `robot.kds` | PD gains | - |
 | `robot.default_angles` | Default standing pose | - |
 | `robot.torque_limits` | Joint torque limits | - |

@@ -167,6 +167,75 @@ def mocap_viewer_proc(
             pass
 
 
+def camera_viewer_proc(
+    xml_path: str,
+    qpos_arr: mp.Array,
+    qpos_len: int,
+    shutdown: mp.Event,
+    alive: mp.Value,
+    camera_name: str,
+    width: int = 640,
+    height: int = 480,
+    title: str = "D435i RGB",
+) -> None:
+    """Subprocess: display a fixed MuJoCo camera in a GLFW viewer window."""
+    import mujoco
+    import mujoco.viewer
+    import numpy as np
+    import os
+    import re
+
+    if title:
+        with open(xml_path) as f:
+            xml_str = f.read()
+        xml_str = re.sub(r'<mujoco\s+model="[^"]*"', f'<mujoco model="{title}"', xml_str)
+        os.chdir(os.path.dirname(os.path.abspath(xml_path)))
+        model = mujoco.MjModel.from_xml_string(xml_str)
+    else:
+        model = mujoco.MjModel.from_xml_path(xml_path)
+    camera_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name)
+    if camera_id < 0:
+        raise ValueError(f"Camera '{camera_name}' not found in MuJoCo XML: {xml_path}")
+
+    data = mujoco.MjData(model)
+
+    try:
+        import glfw
+        glfw.init()
+        glfw.window_hint(glfw.FOCUSED, 0)
+    except Exception:
+        pass
+
+    viewer = mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False)
+    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = 0
+    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 0
+    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 0
+    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_COM] = 0
+    viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+    viewer.cam.fixedcamid = camera_id
+    alive.value = 1
+
+    try:
+        while viewer.is_running() and not shutdown.is_set():
+            with qpos_arr.get_lock():
+                qpos = np.array(qpos_arr[:qpos_len], dtype=np.float64)
+
+            data.qpos[:qpos_len] = qpos
+            data.qvel[:] = 0
+            mujoco.mj_forward(model, data)
+
+            viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+            viewer.cam.fixedcamid = camera_id
+            viewer.sync()
+            time.sleep(1.0 / 30.0)
+    finally:
+        alive.value = 0
+        try:
+            viewer.close()
+        except Exception:
+            pass
+
+
 def start_robot_viewer(
     xml_path: str, nq: int, foot_z_correction: bool,
     title: str = "", win_x: int = -1, win_y: int = -1,
@@ -183,6 +252,27 @@ def start_robot_viewer(
         args=(xml_path, arr, nq, shutdown, alive,
               foot_z_correction, "left_ankle_roll_link", "right_ankle_roll_link",
               title, win_x, win_y),
+        daemon=True,
+    )
+    proc.start()
+    return proc, arr, alive, shutdown
+
+
+def start_camera_viewer(
+    xml_path: str,
+    nq: int,
+    camera_name: str,
+    width: int = 640,
+    height: int = 480,
+    title: str = "D435i RGB",
+) -> tuple[mp.Process, mp.Array, mp.Value, mp.Event]:
+    """Launch a subprocess RGB camera viewer for a named MuJoCo camera."""
+    arr = mp.Array("d", nq)
+    shutdown = mp.Event()
+    alive = mp.Value("i", 0)
+    proc = mp.Process(
+        target=camera_viewer_proc,
+        args=(xml_path, arr, nq, shutdown, alive, camera_name, width, height, title),
         daemon=True,
     )
     proc.start()

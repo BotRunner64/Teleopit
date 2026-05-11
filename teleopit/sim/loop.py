@@ -18,7 +18,7 @@ from teleopit.sim.reference_timeline import (
 )
 from teleopit.sim.realtime_utils import RealtimeReferenceDiagnostics
 from teleopit.sim.runtime_components import MotionPreparation, PolicyStepRunner, RunRecorder, RuntimePublisher, ViewerManager
-from teleopit.sim.viewer_subprocess import mocap_viewer_proc, start_robot_viewer
+from teleopit.sim.viewer_subprocess import mocap_viewer_proc, start_camera_viewer, start_robot_viewer
 from teleopit.runtime.mocap_session import MocapSessionManager
 from teleopit.runtime.offline_playback import OfflinePlaybackController
 
@@ -137,6 +137,7 @@ class SimulationLoop:
             robot=self.robot,
             viewers=self._viewers,
             start_robot_viewer=start_robot_viewer,
+            start_camera_viewer=start_camera_viewer,
             mocap_viewer_proc=mocap_viewer_proc,
         )
 
