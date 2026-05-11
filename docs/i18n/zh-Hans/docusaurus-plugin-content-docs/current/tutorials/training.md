@@ -113,4 +113,4 @@ train_mimic/scripts
 - `train_mimic/app.py` - 训练/播放/评估的统一入口
 - `train_mimic/tasks/tracking/config/env.py` - General-Tracking-G1 环境构建器
 - `train_mimic/tasks/tracking/config/rl.py` - TemporalCNN PPO 配置
-- `train_mimic/tasks/tracking/mdp/commands.py` - 支持 `adaptive` / `uniform` / `start` 三种采样模式
+- `train_mimic/tasks/tracking/mdp/commands.py` - 支持 `uniform` / `start` 两种采样模式

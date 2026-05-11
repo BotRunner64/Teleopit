@@ -505,9 +505,6 @@ def main() -> int:
         "error_body_ang_vel",
         "error_joint_pos",
         "error_joint_vel",
-        "sampling_entropy",
-        "sampling_top1_prob",
-        "sampling_top1_bin",
     ):
         if key not in metric_stats:
             continue
