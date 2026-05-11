@@ -187,14 +187,21 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
                 "bias_range": (-0.01, 0.01),
             },
         ),
-        "foot_friction": EventTermCfg(
+        "physics_material": EventTermCfg(
             mode="startup",
             func=dr.geom_friction,
             params={
                 "asset_cfg": SceneEntityCfg("robot", geom_names=()),  # Set per-robot.
                 "operation": "abs",
-                "ranges": (0.3, 1.2),
-                "shared_random": True,  # All foot geoms share the same friction.
+                "ranges": (0.3, 1.6),
+            },
+        ),
+        "randomize_rigid_body_mass": EventTermCfg(
+            mode="startup",
+            func=dr.pseudo_inertia,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=()),  # Set per-robot.
+                "alpha_range": (-0.11157177565710488, 0.4581453659370775),
             },
         ),
     }
@@ -239,11 +246,6 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
             func=mdp.joint_pos_limits,
             weight=-10.0,
             params={"asset_cfg": SceneEntityCfg("robot", joint_names=(".*",))},
-        ),
-        "self_collisions": RewardTermCfg(
-            func=mdp.self_collision_cost,
-            weight=-10.0,
-            params={"sensor_name": "self_collision", "force_threshold": 10.0},
         ),
     }
 

@@ -33,6 +33,26 @@ def test_general_tracking_task_is_registered() -> None:
     assert "critic_history" in env_cfg.observations
     assert env_cfg.commands["motion"].sampling_mode == "uniform"
     assert env_cfg.commands["motion"].window_steps == (0,)
+    reward = env_cfg.rewards["self_collisions"]
+    assert reward.weight == -0.1
+    assert reward.params == {
+        "sensor_name": "self_collision",
+        "force_threshold": 1.0,
+    }
+    assert "undesired_contacts" not in env_cfg.rewards
+    sensors = {sensor.name: sensor for sensor in env_cfg.scene.sensors}
+    assert set(sensors) == {"self_collision"}
+    assert sensors["self_collision"].primary.mode == "body"
+    assert sensors["self_collision"].primary.pattern == r".*"
+    assert sensors["self_collision"].primary.exclude == (
+        "left_ankle_roll_link",
+        "right_ankle_roll_link",
+        "left_wrist_yaw_link",
+        "right_wrist_yaw_link",
+    )
+    assert sensors["self_collision"].secondary.mode == "subtree"
+    assert sensors["self_collision"].secondary.pattern == "pelvis"
+    assert sensors["self_collision"].reduce == "maxforce"
     rl_cfg = load_rl_cfg(DEFAULT_TASK)
     assert rl_cfg.experiment_name == GENERAL_TRACKING_EXPERIMENT_NAME
     assert rl_cfg.actor.hidden_dims == (1024, 512, 256, 256, 128)
