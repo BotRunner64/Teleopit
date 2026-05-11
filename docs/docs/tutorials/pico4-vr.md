@@ -15,9 +15,13 @@ Real-time whole-body teleoperation using Pico 4 / Pico 4 Ultra full body trackin
 
 ```text
 Pico Headset (pico-bridge client, full body tracking)
-    --WiFi--> PC (pico-bridge PC receiver)
+    --WiFi--> Teleopit host (pico-bridge receiver)
                 --> Teleopit (retarget -> RL policy -> MuJoCo / G1)
 ```
+
+The Teleopit host can be a workstation PC or the robot onboard computer. Teleopit starts
+the `pico_bridge.PicoBridge` receiver in-process, so onboard deployment uses the same
+Pico input mode as PC deployment.
 
 ## Step 1: VR Headset Setup
 
@@ -27,9 +31,9 @@ Pico Headset (pico-bridge client, full body tracking)
    adb install pico-bridge.apk
    ```
 3. Launch the pico-bridge headset client and enable full body tracking.
-4. Ensure the headset and control PC are on the **same network**
+4. Ensure the headset and Teleopit host are on the **same network**
 
-## Step 2: PC Environment Setup
+## Step 2: Teleopit Host Environment Setup
 
 ### Prerequisites
 
@@ -37,7 +41,7 @@ Pico Headset (pico-bridge client, full body tracking)
 - Python 3.10+
 - Teleopit with the Pico extra: `pip install -e '.[pico4]'`
 
-### Install pico-bridge PC Receiver
+### Install pico-bridge Receiver
 
 ```bash
 pip install -e '.[pico4]'
@@ -48,7 +52,8 @@ Verify:
 python -c "from pico_bridge import PicoBridge; print('OK')"
 ```
 
-Teleopit starts the PC receiver from `Pico4InputProvider`.
+Teleopit starts the receiver from `Pico4InputProvider`. The Pico extra installs
+pico-bridge 0.2.0 with camera support.
 
 ## Step 3: Simulation Verification (Pico sim2sim)
 
@@ -68,9 +73,36 @@ python scripts/run/run_sim.py \
 ```
 
 You should see the virtual robot following your VR movements. If the robot doesn't respond, check:
-- The pico-bridge headset client shows a connection to the PC receiver
+- The pico-bridge headset client shows a connection to the Teleopit host receiver
 - `input.bridge_host`, `input.bridge_port`, and optional `input.bridge_advertise_ip` match your network
 - Both devices are on the same network
+
+### Optional Pico Video Preview
+
+pico-bridge 0.2.0 can send a host camera preview back to the headset. Teleopit keeps this
+disabled by default so tracking and control still run on hosts without camera access.
+
+For sim2sim, stream the MuJoCo `d435i_rgb` camera:
+
+```bash
+python scripts/run/run_sim.py \
+    --config-name pico4_sim \
+    controller.policy_path=track.onnx \
+    input.video.enabled=true
+```
+
+For sim2real, stream the G1 RealSense color camera:
+
+```bash
+python scripts/run/run_sim2real.py \
+    --config-name pico4_sim2real \
+    controller.policy_path=track.onnx \
+    input.video.enabled=true \
+    input.video.device=<optional-realsense-serial>
+```
+
+If the video source fails, Teleopit logs the error, disables video, and keeps mocap/control running.
+Set `input.video.fail_on_error=true` to make video startup fail-fast.
 
 ### Keyboard Mode Flow
 
@@ -136,6 +168,9 @@ policy_hz=30
 # Change pause button
 input.pause_button=right_axis_click
 
+# Enable host camera preview in the Pico headset
+input.video.enabled=true
+
 # Specify network interface
 real_robot.network_interface=enp3s0
 ```
@@ -144,7 +179,8 @@ real_robot.network_interface=enp3s0
 
 | Symptom | Possible Cause | Solution |
 |---------|---------------|----------|
-| `ImportError: pico_bridge` | PC receiver package not installed | Run `pip install -e '.[pico4]'` |
+| `ImportError: pico_bridge` | Receiver package not installed | Run `pip install -e '.[pico4]'` |
 | `TimeoutError: No Pico4 body data` | Headset not connected or tracking not started | Check pico-bridge headset app status and network |
 | Robot doesn't follow VR | Still in STANDING mode | Press **Y** on remote to enter MOCAP |
-| Discovery does not find the PC | Wrong network interface or blocked UDP | Set `input.bridge_advertise_ip=<pc-ip>` and confirm UDP port `63901` is reachable |
+| Discovery does not find the host | Wrong network interface or blocked UDP | Set `input.bridge_advertise_ip=<host-ip>` and confirm UDP port `63901` is reachable |
+| Pico video preview is black or unavailable | Camera source failed or video disabled | Set `input.video.enabled=true`, check RealSense access, and review logs |

@@ -62,7 +62,7 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 
 ### v0.2.0 (2026-04-03)
 
-Pico 4 teleoperation through the pico-bridge PC receiver, G1 Bridge SDK (C++ DDS), simplified offline playback with keyboard controls, Pico sim2sim keyboard mode state machine, standalone standing controller, realtime mocap catch-up; model upgraded to 30k checkpoint.
+Pico 4 teleoperation through pico-bridge 0.2.0 on the Teleopit host, optional camera preview streaming back to the headset, G1 Bridge SDK (C++ DDS), simplified offline playback with keyboard controls, Pico sim2sim keyboard mode state machine, standalone standing controller, realtime mocap catch-up; model upgraded to 30k checkpoint.
 
 ### v0.1.1 (2025-03-28)
 

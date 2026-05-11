@@ -29,6 +29,7 @@ from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.controllers.rl_policy import RLPolicyController
 from teleopit.inputs.bvh_provider import BVHInputProvider
 from teleopit.inputs.pico4_provider import Pico4InputProvider
+from teleopit.inputs.pico_video import PicoVideoRuntime, parse_pico_video_config
 from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType, RealtimeInputPacket
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.runtime.common import cfg_get
@@ -114,6 +115,11 @@ class Sim2RealController:
         self.retargeter = mocap_components.retargeter
         self.policy = mocap_components.controller
         self.obs_builder = mocap_components.obs_builder
+        self._video_runtime = PicoVideoRuntime(
+            provider=self.input_provider,
+            config=parse_pico_video_config(cfg_get(cfg, "input", {})),
+            mode="sim2real",
+        )
         self._offline_reference: OfflineReferenceMotion | None = None
         self._offline_playback: OfflinePlaybackController | None = None
         if hasattr(self.input_provider, "__len__") and hasattr(self.input_provider, "get_frame_by_index"):
@@ -216,8 +222,10 @@ class Sim2RealController:
         dt = 1.0 / self.policy_hz
 
         try:
+            self._video_runtime.start()
             while True:
                 t0 = time.monotonic()
+                self._video_runtime.tick()
 
                 # 1. Read remote state
                 remote_bytes = self.robot.get_wireless_remote()
@@ -895,6 +903,10 @@ class Sim2RealController:
                 self.robot.exit_debug_mode()
             except Exception:
                 pass
+        try:
+            self._video_runtime.stop()
+        except Exception:
+            pass
         try:
             self.input_provider.close()
         except Exception:

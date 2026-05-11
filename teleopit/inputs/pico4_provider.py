@@ -1,6 +1,6 @@
 """Pico4 VR full-body motion capture input provider.
 
-Uses the PC-side ``pico_bridge`` receiver to collect PICO tracking frames.
+Uses the in-process ``pico_bridge`` receiver to collect PICO tracking frames.
 The provider converts native PICO/Unity poses (meters, xyzw quaternions) into
 Teleopit's realtime ``HumanFrame`` format.
 """
@@ -8,6 +8,7 @@ Teleopit's realtime ``HumanFrame`` format.
 from __future__ import annotations
 
 from collections import deque
+import inspect
 import logging
 import threading
 import time
@@ -63,6 +64,17 @@ _PAUSE_BUTTON_MAP: dict[str, tuple[str, str]] = {
 }
 
 
+def _bridge_accepts_video_enabled(bridge_cls: type[Any]) -> bool:
+    try:
+        signature = inspect.signature(bridge_cls)
+    except (TypeError, ValueError):
+        return True
+    parameters = signature.parameters
+    if "video_enabled" in parameters:
+        return True
+    return any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values())
+
+
 def _coordinate_transform_input(body_pose_dict: dict[str, list]) -> dict[str, list]:
     """Transform provider-space poses into Teleopit's expected coordinates."""
     for body_name, value in body_pose_dict.items():
@@ -80,7 +92,7 @@ def _coordinate_transform_input(body_pose_dict: dict[str, list]) -> dict[str, li
 
 
 class Pico4InputProvider(RealtimeInputProvider):
-    """Realtime input provider backed by the ``pico_bridge`` PC receiver."""
+    """Realtime input provider backed by the ``pico_bridge`` receiver."""
 
     def __init__(
         self,
@@ -95,7 +107,7 @@ class Pico4InputProvider(RealtimeInputProvider):
         bridge_discovery: bool = True,
         bridge_advertise_ip: str | None = None,
         bridge_video: str | None = None,
-        bridge_camera_device: str | None = None,
+        bridge_video_enabled: bool | None = None,
         bridge_start_timeout: float = 10.0,
         bridge_history_size: int = 120,
         bridge_cls: type[Any] | None = None,
@@ -105,10 +117,15 @@ class Pico4InputProvider(RealtimeInputProvider):
                 from pico_bridge import PicoBridge
             except ImportError as exc:
                 raise ImportError(
-                    "pico_bridge is required for Pico4 input. Install the PC receiver package, "
+                    "pico_bridge is required for Pico4 input. Install the receiver package, "
                     "for example: pip install -e '.[pico4]'"
                 ) from exc
             bridge_cls = PicoBridge
+        if not _bridge_accepts_video_enabled(bridge_cls):
+            raise RuntimeError(
+                "pico_bridge >= 0.2.0 is required for Pico4 input. Reinstall the Pico extra with "
+                "pip install -e '.[pico4]' so PicoBridge accepts video_enabled and push_video_frame()."
+            )
 
         self._human_format = human_format
         self._timeout = float(timeout)
@@ -132,7 +149,7 @@ class Pico4InputProvider(RealtimeInputProvider):
             discovery=bool(bridge_discovery),
             advertise_ip=bridge_advertise_ip,
             video=bridge_video,
-            camera_device=bridge_camera_device,
+            video_enabled=bridge_video_enabled,
             history_size=int(bridge_history_size),
             start_timeout=float(bridge_start_timeout),
         )
@@ -205,6 +222,13 @@ class Pico4InputProvider(RealtimeInputProvider):
             control_events = tuple(self._pending_control_events)
             self._pending_control_events.clear()
         return control_events
+
+    def push_video_frame(self, frame: NDArray[np.uint8]) -> int:
+        """Push one RGB camera frame to pico-bridge 0.2.0 video output."""
+        push_video_frame = getattr(self._bridge, "push_video_frame", None)
+        if not callable(push_video_frame):
+            raise RuntimeError("Installed pico_bridge does not expose push_video_frame(); use pico-bridge 0.2.0")
+        return int(push_video_frame(frame))
 
     def has_frame(self) -> bool:
         with self._lock:

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+import pytest
 
 from teleopit.inputs.pico4_provider import BODY_JOINT_NAMES, Pico4InputProvider
 from teleopit.inputs.realtime_frame_cache import RealtimeFrameCache
@@ -78,6 +79,21 @@ class _FakeBridge:
         self.closed = True
 
 
+class _LegacyBridge:
+    def __init__(
+        self,
+        *,
+        host: str,
+        port: int,
+        discovery: bool,
+        advertise_ip: str | None,
+        video: str | None,
+        history_size: int,
+        start_timeout: float,
+    ) -> None:
+        del host, port, discovery, advertise_ip, video, history_size, start_timeout
+
+
 def test_pico4_provider_starts_pico_bridge_receiver_with_config() -> None:
     _FakeBridge.instances.clear()
 
@@ -87,8 +103,8 @@ def test_pico4_provider_starts_pico_bridge_receiver_with_config() -> None:
         bridge_port=12345,
         bridge_discovery=False,
         bridge_advertise_ip="127.0.0.1",
-        bridge_video="rgb",
-        bridge_camera_device="/dev/video9",
+        bridge_video="frames",
+        bridge_video_enabled=True,
         bridge_start_timeout=1.5,
         bridge_history_size=7,
         bridge_cls=_FakeBridge,
@@ -102,8 +118,8 @@ def test_pico4_provider_starts_pico_bridge_receiver_with_config() -> None:
             "port": 12345,
             "discovery": False,
             "advertise_ip": "127.0.0.1",
-            "video": "rgb",
-            "camera_device": "/dev/video9",
+            "video": "frames",
+            "video_enabled": True,
             "history_size": 7,
             "start_timeout": 1.5,
         }
@@ -111,6 +127,29 @@ def test_pico4_provider_starts_pico_bridge_receiver_with_config() -> None:
         provider.close()
 
     assert bridge.closed is True
+
+
+def test_pico4_provider_requires_pico_bridge_0_2_signature() -> None:
+    with pytest.raises(RuntimeError, match=r"pico_bridge >= 0\.2\.0"):
+        Pico4InputProvider(timeout=0.01, bridge_cls=_LegacyBridge)
+
+
+def test_pico4_provider_pushes_video_frame_to_bridge() -> None:
+    _FakeBridge.instances.clear()
+
+    def push_video_frame(self: _FakeBridge, frame: np.ndarray) -> int:
+        self.video_frame = frame
+        return 12
+
+    _FakeBridge.push_video_frame = push_video_frame  # type: ignore[attr-defined]
+    provider = Pico4InputProvider(timeout=0.01, bridge_video="frames", bridge_video_enabled=True, bridge_cls=_FakeBridge)
+    try:
+        frame = np.zeros((4, 6, 3), dtype=np.uint8)
+        assert provider.push_video_frame(frame) == 12
+        assert _FakeBridge.instances[-1].video_frame is frame
+    finally:
+        provider.close()
+        delattr(_FakeBridge, "push_video_frame")
 
 
 def test_pico4_provider_normalizes_pico_bridge_body_pose_convention() -> None:

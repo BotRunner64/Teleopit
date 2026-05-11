@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from teleopit.controllers.observation import VelCmdObservationBuilder
+from teleopit.inputs.pico_video import bridge_video_source, parse_pico_video_config
 
 from .common import cfg_get, cfg_set, normalize_path_in_cfg, parse_viewers, require_section
 
@@ -221,6 +222,8 @@ def _build_input_provider(
         )
 
     if provider_kind == "pico4":
+        video_cfg = parse_pico_video_config(input_cfg)
+        video_source = bridge_video_source(video_cfg)
         return pico4_input_cls(
             human_format=str(cfg_get(input_cfg, "human_format", "pico_bridge")),
             timeout=float(cfg_get(input_cfg, "pico4_timeout", 60.0)),
@@ -232,8 +235,8 @@ def _build_input_provider(
             bridge_port=int(cfg_get(input_cfg, "bridge_port", 63901)),
             bridge_discovery=bool(cfg_get(input_cfg, "bridge_discovery", True)),
             bridge_advertise_ip=cfg_get(input_cfg, "bridge_advertise_ip", None),
-            bridge_video=cfg_get(input_cfg, "bridge_video", None),
-            bridge_camera_device=cfg_get(input_cfg, "bridge_camera_device", None),
+            bridge_video=video_source,
+            bridge_video_enabled=video_cfg.enabled,
             bridge_start_timeout=float(cfg_get(input_cfg, "bridge_start_timeout", 10.0)),
             bridge_history_size=int(cfg_get(input_cfg, "bridge_history_size", 120)),
         )

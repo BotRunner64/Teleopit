@@ -22,7 +22,7 @@ These compose sub-configs:
 - `teleopit/configs/robot/g1.yaml`
 - `teleopit/configs/controller/rl_policy.yaml`
 - `teleopit/configs/input/bvh.yaml` — offline BVH input
-- `teleopit/configs/input/pico4.yaml` — Pico 4 input through the pico-bridge PC receiver
+- `teleopit/configs/input/pico4.yaml` — Pico 4 input through the pico-bridge receiver on the Teleopit host
 
 ## Override Examples
 

@@ -540,6 +540,8 @@ class SimLoopSession:
         self._viewer_manager.wait_until_ready(timeout_s=10.0)
 
         try:
+            if loop._video_runtime is not None:
+                loop._video_runtime.start()
             while self.steps_done < self.max_steps:
                 if self.has_viewers and not self._viewer_manager.any_active():
                     break
@@ -631,6 +633,8 @@ class SimLoopSession:
                 loop._recorder_helper.record(self._recorder, final_state, preparation.mimic_obs, action, target_dof_pos, torque)
                 self._viewer_manager.write_sim2sim(loop.robot)
                 self._viewer_manager.write_camera(loop.robot)
+                if loop._video_runtime is not None:
+                    loop._video_runtime.tick()
                 self._viewer_manager.write_retarget(preparation.retarget_viewer_qpos)
                 if self.cached_human_frame is not None and (
                     self.offline_reference is not None or new_bvh_frame or self.realtime_interpolated_input
@@ -678,6 +682,8 @@ class SimLoopSession:
         except KeyboardInterrupt:
             pass
         finally:
+            if loop._video_runtime is not None:
+                loop._video_runtime.stop()
             self._viewer_manager.shutdown()
             if self.keyboard_reader is not None:
                 self.keyboard_reader.close()

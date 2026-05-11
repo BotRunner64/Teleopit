@@ -10,6 +10,9 @@ pause_resume_transition_duration: 1.0  # offline playback resume blend; realtime
 pause_resume_warmup_steps: 0  # realtime mocap frames to accumulate before resuming live tracking in sim2sim
 keyboard:
   enabled: true  # starts in STANDING; Y=enter mocap, A=pause/resume, X=return standing, Q=quit
+input:
+  video:
+    source: mujoco
 retarget_buffer_enabled: true
 retarget_buffer_window_s: 0.5
 retarget_buffer_delay_s: null  # null = auto use one input-frame delay for timeline sampling

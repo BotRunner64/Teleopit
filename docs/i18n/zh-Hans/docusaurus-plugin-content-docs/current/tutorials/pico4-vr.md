@@ -15,9 +15,12 @@ sidebar_position: 2
 
 ```text
 Pico 头显（pico-bridge client，全身追踪）
-    --WiFi--> PC（pico-bridge PC receiver）
+    --WiFi--> Teleopit host（pico-bridge receiver）
                 --> Teleopit (retarget -> RL policy -> MuJoCo / G1)
 ```
+
+Teleopit host 可以是工作站 PC，也可以是机器人 onboard 计算机。Teleopit 会在进程内启动
+`pico_bridge.PicoBridge` receiver，因此 onboard 部署与 PC 部署使用同一条 Pico 输入路径。
 
 ## 第一步：VR 头显设置
 
@@ -27,9 +30,9 @@ Pico 头显（pico-bridge client，全身追踪）
    adb install pico-bridge.apk
    ```
 3. 启动 pico-bridge 头显端 client，并开启**全身追踪**模式
-4. 确保头显与控制 PC 处于**同一网络**
+4. 确保头显与 Teleopit host 处于**同一网络**
 
-## 第二步：PC 端环境配置
+## 第二步：Teleopit host 环境配置
 
 ### 前置要求
 
@@ -37,7 +40,7 @@ Pico 头显（pico-bridge client，全身追踪）
 - Python 3.10+
 - 安装带 Pico extra 的 Teleopit：`pip install -e '.[pico4]'`
 
-### 安装 pico-bridge PC Receiver
+### 安装 pico-bridge Receiver
 
 ```bash
 pip install -e '.[pico4]'
@@ -48,7 +51,7 @@ pip install -e '.[pico4]'
 python -c "from pico_bridge import PicoBridge; print('OK')"
 ```
 
-Teleopit 会在 `Pico4InputProvider` 中启动 PC receiver。
+Teleopit 会在 `Pico4InputProvider` 中启动 receiver。Pico extra 会安装带相机支持的 pico-bridge 0.2.0。
 
 ## 第三步：仿真验证（Pico sim2sim）
 
@@ -68,9 +71,36 @@ python scripts/run/run_sim.py \
 ```
 
 正常运行后，虚拟机器人会跟随你的 VR 动作。如果机器人没有响应，请检查：
-- 头显上的 pico-bridge client 已连接到 PC receiver
+- 头显上的 pico-bridge client 已连接到 Teleopit host receiver
 - `input.bridge_host`、`input.bridge_port` 以及可选的 `input.bridge_advertise_ip` 与当前网络匹配
 - 两台设备处于同一网络
+
+### 可选 Pico 视频预览
+
+pico-bridge 0.2.0 可以把 host 相机预览发送回头显。Teleopit 默认关闭此功能，确保没有相机访问权限的
+host 仍可正常运行追踪和控制。
+
+sim2sim 中可推送 MuJoCo `d435i_rgb` 相机：
+
+```bash
+python scripts/run/run_sim.py \
+    --config-name pico4_sim \
+    controller.policy_path=track.onnx \
+    input.video.enabled=true
+```
+
+sim2real 中可推送 G1 RealSense 彩色相机：
+
+```bash
+python scripts/run/run_sim2real.py \
+    --config-name pico4_sim2real \
+    controller.policy_path=track.onnx \
+    input.video.enabled=true \
+    input.video.device=<optional-realsense-serial>
+```
+
+如果视频源失败，Teleopit 会记录错误、关闭视频，并继续运行动捕和控制。设置
+`input.video.fail_on_error=true` 可改为视频失败即启动失败。
 
 ### 键盘模式流程
 
@@ -136,6 +166,9 @@ policy_hz=30
 # 更换暂停按键
 input.pause_button=right_axis_click
 
+# 在 Pico 头显中启用 host 相机预览
+input.video.enabled=true
+
 # 指定网络接口
 real_robot.network_interface=enp3s0
 ```
@@ -144,7 +177,8 @@ real_robot.network_interface=enp3s0
 
 | 现象 | 可能原因 | 解决方法 |
 |------|---------|---------|
-| `ImportError: pico_bridge` | PC receiver 包未安装 | 执行 `pip install -e '.[pico4]'` |
+| `ImportError: pico_bridge` | receiver 包未安装 | 执行 `pip install -e '.[pico4]'` |
 | `TimeoutError: No Pico4 body data` | 头显未连接或未开启追踪 | 检查 pico-bridge 头显 app 状态和网络连接 |
 | 机器人不跟随 VR 动作 | 仍处于 STANDING 模式 | 按遥控器 **Y** 进入 MOCAP |
-| 发现广播找不到 PC | 网卡不对或 UDP 被阻断 | 设置 `input.bridge_advertise_ip=<pc-ip>`，确认 UDP 端口 `63901` 可达 |
+| 发现广播找不到 host | 网卡不对或 UDP 被阻断 | 设置 `input.bridge_advertise_ip=<host-ip>`，确认 UDP 端口 `63901` 可达 |
+| Pico 视频预览黑屏或不可用 | 相机源失败或视频未启用 | 设置 `input.video.enabled=true`，检查 RealSense 访问权限并查看日志 |

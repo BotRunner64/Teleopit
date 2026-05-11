@@ -9,6 +9,7 @@ from teleopit.bus.in_process import InProcessBus
 from teleopit.controllers.observation import VelCmdObservationBuilder
 from teleopit.controllers.rl_policy import RLPolicyController
 from teleopit.inputs import BVHInputProvider, Pico4InputProvider
+from teleopit.inputs.pico_video import PicoVideoRuntime, parse_pico_video_config
 from teleopit.recording.hdf5_recorder import HDF5Recorder
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.robots.mujoco_robot import MuJoCoRobot
@@ -38,6 +39,13 @@ class TeleopPipeline:
         self.input_provider = components.input_provider
         self.retargeter = components.retargeter
         self.bus = InProcessBus()
+        input_cfg = cfg_get(self.cfg, "input", {})
+        self.video_runtime = PicoVideoRuntime(
+            provider=self.input_provider,
+            config=parse_pico_video_config(input_cfg),
+            mode="sim2sim",
+            robot=self.robot,
+        )
         self.loop = SimulationLoop(
             cast(Any, self.robot),
             cast(Any, self.controller),
@@ -45,6 +53,7 @@ class TeleopPipeline:
             cast(Any, self.bus),
             components.sim_cfg,
             viewers=components.viewers,
+            video_runtime=self.video_runtime,
         )
 
     def run(self, num_steps: int, record: bool = False) -> dict[str, float | int | str]:

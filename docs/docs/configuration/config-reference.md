@@ -63,14 +63,17 @@ Complete reference for all configurable fields.
 | `input.pico4_buffer_size` | Frame buffer size | `60` |
 | `input.pause_button` | Button for pause/resume | `A` |
 | `input.pause_debounce_s` | Debounce time for pause button | `0.25` |
-| `input.bridge_host` | PC receiver bind host | `0.0.0.0` |
-| `input.bridge_port` | PC receiver UDP port | `63901` |
+| `input.bridge_host` | Teleopit host receiver bind host | `0.0.0.0` |
+| `input.bridge_port` | Teleopit host receiver TCP/UDP port | `63901` |
 | `input.bridge_discovery` | Enable pico-bridge discovery advertising | `true` |
-| `input.bridge_advertise_ip` | Optional advertised PC IP override | `null` |
-| `input.bridge_video` | Optional pico-bridge video mode | `null` |
-| `input.bridge_camera_device` | Optional camera device for bridge video | `null` |
+| `input.bridge_advertise_ip` | Optional advertised host IP override | `null` |
 | `input.bridge_start_timeout` | Timeout while starting the bridge | `10.0` |
 | `input.bridge_history_size` | Pico frame history retained by the bridge | `120` |
+| `input.video.enabled` | Stream host camera preview back to Pico through pico-bridge 0.2.0 | `false` |
+| `input.video.source` | Video source: `mujoco`, `realsense`, or `test-pattern` | `null` |
+| `input.video.width` / `height` / `fps` | Video capture/render settings | `1280` / `720` / `30` |
+| `input.video.device` | Optional RealSense serial | `null` |
+| `input.video.fail_on_error` | Fail startup instead of disabling video on error | `false` |
 
 ### Realtime
 

@@ -11,7 +11,13 @@ bridge_host: "0.0.0.0"
 bridge_port: 63901
 bridge_discovery: true
 bridge_advertise_ip: null
-bridge_video: null
-bridge_camera_device: null
 bridge_start_timeout: 10.0
 bridge_history_size: 120
+video:
+  enabled: false
+  source: null
+  width: 1280
+  height: 720
+  fps: 30
+  device: null
+  fail_on_error: false

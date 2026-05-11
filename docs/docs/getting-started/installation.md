@@ -55,7 +55,8 @@ See [G1 Bridge SDK](../reference/g1-bridge-sdk) for details.
 pip install -e '.[pico4]'
 ```
 
-Teleopit uses the PC-side `pico_bridge.PicoBridge` receiver for Pico tracking.
+Teleopit uses the in-process `pico_bridge.PicoBridge` receiver for Pico tracking.
+The receiver can run on a workstation PC or the robot onboard computer.
 See [Pico 4 VR Tutorial](../tutorials/pico4-vr) for the full setup guide.
 
 ## Verify Installation

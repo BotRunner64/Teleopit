@@ -46,12 +46,14 @@ class SimulationLoop:
         bus: MessageBus,
         cfg: object,
         viewers: set[str] | None = None,
+        video_runtime: object | None = None,
     ) -> None:
         self.robot: Robot = robot
         self.controller: Controller = controller
         self.obs_builder: ObservationBuilder = obs_builder
         self.bus: MessageBus = bus
         self.cfg: object = cfg
+        self._video_runtime = video_runtime
 
         self.policy_hz: float = self._to_float(self._get_cfg("policy_hz", "sim.policy_hz", "control.policy_hz", "policy_frequency"))
         self.pd_hz: float = self._to_float(self._get_cfg("pd_hz", "sim.pd_hz", "control.pd_hz", "pd_frequency"))

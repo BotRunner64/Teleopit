@@ -48,7 +48,7 @@ train = [
     "tqdm>=4.65.0",
 ]
 pico4 = [
-    "pico-bridge @ https://github.com/BotRunner64/pico-bridge/releases/download/v0.1.0/pico_bridge-0.1.0-py3-none-any.whl",
+    "pico-bridge[camera] @ https://github.com/BotRunner64/pico-bridge/releases/download/v0.2.0/pico_bridge-0.2.0-py3-none-any.whl",
     "teleopit[sim2real]",
 ]
 

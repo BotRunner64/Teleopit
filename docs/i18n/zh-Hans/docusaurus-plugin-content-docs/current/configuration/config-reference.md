@@ -80,14 +80,17 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 | `pico4_buffer_size` | int | `60` | 帧缓冲区大小 |
 | `pause_button` | str | `A` | 用于暂停/恢复的手柄按钮名称 |
 | `pause_debounce_s` | float | `0.25` | 暂停按钮防抖时间 |
-| `bridge_host` | str | `0.0.0.0` | PC receiver 绑定地址 |
-| `bridge_port` | int | `63901` | PC receiver UDP 端口 |
+| `bridge_host` | str | `0.0.0.0` | Teleopit host receiver 绑定地址 |
+| `bridge_port` | int | `63901` | Teleopit host receiver TCP/UDP 端口 |
 | `bridge_discovery` | bool | `true` | 是否启用 pico-bridge 发现广播 |
-| `bridge_advertise_ip` | str/null | `null` | 可选的 PC 广播 IP 覆盖 |
-| `bridge_video` | str/null | `null` | 可选的 pico-bridge 视频模式 |
-| `bridge_camera_device` | str/null | `null` | 可选的视频相机设备 |
+| `bridge_advertise_ip` | str/null | `null` | 可选的 host 广播 IP 覆盖 |
 | `bridge_start_timeout` | float | `10.0` | 启动 bridge 的超时时间 |
 | `bridge_history_size` | int | `120` | bridge 保留的 Pico 帧历史长度 |
+| `video.enabled` | bool | `false` | 通过 pico-bridge 0.2.0 将 host 相机预览发送回 Pico |
+| `video.source` | str/null | `null` | 视频源：`mujoco`、`realsense` 或 `test-pattern` |
+| `video.width` / `height` / `fps` | int | `1280` / `720` / `30` | 视频采集/渲染设置 |
+| `video.device` | str/null | `null` | 可选的 RealSense 序列号 |
+| `video.fail_on_error` | bool | `false` | 视频失败时是否让启动失败，而不是关闭视频后继续 |
 
 ## Realtime 字段
 

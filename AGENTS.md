@@ -43,7 +43,8 @@ teleopit/                 # Core inference package
 │   └── observation.py    # VelCmdObservationBuilder
 ├── inputs/
 │   ├── bvh_provider.py       # BVHInputProvider — offline BVH file
-│   ├── pico4_provider.py     # Pico4InputProvider — pico_bridge PC receiver input
+│   ├── pico4_provider.py     # Pico4InputProvider — pico_bridge receiver input
+│   ├── pico_video.py         # Optional camera preview pushed back to Pico through pico-bridge
 │   ├── rot_utils.py          # Quaternion helpers for input-space transforms
 │   └── udp_bvh_provider.py   # UDPBVHInputProvider — realtime BVH packet input
 ├── retargeting/
@@ -124,7 +125,10 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - `playback.pause_on_end=true` keeps the final pose and waits for manual replay
 
 ### Pico4 Realtime Input
-- `Pico4InputProvider` reads realtime body tracking from the PC-side `pico_bridge.PicoBridge`
+- `Pico4InputProvider` reads realtime body tracking from the in-process `pico_bridge.PicoBridge`
+- The pico-bridge receiver runs on the Teleopit host, which can be a workstation PC or robot onboard computer; do not maintain a separate onboard Pico input mode
+- pico-bridge 0.2.0 is the supported runtime; camera preview uses `PicoBridge(video="frames").push_video_frame(rgb_uint8)`
+- Pico video preview is optional and disabled by default; sim2sim uses the MuJoCo `d435i_rgb` camera and sim2real uses RealSense when `input.video.enabled=true`
 - Bone naming follows `pico_bridge_to_g1.json`
 - The provider applies an input-space transform to match the current retarget config
 - Do not hardcode that transform as a public coordinate-system contract; validate against actual retarget/sim2sim behavior when SDK or firmware changes
