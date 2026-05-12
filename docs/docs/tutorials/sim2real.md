@@ -22,7 +22,7 @@ For Pico 4 / Pico 4 Ultra VR deployment, see the complete [Pico VR Tutorial](pic
 **Hardware:**
 - Unitree G1 (29 DOF)
 - Unitree wireless remote controller
-- Network connection between robot and control PC
+- Wired network connection between robot and control PC, or onboard execution on the robot computer
 - Pico 4 headset, or offline BVH motion files
 
 **Software:**
@@ -32,14 +32,21 @@ bash scripts/setup/setup_g1_bridge.sh
 pip install -e '.[sim2real]'
 ```
 
-For Pico path, also run: `bash scripts/setup/setup_pico4.sh`
+For Pico path, install pico-bridge as well: `pip install -e '.[pico4]'`.
+
+## Network Interface
+
+`real_robot.network_interface` must be the Linux network interface used for Unitree DDS communication.
+For wired control from a PC, connect the PC to the G1 with an Ethernet cable, run `ifconfig` on the PC, and use the interface name for that cable connection. For example, if `ifconfig` shows the G1 cable on `enp130s0`, run with `real_robot.network_interface=enp130s0`.
+
+When running Teleopit onboard on the robot computer, the default `eth0` is usually the correct value.
 
 ## Offline BVH Playback
 
 ```bash
 python scripts/run/run_sim2real.py \
     controller.policy_path=track.onnx \
-    real_robot.network_interface=eth0 \
+    real_robot.network_interface=enp130s0 \
     input.bvh_file=data/sample_bvh/aiming1_subject1.bvh
 ```
 
@@ -82,7 +89,8 @@ When using `input.provider=pico4`, the MOCAP mode has additional sub-states:
 
 - **ACTIVE**: Normal live mocap tracking
 - **PAUSED**: Freeze reference pose; robot maintains balance but stops following
-- **RESUMING**: Clear realtime reference buffer, rebuild yaw/pivot alignment, smooth transition back to live mocap
+
+Resume returns from `PAUSED` to `ACTIVE` after collecting fresh tracking frames and re-centering heading and ground-plane position. The operator should keep still and stay as close as practical to the paused pose to reduce sudden reference changes.
 
 ## Common Parameters
 
@@ -96,12 +104,11 @@ input.bvh_file=data/sample_bvh/aiming1_subject1.bvh
 # Pico timeout
 input.pico4_timeout=30
 
-# Pause/resume transition
-pause_resume_transition_duration=1.5
+# Pause/resume tracking warmup
 pause_resume_warmup_steps=3
 
 # Network interface
-real_robot.network_interface=enp3s0
+real_robot.network_interface=enp130s0
 ```
 
 ## Standalone Standing Test
@@ -111,7 +118,7 @@ A minimal script for quick hardware and policy verification, independent of the 
 ```bash
 python scripts/run/standalone_standing.py \
     --policy track.onnx \
-    --network-interface eth0
+    --network-interface enp130s0
 ```
 
 Supports `--dry-run` for safe timing benchmarks without sending motor commands.

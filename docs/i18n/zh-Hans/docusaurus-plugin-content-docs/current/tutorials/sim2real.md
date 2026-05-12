@@ -22,7 +22,7 @@ sidebar_position: 3
 **硬件：**
 - Unitree G1（29 自由度）
 - Unitree 无线遥控器
-- 机器人与控制 PC 之间的网络连接
+- 机器人与控制 PC 之间的有线网络连接，或在机器人 onboard 计算机上运行
 - Pico 4 头显，或离线 BVH 动捕文件
 
 **软件：**
@@ -32,14 +32,20 @@ bash scripts/setup/setup_g1_bridge.sh
 pip install -e '.[sim2real]'
 ```
 
-使用 Pico 路线时，还需执行：`bash scripts/setup/setup_pico4.sh`
+使用 Pico 路线时，还需安装 pico-bridge：`pip install -e '.[pico4]'`。
+
+## 网络接口
+
+`real_robot.network_interface` 必须填写用于 Unitree DDS 通信的 Linux 网络接口名。PC 通过网线连接 G1 控制时，先在 PC 上运行 `ifconfig`，找到这根网线对应的接口名称并填写。例如你的 G1 网线接口是 `enp130s0`，运行时就设置 `real_robot.network_interface=enp130s0`。
+
+在机器人 onboard 计算机上运行 Teleopit 时，默认的 `eth0` 通常就是正确值。
 
 ## 离线 BVH 播放
 
 ```bash
 python scripts/run/run_sim2real.py \
     controller.policy_path=track.onnx \
-    real_robot.network_interface=eth0 \
+    real_robot.network_interface=enp130s0 \
     input.bvh_file=data/sample_bvh/aiming1_subject1.bvh
 ```
 
@@ -82,7 +88,8 @@ python scripts/run/run_sim2real.py \
 
 - **ACTIVE**：正常的实时动捕追踪
 - **PAUSED**：冻结参考姿态；机器人保持平衡但停止跟随
-- **RESUMING**：清除实时参考缓冲区，重建偏航/轴心对齐，平滑过渡回实时动捕
+
+恢复会在采集新的追踪帧并重新居中航向和地面平面位置后，从 `PAUSED` 回到 `ACTIVE`。操作者应保持静止，并尽量贴近暂停时的姿态，以减少参考突变。
 
 ## 常用参数
 
@@ -96,12 +103,11 @@ input.bvh_file=data/sample_bvh/aiming1_subject1.bvh
 # Pico 超时时间
 input.pico4_timeout=30
 
-# 暂停/恢复过渡参数
-pause_resume_transition_duration=1.5
+# 暂停/恢复追踪预热
 pause_resume_warmup_steps=3
 
 # 网络接口
-real_robot.network_interface=enp3s0
+real_robot.network_interface=enp130s0
 ```
 
 ## 独立站立测试
@@ -111,7 +117,7 @@ real_robot.network_interface=enp3s0
 ```bash
 python scripts/run/standalone_standing.py \
     --policy track.onnx \
-    --network-interface eth0
+    --network-interface enp130s0
 ```
 
 支持 `--dry-run` 模式，在不发送电机指令的情况下进行安全的时序基准测试。

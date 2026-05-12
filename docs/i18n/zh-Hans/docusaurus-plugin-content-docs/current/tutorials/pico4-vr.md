@@ -14,49 +14,44 @@ sidebar_position: 2
 ## 系统架构
 
 ```text
-Pico 头显 (XRoboToolkit App, 全身追踪)
-    --WiFi--> PC (XRoboToolkit PC Service + xrobotoolkit_sdk)
+Pico 头显（pico-bridge client，全身追踪）
+    --WiFi--> Teleopit host（pico-bridge receiver）
                 --> Teleopit (retarget -> RL policy -> MuJoCo / G1)
 ```
 
+Teleopit host 可以是工作站 PC，也可以是机器人 onboard 计算机。Teleopit 会在进程内启动
+`pico_bridge.PicoBridge` receiver，因此 onboard 部署与 PC 部署使用同一条 Pico 输入路径。
+
 ## 第一步：VR 头显设置
 
-1. 从 [XRoboToolkit-Unity-Client Releases](https://github.com/XR-Robotics/XRoboToolkit-Unity-Client/releases) 下载最新 APK
+1. 从 [pico-bridge Releases](https://github.com/BotRunner64/pico-bridge/releases) 下载头显端 APK
 2. 通过 adb 安装：
    ```bash
-   adb install XRoboToolkit-Unity-Client.apk
+   adb install pico-bridge.apk
    ```
-3. 在头显上启动 XRoboToolkit，开启**全身追踪**模式
-4. 确保头显与控制 PC 处于**同一网络**
+3. 启动 pico-bridge 头显端 client，并开启**全身追踪**模式
+4. 确保头显与 Teleopit host 处于**同一网络**
 
-## 第二步：PC 端环境配置
+## 第二步：Teleopit host 环境配置
 
 ### 前置要求
 
 - Ubuntu 22.04
-- Python 3.10+，已安装 Teleopit：`pip install -e .`
-- pybind11：`conda install -c conda-forge pybind11`
-- [XRoboToolkit PC Service](https://github.com/XR-Robotics/XRoboToolkit-PC-Service)：
-  ```bash
-  wget https://github.com/XR-Robotics/XRoboToolkit-PC-Service/releases/download/v1.0.0/XRoboToolkit_PC_Service_1.0.0_ubuntu_22.04_amd64.deb
-  sudo dpkg -i XRoboToolkit_PC_Service_1.0.0_ubuntu_22.04_amd64.deb
-  ```
+- Python 3.10+
+- 安装带 Pico extra 的 Teleopit：`pip install -e '.[pico4]'`
 
-### 安装 SDK
+### 安装 pico-bridge Receiver
 
 ```bash
-bash scripts/setup/setup_pico4.sh
+pip install -e '.[pico4]'
 ```
-
-该脚本会完成以下操作：
-- 检测 `libPXREARobotSDK.so` 是否已安装
-- 向系统链接器注册动态库
-- 编译并安装 `xrobotoolkit_sdk` Python 绑定
 
 验证安装：
 ```bash
-python -c "import xrobotoolkit_sdk; print('OK')"
+python -c "from pico_bridge import PicoBridge; print('OK')"
 ```
+
+Teleopit 会在 `Pico4InputProvider` 中启动 receiver。Pico extra 会安装带相机支持的 pico-bridge 0.2.0。
 
 ## 第三步：仿真验证（Pico sim2sim）
 
@@ -76,14 +71,52 @@ python scripts/run/run_sim.py \
 ```
 
 正常运行后，虚拟机器人会跟随你的 VR 动作。如果机器人没有响应，请检查：
-- 头显上 XRoboToolkit 显示 "Connected"
-- PC Service 正在运行
+- 头显上的 pico-bridge client 已连接到 Teleopit host receiver
+- `input.bridge_host`、`input.bridge_port` 以及可选的 `input.bridge_advertise_ip` 与当前网络匹配
 - 两台设备处于同一网络
+
+### 可选 Pico 视频预览
+
+pico-bridge 0.2.0 可以把 host 相机预览发送回头显。Teleopit 默认关闭此功能，确保没有相机访问权限的
+host 仍可正常运行追踪和控制。
+
+sim2sim 中可推送 MuJoCo `d435i_rgb` 相机：
+
+```bash
+python scripts/run/run_sim.py \
+    --config-name pico4_sim \
+    controller.policy_path=track.onnx \
+    input.video.enabled=true
+```
+
+sim2real 中可推送 G1 RealSense 彩色相机：
+
+```bash
+python scripts/run/run_sim2real.py \
+    --config-name pico4_sim2real \
+    controller.policy_path=track.onnx \
+    input.video.enabled=true \
+    input.video.device=<optional-realsense-serial>
+```
+
+如果视频源失败，Teleopit 会记录错误、关闭视频，并继续运行动捕和控制。设置
+`input.video.fail_on_error=true` 可改为视频失败即启动失败。
+
+### 键盘模式流程
+
+在 `teleopit/configs/pico4_sim.yaml` 中，实时键盘模式默认开启：
+
+- 按 **Y** 进入 `MOCAP`
+- 按 **A** 暂停/恢复实时动捕
+- 按 **X** 返回 `STANDING`
+- 按 **Q** 退出仿真循环
+
+循环会直接进入 `STANDING`，等追踪准备好后按 **Y** 即可进入 `MOCAP`。
 
 ### 暂停与恢复
 
-- 按手柄 **A** 键冻结追踪
-- 再次按 **A** 键清除实时参考缓冲区，平滑恢复实时动捕
+- 按键盘 **A** 或 Pico 手柄 **A** 键冻结追踪
+- 再次按 **A** 键恢复追踪。Teleopit 会先重新居中航向和地面平面位置，然后继续跟随。
 
 ## 第四步：真机部署（Pico sim2real）
 
@@ -96,8 +129,10 @@ git submodule update --init --recursive
 python scripts/run/run_sim2real.py \
     --config-name pico4_sim2real \
     controller.policy_path=track.onnx \
-    real_robot.network_interface=eth0
+    real_robot.network_interface=enp130s0
 ```
+
+PC 通过网线连接 G1 控制时，先在 PC 上运行 `ifconfig`，将 `real_robot.network_interface` 设置为连接 G1 的以太网接口名，例如 `enp130s0`。在机器人 onboard 计算机上运行时，默认的 `eth0` 通常是正确值。
 
 ### 操作流程
 
@@ -110,7 +145,7 @@ python scripts/run/run_sim2real.py \
 7. **L1+R1** → 急停（`DAMPING`）
 
 :::warning
-从暂停恢复时，请尽量保持静止并使身体姿态与暂停时的姿态一致。如果出现姿态畸变，请立即再次暂停，调整姿态后重新恢复。
+从暂停恢复时，请在新的动捕帧到达期间保持静止，并尽量贴近暂停时的姿态。这样可以减少恢复追踪时的参考突变。
 :::
 
 完整状态机文档请参见 [Sim2Real 部署](sim2real)。
@@ -121,8 +156,11 @@ python scripts/run/run_sim2real.py \
 # 调整 Pico 等待超时时间（默认 60s）
 input.pico4_timeout=30
 
-# 调整暂停/恢复过渡时长
-pause_resume_transition_duration=1.0
+# 调整恢复前采集的新追踪帧数
+pause_resume_warmup_steps=2
+
+# 关闭实时键盘模式状态机
+keyboard.enabled=false
 
 # 修改策略推理频率
 policy_hz=30
@@ -130,15 +168,19 @@ policy_hz=30
 # 更换暂停按键
 input.pause_button=right_axis_click
 
+# 在 Pico 头显中启用 host 相机预览
+input.video.enabled=true
+
 # 指定网络接口
-real_robot.network_interface=enp3s0
+real_robot.network_interface=enp130s0
 ```
 
 ## 故障排查
 
 | 现象 | 可能原因 | 解决方法 |
 |------|---------|---------|
-| `ImportError: xrobotoolkit_sdk` | SDK 未安装 | 执行 `bash scripts/setup/setup_pico4.sh` |
-| `TimeoutError: No Pico4 body data` | 头显未连接或未开启追踪 | 检查 XRoboToolkit 应用状态和网络连接 |
+| `ImportError: pico_bridge` | receiver 包未安装 | 执行 `pip install -e '.[pico4]'` |
+| `TimeoutError: No Pico4 body data` | 头显未连接或未开启追踪 | 检查 pico-bridge 头显 app 状态和网络连接 |
 | 机器人不跟随 VR 动作 | 仍处于 STANDING 模式 | 按遥控器 **Y** 进入 MOCAP |
-| `libPXREARobotSDK.so not found` | PC Service 未安装 | 安装 deb 包后重新执行安装脚本 |
+| 发现广播找不到 host | 网卡不对或 UDP 被阻断 | 设置 `input.bridge_advertise_ip=<host-ip>`，确认 UDP 端口 `63901` 可达 |
+| Pico 视频预览黑屏或不可用 | 相机源失败或视频未启用 | 设置 `input.video.enabled=true`，检查 RealSense 访问权限并查看日志 |

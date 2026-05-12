@@ -14,7 +14,6 @@ slug: /
 - **Offline sim2sim**: Play back BVH motion capture files through RL policy in MuJoCo
 - **VR teleoperation**: Real-time whole-body control via Pico 4 / Pico 4 Ultra full body tracking
 - **Sim2real deployment**: Deploy to Unitree G1 hardware with the same pipeline
-- **Onboard control**: Run the control loop directly on G1's onboard NX computer
 - **Training pipeline**: End-to-end RL training with General-Tracking-G1 task
 - **Extensible design**: Protocol-based components (InputProvider, Retargeter, Controller, Robot)
 

@@ -43,9 +43,10 @@ teleopit/                 # Core inference package
 │   └── observation.py    # VelCmdObservationBuilder
 ├── inputs/
 │   ├── bvh_provider.py       # BVHInputProvider — offline BVH file
-│   ├── pico4_provider.py     # Pico4InputProvider — xrobotoolkit_sdk realtime body tracking input
+│   ├── pico4_provider.py     # Pico4InputProvider — pico_bridge receiver input
+│   ├── pico_video.py         # Optional camera preview pushed back to Pico through pico-bridge
 │   ├── rot_utils.py          # Quaternion helpers for input-space transforms
-│   └── zmq_provider.py       # ZMQInputProvider — onboard Pico4 realtime receiver
+│   └── udp_bvh_provider.py   # UDPBVHInputProvider — realtime BVH packet input
 ├── retargeting/
 │   ├── core.py           # RetargetingModule + extract_mimic_obs()
 │   └── gmr/              # Self-contained GMR code; heavyweight assets are downloaded into an ignored path
@@ -58,8 +59,7 @@ scripts/
 ├── run_sim.py            # Offline sim2sim pipeline
 ├── run_sim2real.py       # G1 sim2real control; supports offline BVH playback and Pico4
 ├── render_sim.py         # Render single BVH → 3 MuJoCo videos (mocap input, retarget, sim2sim)
-├── compute_ik_offsets.py # Compute IK quaternion offsets for new BVH formats
-└── setup_pico4.sh        # Pico4 environment setup helper
+└── compute_ik_offsets.py # Compute IK quaternion offsets for new BVH formats
 train_mimic/              # Training package
 ├── app.py                # Shared app helpers for train/play/benchmark
 ├── tasks/tracking/config/
@@ -86,20 +86,23 @@ train_mimic/              # Training package
 - Must use `g1_mjlab.xml` for sim2sim; `g1_mocap_29dof.xml` clamps torques to `±1 Nm` and is only for kinematic retarget visualization
 
 ### Multi-Viewer Support
-`SimulationLoop` supports three simultaneous viewer windows controlled by the `viewers` config:
+`SimulationLoop` supports multiple simultaneous viewer windows controlled by the `viewers` config:
 
 ```bash
 python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=sim2sim
 python scripts/run/run_sim.py controller.policy_path=policy.onnx 'viewers=[mocap,retarget,sim2sim]'
 python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=all
 python scripts/run/run_sim.py controller.policy_path=policy.onnx 'viewers=[retarget,sim2sim]'
+python scripts/run/run_sim.py controller.policy_path=policy.onnx 'viewers=[sim2sim,camera]'
 python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=none
 ```
 
 - `sim2sim`: MuJoCo physics result
 - `retarget`: kinematic retarget result
 - `mocap`: retargeting input skeleton rendered by MuJoCo custom geoms
+- `camera`: G1 `d435i_rgb` fixed RGB camera view
 - `bvh` viewer naming is removed; use `mocap`
+- `viewers=all` opens `mocap`, `retarget`, and `sim2sim`; add `camera` explicitly when needed
 - All viewers run in separate subprocesses because GLFW/GLX only supports one window per process
 - Simulation exits when all active viewer windows are closed
 - `viewers` is the only supported viewer key; legacy `viewer` alias is removed
@@ -122,13 +125,18 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - `playback.pause_on_end=true` keeps the final pose and waits for manual replay
 
 ### Pico4 Realtime Input
-- `Pico4InputProvider` reads realtime body tracking from `xrobotoolkit_sdk`
-- Bone naming follows `xrobot_to_g1.json`
+- `Pico4InputProvider` reads realtime body tracking from the in-process `pico_bridge.PicoBridge`
+- The pico-bridge receiver runs on the Teleopit host, which can be a workstation PC or robot onboard computer; do not maintain a separate onboard Pico input mode
+- pico-bridge 0.2.0 is the supported runtime; camera preview uses `PicoBridge(video="frames").push_video_frame(rgb_uint8)`
+- Pico video preview is optional and disabled by default; sim2sim uses the MuJoCo `d435i_rgb` camera and sim2real uses RealSense when `input.video.enabled=true`
+- Bone naming follows `pico_bridge_to_g1.json`
 - The provider applies an input-space transform to match the current retarget config
 - Do not hardcode that transform as a public coordinate-system contract; validate against actual retarget/sim2sim behavior when SDK or firmware changes
 - Pico4 realtime control uses the same retargeted-reference timeline path as the shared realtime input stack
+- Pico sim2sim supports a keyboard-driven top-level mode state machine: `STANDING → MOCAP → STANDING`
+- Default Pico sim2sim keyboard mappings are `Y` → `MOCAP`, `A` → pause/resume mocap, `X` → back to `STANDING`, `Q` → quit
 - Pico4 sim2real pause/resume is handled as a mocap-session control event (`toggle_pause`), not as a mode switch to `STANDING`
-- Default Pico pause button is `A`; restore tracking by rebuilding realtime buffer + yaw/pivot alignment and blending back into live mocap
+- Default Pico pause button is `A`; restore tracking by rebuilding the realtime buffer and yaw/XY root-offset alignment, then accept the current live mocap retarget reference directly
 
 ### SimulationLoop Runtime Behavior
 - `realtime=true` enforces wall-clock pacing even without a viewer
@@ -137,8 +145,9 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - BVH frame alignment is time-based: `bvh_idx = int(policy_time × input_fps)`
 - Realtime reference buffering is controlled by `retarget_buffer_enabled`, `retarget_buffer_window_s`, `retarget_buffer_delay_s`, `reference_steps`, `realtime_buffer_warmup_steps`, and the low/high watermark knobs
 - Realtime inferred `motion_joint_vel`, anchor linear velocity, and anchor angular velocity can be EMA-smoothed via `reference_velocity_smoothing_alpha` and `reference_anchor_velocity_smoothing_alpha`
-- Sim2real Pico pause/resume adds a mocap-session sub-state machine: `ACTIVE → PAUSED → RESUMING → ACTIVE`
-- Realtime sim2sim with Pico/ZMQ control events uses the same mocap-session pause/resume semantics and rebuilds the realtime reference path on resume
+- Sim2real Pico pause/resume uses mocap-session states `ACTIVE ↔ PAUSED`; resume clears policy/reference state, warms the realtime buffer, rebuilds yaw/XY root alignment, and does not interpolate retarget qpos from the paused pose
+- Realtime sim2sim with Pico control events uses the same mocap-session pause/resume semantics and rebuilds the realtime reference path on resume
+- Realtime Pico sim2sim can start directly in `STANDING` with keyboard mode control enabled via top-level `keyboard.enabled`
 
 ### Inference Observation
 Observation format: `velcmd_history` (166D, dual-input ONNX)
@@ -251,6 +260,7 @@ Critical note: align robot root orientation to the BVH human forward direction b
 - Use the default git user as commit author
 - After major feature changes, update `AGENTS.md` and `README.md` together with the code
 - English docs (`docs/docs/`), Chinese docs (`docs/i18n/zh-Hans/`), and code implementation must stay in sync. Chinese docs are translations of the English originals — never generate Chinese content independently; always translate from the corresponding English page
+- Documentation updates must be written for users and developers as stable product/development guidance, not as explanations of the current code patch or implementation diff
 
 ```bash
 pip install -e .

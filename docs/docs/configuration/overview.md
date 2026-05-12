@@ -16,15 +16,13 @@ Runtime assembly is centralized in `teleopit/runtime/`. Scripts, `TeleopPipeline
 | `teleopit/configs/pico4_sim.yaml` | Pico 4 VR sim2sim |
 | `teleopit/configs/sim2real.yaml` | BVH sim2real on Unitree G1 |
 | `teleopit/configs/pico4_sim2real.yaml` | Pico 4 VR sim2real on Unitree G1 |
-| `teleopit/configs/onboard_sim2real.yaml` | Onboard NX sim2real (ZMQ + Pico 4) |
 
 These compose sub-configs:
 
 - `teleopit/configs/robot/g1.yaml`
 - `teleopit/configs/controller/rl_policy.yaml`
 - `teleopit/configs/input/bvh.yaml` — offline BVH input
-- `teleopit/configs/input/pico4.yaml` — Pico 4 direct input
-- `teleopit/configs/input/zmq_pico4.yaml` — Pico 4 via ZMQ (onboard)
+- `teleopit/configs/input/pico4.yaml` — Pico 4 input through the pico-bridge receiver on the Teleopit host
 
 ## Override Examples
 
@@ -57,10 +55,12 @@ python scripts/run/run_sim.py \
 
 ### Change Network Interface (sim2real)
 
+For wired PC-to-G1 control, run `ifconfig` on the PC and set this to the interface connected to the robot, such as `enp130s0`. For onboard execution on the robot computer, the default `eth0` is usually correct.
+
 ```bash
 python scripts/run/run_sim2real.py \
     controller.policy_path=policy.onnx \
-    real_robot.network_interface=enp3s0
+    real_robot.network_interface=enp130s0
 ```
 
 ## Design Principle: Fail-Fast

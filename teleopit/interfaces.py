@@ -25,7 +25,7 @@ class InputProvider(Protocol):
     """Minimal interface shared by all human-motion input sources.
 
     Satisfied by both offline providers (``BVHInputProvider``)
-    and realtime providers (``Pico4InputProvider``, ``ZMQInputProvider``).
+    and realtime providers such as ``Pico4InputProvider``.
     """
 
     @property
@@ -44,7 +44,7 @@ class InputProvider(Protocol):
 
 @runtime_checkable
 class RealtimeInputProvider(InputProvider, Protocol):
-    """Extended interface for realtime streaming providers (Pico4, ZMQ).
+    """Extended interface for realtime streaming providers such as Pico4.
 
     Adds methods required by the realtime buffering pipeline that offline
     providers (BVH, looping wrappers) do not implement.
@@ -65,9 +65,13 @@ class RealtimeInputProvider(InputProvider, Protocol):
 @runtime_checkable
 class Retargeter(Protocol):
     """Retargets human motion to robot motion."""
-    
+
     def retarget(self, human_data: Dict[str, Any]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Retarget human motion to robot. Returns (base_pos, base_rot, joint_pos)."""
+        ...
+
+    def reset(self) -> None:
+        """Reset retargeter state."""
         ...
 
 
@@ -87,17 +91,21 @@ class Controller(Protocol):
 @runtime_checkable
 class Robot(Protocol):
     """Robot interface for state and control."""
-    
+
     def get_state(self) -> RobotState:
         """Get current robot state."""
         ...
-    
+
     def set_action(self, action: np.ndarray) -> None:
         """Set robot action."""
         ...
-    
+
     def step(self) -> None:
         """Step robot simulation/hardware."""
+        ...
+
+    def reset(self, qpos: np.ndarray | None = None) -> None:
+        """Reset robot to initial or specified state."""
         ...
 
 
@@ -117,20 +125,31 @@ class MessageBus(Protocol):
 @runtime_checkable
 class Recorder(Protocol):
     """Records teleoperation data."""
-    
-    def record_step(self, data: Dict[str, Any]) -> None:
-        """Record single step of data."""
-        ...
-    
-    def save(self, path: str) -> None:
-        """Save recorded data to file."""
+
+    def add_frame(self, data: Dict[str, Any]) -> None:
+        """Record a single frame of data."""
         ...
 
 
 @runtime_checkable
 class ObservationBuilder(Protocol):
     """Builds observations for controller from robot state."""
-    
+
     def build_observation(self, state: RobotState, history: list[np.ndarray], action_mimic: np.ndarray) -> np.ndarray:
         """Build observation from state, history, and mimic action."""
+        ...
+
+    def reset(self) -> None:
+        """Reset observation builder state."""
+        ...
+
+
+@runtime_checkable
+class SupportsReferenceWindow(Protocol):
+    """ObservationBuilder that can build observations using a reference window."""
+
+    def build_with_reference_window(
+        self, state: RobotState, reference_window: Any, motion_qpos: np.ndarray, last_action: np.ndarray,
+    ) -> np.ndarray:
+        """Build observation using reference window instead of velocity commands."""
         ...

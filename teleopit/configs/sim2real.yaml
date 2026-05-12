@@ -6,10 +6,8 @@ defaults:
 
 policy_hz: 50.0
 transition_duration: 2.0  # seconds to interpolate from default pose to motion command (0.0 to disable)
-pause_resume_transition_duration: 1.0  # seconds to blend from paused hold pose back into live mocap
+pause_resume_transition_duration: 1.0  # offline playback resume blend; realtime mocap resumes from re-centered live tracking
 pause_resume_warmup_steps: 2  # realtime mocap frames to accumulate before resuming live tracking
-pause_reset_alignment_on_resume: true  # rebuild yaw/pivot alignment after pause to avoid large corrective motion
-velcmd_fixed_ref_yaw_alignment: true  # apply one fixed startup yaw offset to VelCmd reference motion
 retarget_buffer_enabled: true
 retarget_buffer_window_s: 0.5
 retarget_buffer_delay_s: null  # null = auto use one input-frame delay for timeline sampling

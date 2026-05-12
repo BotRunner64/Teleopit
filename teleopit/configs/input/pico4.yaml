@@ -1,10 +1,23 @@
 provider: pico4
-human_format: xrobot
+human_format: pico_bridge
 robot_name: unitree_g1
 human_height: 1.75
-pico4_timeout: 60.0   # seconds to wait for first body tracking data
+pico4_timeout: 60.0   # seconds to wait for first pico-bridge body frame
 pico4_buffer_size: 60
 pico4_timestamp_gap_reset_s: 0.15
-pico4_poll_sleep_s: 0.002
 pause_button: A
 pause_debounce_s: 0.25
+bridge_host: "0.0.0.0"
+bridge_port: 63901
+bridge_discovery: true
+bridge_advertise_ip: null
+bridge_start_timeout: 10.0
+bridge_history_size: 120
+video:
+  enabled: false
+  source: null
+  width: 1280
+  height: 720
+  fps: 30
+  device: null
+  fail_on_error: false

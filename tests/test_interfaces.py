@@ -90,6 +90,9 @@ class _FakeRetargeter:
         n = 5
         return np.zeros(3), np.zeros(4), np.zeros(n)
 
+    def reset(self):
+        pass
+
 
 class _FakeController:
     def compute_action(self, obs):
@@ -112,6 +115,9 @@ class _FakeRobot:
     def step(self):
         pass
 
+    def reset(self, qpos=None):
+        pass
+
 
 class _FakeMessageBus:
     def publish(self, topic, data):
@@ -122,16 +128,16 @@ class _FakeMessageBus:
 
 
 class _FakeRecorder:
-    def record_step(self, data):
-        pass
-
-    def save(self, path):
+    def add_frame(self, data):
         pass
 
 
 class _FakeObservationBuilder:
     def build_observation(self, state, history, action_mimic):
         return np.zeros(10)
+
+    def reset(self):
+        pass
 
 
 class TestProtocolSubtyping:

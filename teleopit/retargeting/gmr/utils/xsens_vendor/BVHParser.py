@@ -239,11 +239,8 @@ class BVHParser:
                 if not self.stack:
                     raise ValueError("Unmatched closing brace '}'")
                 self.stack.pop()
-                # for idx, node in enumerate(self.stack):
-                #     print("\t" * idx, node.name)
                 if self.stack:
                     self.active = self.parents[self.active]
-                    # print("}", self.active)
             else:
                 raise ValueError(f"Unrecognized self.line in HIERARCHY: {self.line}")
         except Exception as e:

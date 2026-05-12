@@ -67,9 +67,6 @@ IK_CONFIG_DICT = {
     "bvh_hc_mocap": {
         "unitree_g1": _resolve_path("ik_configs/bvh_hc_mocap_to_g1.json"),
     },
-    "bvh_hc_mocap_no_toe": {
-        "unitree_g1": _resolve_path("ik_configs/bvh_hc_mocap_no_toe_to_g1.json"),
-    },
     "bvh_xsens": {
         "unitree_g1": _resolve_path("ik_configs/bvh_xsens_to_g1.json"),
         "unitree_h1_2": _resolve_path("ik_configs/bvh_xsens_to_h1_2.json"),
@@ -81,8 +78,8 @@ IK_CONFIG_DICT = {
     "fbx_offline": {
         "unitree_g1": _resolve_path("ik_configs/fbx_offline_to_g1.json"),
     },
-    "xrobot": {
-        "unitree_g1": _resolve_path("ik_configs/xrobot_to_g1.json"),
+    "pico_bridge": {
+        "unitree_g1": _resolve_path("ik_configs/pico_bridge_to_g1.json"),
     },
 }
 

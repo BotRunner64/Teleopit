@@ -84,7 +84,7 @@ def test_pipeline_inherits_robot_action_decode_config(monkeypatch, tmp_path: Pat
             "transition_duration": 1.5,
             "pause_resume_transition_duration": 0.75,
             "pause_resume_warmup_steps": 3,
-            "pause_reset_alignment_on_resume": False,
+            "keyboard": {"enabled": True},
             "retarget_buffer_enabled": True,
             "retarget_buffer_window_s": 0.75,
             "retarget_buffer_delay_s": 0.02,
@@ -111,7 +111,7 @@ def test_pipeline_inherits_robot_action_decode_config(monkeypatch, tmp_path: Pat
     assert loop_cfg["transition_duration"] == pytest.approx(1.5)
     assert loop_cfg["pause_resume_transition_duration"] == pytest.approx(0.75)
     assert loop_cfg["pause_resume_warmup_steps"] == 3
-    assert loop_cfg["pause_reset_alignment_on_resume"] is False
+    assert loop_cfg["keyboard"]["enabled"] is True
     assert loop_cfg["retarget_buffer_enabled"] is True
     assert loop_cfg["retarget_buffer_window_s"] == pytest.approx(0.75)
     assert loop_cfg["retarget_buffer_delay_s"] == pytest.approx(0.02)
@@ -186,6 +186,167 @@ def test_pipeline_rejects_legacy_viewer_key(monkeypatch, tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="Legacy config key 'viewer'"):
         TeleopPipeline(cfg)
+
+
+def test_pipeline_uses_default_human_height_when_input_height_unset(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    class DummyRobot:
+        def __init__(self, cfg: object) -> None:
+            pass
+
+    class DummyController:
+        _expected_obs_dim = 166
+        _multi_input = True
+
+        def __init__(self, cfg: object) -> None:
+            pass
+
+        def reset(self) -> None:
+            pass
+
+    class DummyObsBuilder:
+        total_obs_size = 166
+
+        def __init__(self, cfg: object) -> None:
+            pass
+
+        def reset(self) -> None:
+            pass
+
+    class DummyInputProvider:
+        human_format = "hc_mocap"
+
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+    class DummyRetargeter:
+        def __init__(self, **kwargs: object) -> None:
+            captured["retarget_kwargs"] = kwargs
+
+    class DummyLoop:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+    policy_path = tmp_path / "policy.onnx"
+    policy_path.write_bytes(b"dummy")
+    bvh_path = tmp_path / "input.bvh"
+    bvh_path.write_text("HIERARCHY\n", encoding="utf-8")
+    xml_path = tmp_path / "robot.xml"
+    xml_path.write_text("<mujoco model='dummy'/>", encoding="utf-8")
+
+    cfg = OmegaConf.create(
+        {
+            "robot": {
+                "num_actions": 3,
+                "xml_path": str(xml_path),
+                "default_angles": [0.0, 0.0, 0.0],
+            },
+            "controller": {
+                "policy_path": str(policy_path),
+            },
+            "input": {
+                "provider": "bvh",
+                "bvh_file": str(bvh_path),
+                "bvh_format": "hc_mocap",
+                "robot_name": "unitree_g1",
+            },
+            "policy_hz": 50,
+            "pd_hz": 1000,
+        }
+    )
+
+    monkeypatch.setattr("teleopit.pipeline.MuJoCoRobot", DummyRobot)
+    monkeypatch.setattr("teleopit.pipeline.RLPolicyController", DummyController)
+    monkeypatch.setattr("teleopit.runtime.factory.VelCmdObservationBuilder", DummyObsBuilder)
+    monkeypatch.setattr("teleopit.pipeline.BVHInputProvider", DummyInputProvider)
+    monkeypatch.setattr("teleopit.pipeline.RetargetingModule", DummyRetargeter)
+    monkeypatch.setattr("teleopit.pipeline.SimulationLoop", DummyLoop)
+
+    TeleopPipeline(cfg)
+
+    assert captured["retarget_kwargs"]["actual_human_height"] == pytest.approx(1.75)
+
+
+def test_pipeline_prefers_explicit_input_human_height(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    class DummyRobot:
+        def __init__(self, cfg: object) -> None:
+            pass
+
+    class DummyController:
+        _expected_obs_dim = 166
+        _multi_input = True
+
+        def __init__(self, cfg: object) -> None:
+            pass
+
+        def reset(self) -> None:
+            pass
+
+    class DummyObsBuilder:
+        total_obs_size = 166
+
+        def __init__(self, cfg: object) -> None:
+            pass
+
+        def reset(self) -> None:
+            pass
+
+    class DummyInputProvider:
+        human_format = "hc_mocap"
+
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+    class DummyRetargeter:
+        def __init__(self, **kwargs: object) -> None:
+            captured["retarget_kwargs"] = kwargs
+
+    class DummyLoop:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+    policy_path = tmp_path / "policy.onnx"
+    policy_path.write_bytes(b"dummy")
+    bvh_path = tmp_path / "input.bvh"
+    bvh_path.write_text("HIERARCHY\n", encoding="utf-8")
+    xml_path = tmp_path / "robot.xml"
+    xml_path.write_text("<mujoco model='dummy'/>", encoding="utf-8")
+
+    cfg = OmegaConf.create(
+        {
+            "robot": {
+                "num_actions": 3,
+                "xml_path": str(xml_path),
+                "default_angles": [0.0, 0.0, 0.0],
+            },
+            "controller": {
+                "policy_path": str(policy_path),
+            },
+            "input": {
+                "provider": "bvh",
+                "bvh_file": str(bvh_path),
+                "bvh_format": "hc_mocap",
+                "robot_name": "unitree_g1",
+                "human_height": 1.72,
+            },
+            "policy_hz": 50,
+            "pd_hz": 1000,
+        }
+    )
+
+    monkeypatch.setattr("teleopit.pipeline.MuJoCoRobot", DummyRobot)
+    monkeypatch.setattr("teleopit.pipeline.RLPolicyController", DummyController)
+    monkeypatch.setattr("teleopit.runtime.factory.VelCmdObservationBuilder", DummyObsBuilder)
+    monkeypatch.setattr("teleopit.pipeline.BVHInputProvider", DummyInputProvider)
+    monkeypatch.setattr("teleopit.pipeline.RetargetingModule", DummyRetargeter)
+    monkeypatch.setattr("teleopit.pipeline.SimulationLoop", DummyLoop)
+
+    TeleopPipeline(cfg)
+
+    assert captured["retarget_kwargs"]["actual_human_height"] == pytest.approx(1.72)
 
 
 _XML_PATH = find_g1_xml_path()

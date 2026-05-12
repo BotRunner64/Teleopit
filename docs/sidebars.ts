@@ -19,7 +19,6 @@ const sidebars: SidebarsConfig = {
         'tutorials/offline-sim2sim',
         'tutorials/pico4-vr',
         'tutorials/sim2real',
-        'tutorials/onboard-sim2real',
         'tutorials/training',
       ],
     },

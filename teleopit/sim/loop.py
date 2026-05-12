@@ -1,46 +1,26 @@
 from __future__ import annotations
 
-import multiprocessing as mp
-import time
-from pathlib import Path
+import logging
+from enum import Enum
 from typing import Protocol, cast, final
 
-import mujoco
 import numpy as np
 from numpy.typing import NDArray
 
+from teleopit.constants import FULL_QPOS_DIM, ROOT_DIM
 from teleopit.controllers.qpos_interpolator import QposInterpolator
-from teleopit.inputs.realtime_packet import ControlEventType, RealtimeInputPacket
-from teleopit.debug.rollout_trace import RolloutTraceWriter
-from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Recorder, Retargeter, Robot
-from teleopit.sim.mocap_mujoco import (
-    MocapSkeletonSceneDrawer,
-    compute_ground_lift_offset,
-    create_mocap_viewer_model,
-    fit_mocap_camera,
-    lift_positions_above_ground,
-)
-from teleopit.sim.reference_motion import (
-    OfflineReferenceMotion,
-    interpolate_human_frames,
-    interpolate_retarget_qpos,
-)
+from teleopit.runtime.reference_config import parse_reference_config
+from teleopit.inputs.realtime_packet import RealtimeInputPacket
+from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Recorder, Retargeter, Robot, RobotState
 from teleopit.sim.reference_timeline import (
-    ReferenceTimeline,
     ReferenceWindow,
     ReferenceWindowBuilder,
 )
-from teleopit.sim.reference_utils import (
-    build_offline_reference_window,
-    build_static_reference_window,
-    obs_builder_requires_reference_window,
-)
-from teleopit.sim.realtime_utils import RealtimeReferenceDiagnostics, RealtimeReferenceManager
-from teleopit.sim.runtime_components import PolicyStepRunner, RunRecorder, RuntimePublisher, ViewerManager
-from teleopit.runtime.common import parse_alpha, parse_nonnegative_int, parse_optional_nonnegative_int
-from teleopit.runtime.mocap_session import MocapSessionManager, MocapSessionState
+from teleopit.sim.realtime_utils import RealtimeReferenceDiagnostics
+from teleopit.sim.runtime_components import MotionPreparation, PolicyStepRunner, RunRecorder, RuntimePublisher, ViewerManager
+from teleopit.sim.viewer_subprocess import mocap_viewer_proc, start_camera_viewer, start_robot_viewer
+from teleopit.runtime.mocap_session import MocapSessionManager
 from teleopit.runtime.offline_playback import OfflinePlaybackController
-from teleopit.runtime.terminal_keyboard import TerminalKeyboardReader
 
 Float32Array = NDArray[np.float32]
 Float64Array = NDArray[np.float64]
@@ -50,185 +30,10 @@ class _SupportsGet(Protocol):
     def get(self, key: str) -> object | None: ...
 
 
-# ---------------------------------------------------------------------------
-# Subprocess viewer functions (each runs in its own process with GLFW context)
-# ---------------------------------------------------------------------------
-
-def _robot_viewer_proc(
-    xml_path: str,
-    qpos_arr: mp.Array,
-    qpos_len: int,
-    shutdown: mp.Event,
-    alive: mp.Value,
-    foot_z_correction: bool,
-    left_foot_name: str,
-    right_foot_name: str,
-    title: str = "",
-    win_x: int = -1,
-    win_y: int = -1,
-) -> None:
-    """Subprocess: robot model viewer — displays qpos with optional foot Z fix.
-
-    Used for both sim2sim (physics result) and retarget (kinematic result).
-    """
-    import mujoco
-    import mujoco.viewer
-    import numpy as np
-    import os
-    import re
-
-    # Set window title via model name and position via GLFW hints
-    if title:
-        with open(xml_path) as f:
-            xml_str = f.read()
-        xml_str = re.sub(r'<mujoco\s+model="[^"]*"', f'<mujoco model="{title}"', xml_str)
-        os.chdir(os.path.dirname(os.path.abspath(xml_path)))
-        model = mujoco.MjModel.from_xml_string(xml_str)
-    else:
-        model = mujoco.MjModel.from_xml_path(xml_path)
-    data = mujoco.MjData(model)
-
-    left_foot_id = -1
-    right_foot_id = -1
-    if foot_z_correction:
-        left_foot_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, left_foot_name)
-        right_foot_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, right_foot_name)
-
-    pelvis_id = -1
-    try:
-        pelvis_id = model.body("pelvis").id
-    except Exception:
-        pass
-
-    # Set initial window position via GLFW hints (GLFW 3.4+)
-    if win_x >= 0 and win_y >= 0:
-        try:
-            import glfw
-            glfw.init()
-            glfw.window_hint(glfw.POSITION_X, win_x)
-            glfw.window_hint(glfw.POSITION_Y, win_y)
-        except Exception:
-            pass
-
-    v = mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False)
-    v.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = 0
-    v.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 0
-    v.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 0
-    v.opt.flags[mujoco.mjtVisFlag.mjVIS_COM] = 0
-    v.cam.distance = 2.0
-    alive.value = 1
-
-    try:
-        while v.is_running() and not shutdown.is_set():
-            with qpos_arr.get_lock():
-                qpos = np.array(qpos_arr[:qpos_len], dtype=np.float64)
-
-            data.qpos[:qpos_len] = qpos
-            data.qvel[:] = 0
-            mujoco.mj_forward(model, data)
-
-            if foot_z_correction and left_foot_id >= 0 and right_foot_id >= 0:
-                lowest_z = min(data.xpos[left_foot_id][2], data.xpos[right_foot_id][2])
-                if lowest_z < 0.0:
-                    data.qpos[2] -= lowest_z
-                    mujoco.mj_forward(model, data)
-
-            if pelvis_id >= 0:
-                v.cam.lookat[:] = data.xpos[pelvis_id]
-            else:
-                v.cam.lookat[:] = [data.qpos[0], data.qpos[1], 0.8]
-            v.sync()
-            time.sleep(0.02)
-    finally:
-        alive.value = 0
-        try:
-            v.close()
-        except Exception:
-            pass
-
-
-def _mocap_viewer_proc(
-    parents_list: list[int],
-    pos_arr: mp.Array,
-    n_bones: int,
-    shutdown: mp.Event,
-    alive: mp.Value,
-    win_x: int = -1,
-    win_y: int = -1,
-) -> None:
-    """Subprocess: mocap input viewer rendered with MuJoCo custom geoms."""
-    import mujoco
-    import mujoco.viewer
-    import numpy as np
-
-    model = create_mocap_viewer_model()
-    data = mujoco.MjData(model)
-    drawer = MocapSkeletonSceneDrawer(parents_list)
-
-    if win_x >= 0 and win_y >= 0:
-        try:
-            import glfw
-            glfw.init()
-            glfw.window_hint(glfw.POSITION_X, win_x)
-            glfw.window_hint(glfw.POSITION_Y, win_y)
-        except Exception:
-            pass
-
-    viewer = mujoco.viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False)
-    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = 0
-    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = 0
-    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = 0
-    viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_COM] = 0
-    alive.value = 1
-    ground_lift_offset: float | None = None
-
-    try:
-        while viewer.is_running() and not shutdown.is_set():
-            with pos_arr.get_lock():
-                pos = np.array(pos_arr[:n_bones * 3], dtype=np.float64).reshape(n_bones, 3)
-            if ground_lift_offset is None:
-                ground_lift_offset = compute_ground_lift_offset(pos)
-            pos = lift_positions_above_ground(pos, lift_offset=ground_lift_offset)
-
-            data.qvel[:] = 0
-            mujoco.mj_forward(model, data)
-            viewer.user_scn.ngeom = 0
-            drawer.draw(viewer.user_scn, pos)
-            fit_mocap_camera(viewer.cam, pos)
-            viewer.sync()
-            time.sleep(0.03)
-    finally:
-        alive.value = 0
-        try:
-            viewer.close()
-        except Exception:
-            pass
-
-
-# ---------------------------------------------------------------------------
-# Helper: create a robot-model viewer subprocess
-# ---------------------------------------------------------------------------
-
-def _start_robot_viewer(
-    xml_path: str, nq: int, foot_z_correction: bool,
-    title: str = "", win_x: int = -1, win_y: int = -1,
-) -> tuple[mp.Process, mp.Array, mp.Value, mp.Event]:
-    """Launch a subprocess viewer for a robot model.
-
-    Returns (process, qpos_shared_array, alive_flag, shutdown_event).
-    """
-    arr = mp.Array("d", nq)
-    shutdown = mp.Event()
-    alive = mp.Value("i", 0)
-    proc = mp.Process(
-        target=_robot_viewer_proc,
-        args=(xml_path, arr, nq, shutdown, alive,
-              foot_z_correction, "left_ankle_roll_link", "right_ankle_roll_link",
-              title, win_x, win_y),
-        daemon=True,
-    )
-    proc.start()
-    return proc, arr, alive, shutdown
+class SimulationMode(Enum):
+    IDLE = "idle"
+    STANDING = "standing"
+    MOCAP = "mocap"
 
 
 @final
@@ -241,12 +46,14 @@ class SimulationLoop:
         bus: MessageBus,
         cfg: object,
         viewers: set[str] | None = None,
+        video_runtime: object | None = None,
     ) -> None:
         self.robot: Robot = robot
         self.controller: Controller = controller
         self.obs_builder: ObservationBuilder = obs_builder
         self.bus: MessageBus = bus
         self.cfg: object = cfg
+        self._video_runtime = video_runtime
 
         self.policy_hz: float = self._to_float(self._get_cfg("policy_hz", "sim.policy_hz", "control.policy_hz", "policy_frequency"))
         self.pd_hz: float = self._to_float(self._get_cfg("pd_hz", "sim.pd_hz", "control.pd_hz", "pd_frequency"))
@@ -287,84 +94,25 @@ class SimulationLoop:
 
     def _init_reference_config(self) -> None:
         """Parse reference-window / realtime-buffer configuration from self.cfg."""
-        raw_fixed_ref_yaw_alignment = self._try_get_cfg("velcmd_fixed_ref_yaw_alignment")
-        self._fixed_ref_yaw_alignment = True if raw_fixed_ref_yaw_alignment is None else bool(raw_fixed_ref_yaw_alignment)
-        raw_retarget_buffer_enabled = self._try_get_cfg("retarget_buffer_enabled")
-        self._retarget_buffer_enabled = True if raw_retarget_buffer_enabled is None else bool(raw_retarget_buffer_enabled)
-        raw_retarget_buffer_window_s = self._try_get_cfg("retarget_buffer_window_s")
-        self._retarget_buffer_window_s = float(
-            0.5 if raw_retarget_buffer_window_s in (None, "", "null") else raw_retarget_buffer_window_s
-        )
-        if self._retarget_buffer_window_s <= 0.0:
-            raise ValueError("retarget_buffer_window_s must be > 0")
+        # SIM-only config keys (not in shared ReferenceConfig)
+        self._playback_pause_on_end = bool(self._try_get_cfg("playback.pause_on_end", False))
+        self._playback_keyboard_enabled = bool(self._try_get_cfg("playback.keyboard.enabled", False))
+        self._realtime_keyboard_enabled = bool(self._try_get_cfg("keyboard.enabled", False))
+
+        # Shared reference config (parsed once, used by both sim and sim2real)
+        self._ref_cfg = parse_reference_config(self.cfg)
+        rc = self._ref_cfg
+
         raw_reference_steps = self._try_get_cfg("reference_steps")
         self._reference_window_builder = ReferenceWindowBuilder(
             policy_dt_s=1.0 / self.policy_hz,
             reference_steps=[0] if raw_reference_steps is None else cast(object, raw_reference_steps),
         )
-        if not self._retarget_buffer_enabled and self._reference_window_builder.requires_timeline:
+        if not rc.retarget_buffer_enabled and self._reference_window_builder.requires_timeline:
             raise ValueError(
                 "Non-zero reference_steps require retarget_buffer_enabled=true so realtime buffering "
                 "can sample future/history horizons."
             )
-        raw_reference_debug_log = self._try_get_cfg("reference_debug_log")
-        self._reference_debug_log = False if raw_reference_debug_log is None else bool(raw_reference_debug_log)
-        raw_retarget_buffer_delay_s = self._try_get_cfg("retarget_buffer_delay_s")
-        raw_realtime_input_delay_s = self._try_get_cfg("realtime_input_delay_s")
-        selected_delay = (
-            raw_retarget_buffer_delay_s
-            if raw_retarget_buffer_delay_s not in (None, "", "null")
-            else raw_realtime_input_delay_s
-        )
-        self._reference_delay_s: float | None = (
-            None if selected_delay in (None, "", "null") else float(selected_delay)
-        )
-        self._realtime_buffer_low_watermark_steps = parse_nonnegative_int(
-            self._try_get_cfg("realtime_buffer_low_watermark_steps"),
-            default=0,
-            field_name="realtime_buffer_low_watermark_steps",
-        )
-        self._realtime_buffer_high_watermark_steps = parse_optional_nonnegative_int(
-            self._try_get_cfg("realtime_buffer_high_watermark_steps"),
-            field_name="realtime_buffer_high_watermark_steps",
-        )
-        if (
-            self._realtime_buffer_high_watermark_steps is not None
-            and self._realtime_buffer_high_watermark_steps < self._realtime_buffer_low_watermark_steps
-        ):
-            raise ValueError(
-                "realtime_buffer_high_watermark_steps must be >= realtime_buffer_low_watermark_steps"
-            )
-        self._realtime_buffer_warmup_steps = parse_nonnegative_int(
-            self._try_get_cfg("realtime_buffer_warmup_steps"),
-            default=0,
-            field_name="realtime_buffer_warmup_steps",
-        )
-        self._pause_resume_warmup_steps = parse_nonnegative_int(
-            self._try_get_cfg("pause_resume_warmup_steps"),
-            default=self._realtime_buffer_warmup_steps,
-            field_name="pause_resume_warmup_steps",
-        )
-        self._pause_reset_alignment_on_resume = bool(
-            self._try_get_cfg("pause_reset_alignment_on_resume") if self._try_get_cfg("pause_reset_alignment_on_resume") is not None else True
-        )
-        self._reference_velocity_smoothing_alpha = parse_alpha(
-            self._try_get_cfg("reference_velocity_smoothing_alpha"),
-            default=1.0,
-            field_name="reference_velocity_smoothing_alpha",
-        )
-        self._reference_anchor_velocity_smoothing_alpha = parse_alpha(
-            self._try_get_cfg("reference_anchor_velocity_smoothing_alpha"),
-            default=1.0,
-            field_name="reference_anchor_velocity_smoothing_alpha",
-        )
-        self._reference_qpos_smoothing_alpha = parse_alpha(
-            self._try_get_cfg("reference_qpos_smoothing_alpha"),
-            default=1.0,
-            field_name="reference_qpos_smoothing_alpha",
-        )
-        self._playback_pause_on_end = bool(self._try_get_cfg("playback.pause_on_end", False))
-        self._playback_keyboard_enabled = bool(self._try_get_cfg("playback.keyboard.enabled", False))
 
     def _init_components(self, viewers: set[str] | None) -> None:
         """Build PolicyStepRunner, publisher, recorder helper, and viewer manager."""
@@ -381,18 +129,18 @@ class SimulationLoop:
             torque_limits=self._torque_limits,
             default_dof_pos=self._default_dof_pos,
             qpos_interpolator=self._qpos_interpolator,
-            fixed_ref_yaw_alignment=self._fixed_ref_yaw_alignment,
-            reference_velocity_smoothing_alpha=self._reference_velocity_smoothing_alpha,
-            reference_anchor_velocity_smoothing_alpha=self._reference_anchor_velocity_smoothing_alpha,
-            reference_qpos_smoothing_alpha=self._reference_qpos_smoothing_alpha,
+            reference_velocity_smoothing_alpha=self._ref_cfg.reference_velocity_smoothing_alpha,
+            reference_anchor_velocity_smoothing_alpha=self._ref_cfg.reference_anchor_velocity_smoothing_alpha,
+            reference_qpos_smoothing_alpha=self._ref_cfg.reference_qpos_smoothing_alpha,
         )
         self._publisher = RuntimePublisher(self.bus)
         self._recorder_helper = RunRecorder()
         self._viewer_manager = ViewerManager(
             robot=self.robot,
             viewers=self._viewers,
-            start_robot_viewer=_start_robot_viewer,
-            mocap_viewer_proc=_mocap_viewer_proc,
+            start_robot_viewer=start_robot_viewer,
+            start_camera_viewer=start_camera_viewer,
+            mocap_viewer_proc=mocap_viewer_proc,
         )
 
     def run(
@@ -402,434 +150,10 @@ class SimulationLoop:
         num_steps: int,
         recorder: Recorder | None = None,
     ) -> dict[str, float | int]:
-        self._step_runner.reset()
-        self._viewer_manager.ensure_mocap_viewer(cast(object, input_provider))
+        from teleopit.sim.session import SimLoopSession
 
-        steps_done = 0
-        has_viewers = self._viewer_manager.has_viewers()
-        needs_pacing = has_viewers or self._realtime
-        policy_dt = 1.0 / self.policy_hz
-        wall_start = time.monotonic() if needs_pacing else 0.0
-        max_steps = num_steps if num_steps > 0 else 2**63
-
-        self._viewer_manager.wait_until_ready(timeout_s=10.0)
-
-        # Frame-rate alignment: BVH fps may differ from policy Hz.
-        input_fps: float = float(getattr(input_provider, "fps", self.policy_hz))
-        last_bvh_idx = -1
-        cached_human_frame: dict | None = None
-        cached_retargeted: object = None
-        offline_reference: OfflineReferenceMotion | None = None
-        offline_playback: OfflinePlaybackController | None = None
-        if hasattr(input_provider, "__len__") and hasattr(input_provider, "get_frame_by_index"):
-            offline_reference = OfflineReferenceMotion(input_provider, retargeter)
-            input_fps = offline_reference.fps
-            offline_playback = OfflinePlaybackController(
-                duration_s=offline_reference.duration_s,
-                step_dt_s=policy_dt,
-                pause_on_end=self._playback_pause_on_end,
-            )
-        realtime_interpolated_input = (
-            offline_reference is None
-            and (hasattr(input_provider, "get_realtime_input_packet") or hasattr(input_provider, "get_frame_packet"))
-        )
-        if self._playback_keyboard_enabled and offline_reference is None and self._try_get_cfg("playback.keyboard.enabled") is True:
-            raise ValueError("playback.keyboard.enabled requires an offline BVH input provider.")
-        realtime_input_delay_s = (
-            1.0 / input_fps
-            if realtime_interpolated_input and self._reference_delay_s is None
-            else float(self._reference_delay_s or 0.0)
-        )
-        if (
-            self._reference_window_builder.requires_timeline
-            and not realtime_interpolated_input
-            and offline_reference is None
-        ):
-            raise ValueError(
-                "Non-zero reference_steps require either a realtime input provider exposing "
-                "get_frame_packet() or an offline input provider with indexed frame access. "
-                "Current-only input paths cannot provide future/history windows."
-            )
-        reference_timeline: ReferenceTimeline | None = None
-        if realtime_interpolated_input and self._retarget_buffer_enabled:
-            self._reference_window_builder.validate_runtime_support(
-                delay_s=realtime_input_delay_s,
-                window_s=self._retarget_buffer_window_s,
-                config_label="SimulationLoop reference timeline",
-            )
-            reference_timeline = ReferenceTimeline(window_s=self._retarget_buffer_window_s)
-        realtime_reference_manager: RealtimeReferenceManager | None = None
-        if reference_timeline is not None:
-            realtime_reference_manager = RealtimeReferenceManager(
-                reference_window_builder=self._reference_window_builder,
-                low_watermark_steps=self._realtime_buffer_low_watermark_steps,
-                high_watermark_steps=self._realtime_buffer_high_watermark_steps,
-                warmup_steps=self._realtime_buffer_warmup_steps,
-                catchup_enabled=bool(self._try_get_cfg("realtime_catchup_enabled", False)),
-                catchup_trigger_steps=parse_optional_nonnegative_int(
-                    self._try_get_cfg("realtime_catchup_trigger_steps"),
-                    field_name="realtime_catchup_trigger_steps",
-                ),
-                catchup_release_steps=parse_optional_nonnegative_int(
-                    self._try_get_cfg("realtime_catchup_release_steps"),
-                    field_name="realtime_catchup_release_steps",
-                ),
-                catchup_target_delay_s=(
-                    None
-                    if self._try_get_cfg("realtime_catchup_target_delay_s") in (None, "", "null")
-                    else float(self._try_get_cfg("realtime_catchup_target_delay_s"))
-                ),
-            )
-        last_live_packet_seq = -1
-        previous_live_human_frame: dict | None = None
-        previous_live_retargeted: Float64Array | None = None
-        previous_live_timestamp: float | None = None
-        latest_live_human_frame: dict | None = None
-        latest_live_retargeted: Float64Array | None = None
-        latest_live_timestamp: float | None = None
-        mocap_session = MocapSessionManager()
-        last_commanded_motion_qpos: Float64Array | None = None
-        keyboard_reader: TerminalKeyboardReader | None = None
-        playback_stop_requested = False
-        if self._playback_keyboard_enabled and offline_reference is not None:
-            keyboard_reader = TerminalKeyboardReader()
-
-        debug_writer: RolloutTraceWriter | None = None
-        if self._debug_trace_path is not None:
-            debug_writer = RolloutTraceWriter(
-                Path(self._debug_trace_path),
-                metadata={
-                    "source": "sim2sim",
-                    "policy_hz": self.policy_hz,
-                    "pd_hz": self.pd_hz,
-                    "input_fps": input_fps,
-                    "reference_steps": list(self._reference_window_builder.reference_steps),
-                },
-            )
-
-        try:
-            while steps_done < max_steps:
-                if has_viewers and not self._viewer_manager.any_active():
-                    break
-                if keyboard_reader is not None:
-                    if offline_playback is None:
-                        raise RuntimeError("Keyboard playback polling requires an offline playback controller")
-                    for key_event in keyboard_reader.poll():
-                        key = key_event.key.lower()
-                        if key == "q":
-                            playback_stop_requested = True
-                            break
-                        if key == "r":
-                            self._restart_offline_playback(
-                                offline_playback=offline_playback,
-                                mocap_session=mocap_session,
-                                retargeter=retargeter,
-                            )
-                            cached_human_frame = None
-                            cached_retargeted = None
-                            last_commanded_motion_qpos = None
-                            continue
-                        if key not in (" ", "p"):
-                            continue
-                        if mocap_session.state == MocapSessionState.PAUSED:
-                            if offline_playback.finished:
-                                import logging
-
-                                logging.getLogger(__name__).info(
-                                    "Offline playback already ended; press r to replay from frame 0."
-                                )
-                            else:
-                                hold_qpos = mocap_session.hold_qpos
-                                self._resume_offline_playback(
-                                    offline_playback=offline_playback,
-                                    mocap_session=mocap_session,
-                                    retargeter=retargeter,
-                                )
-                                last_commanded_motion_qpos = None
-                        else:
-                            hold_qpos = self._resolve_hold_qpos(
-                                last_commanded_motion_qpos,
-                                self._step_runner.last_retarget_qpos,
-                                None,
-                                self.robot.get_state(),
-                            )
-                            self._pause_offline_playback(
-                                offline_playback=offline_playback,
-                                mocap_session=mocap_session,
-                                hold_qpos=hold_qpos,
-                                retargeter=retargeter,
-                            )
-                    if playback_stop_requested:
-                        break
-
-                policy_time = steps_done * policy_dt
-                if offline_playback is not None:
-                    policy_time = offline_playback.current_time_s
-                frame_f = policy_time * input_fps
-                reference_window: ReferenceWindow | None = None
-                realtime_reference_diag: RealtimeReferenceDiagnostics | None = None
-                if offline_reference is not None:
-                    if offline_playback is None:
-                        raise RuntimeError("Offline playback controller must be initialized for offline references")
-                    if mocap_session.state == MocapSessionState.PAUSED:
-                        hold_qpos = mocap_session.hold_qpos
-                        if hold_qpos is None:
-                            raise RuntimeError("Paused offline playback is missing a hold pose")
-                        cached_retargeted = hold_qpos.copy()
-                        new_bvh_frame = False
-                    else:
-                        sampled = offline_reference.sample(policy_time)
-                        if sampled is None:
-                            if offline_playback.pause_on_end:
-                                offline_playback.finish()
-                                hold_qpos = self._resolve_hold_qpos(
-                                    last_commanded_motion_qpos,
-                                    self._step_runner.last_retarget_qpos,
-                                    None,
-                                    self.robot.get_state(),
-                                )
-                                mocap_session.pause(hold_qpos)
-                                cached_retargeted = hold_qpos.copy()
-                                new_bvh_frame = False
-                            else:
-                                break
-                        else:
-                            if obs_builder_requires_reference_window(self.obs_builder):
-                                reference_window = build_offline_reference_window(offline_reference, policy_time, self._reference_window_builder, self.policy_hz)
-                            cached_human_frame = sampled.human_frame
-                            cached_retargeted = sampled.qpos
-                            last_bvh_idx = sampled.frame_idx0
-                            new_bvh_frame = True
-                elif realtime_interpolated_input:
-                    packet = self._fetch_realtime_input_packet(input_provider, last_live_packet_seq)
-                    human_frame = cast(dict, packet.frame)
-                    frame_timestamp = float(packet.timestamp_s)
-                    frame_seq = int(packet.seq)
-                    for control_event in packet.control_events:
-                        if control_event.event_type != ControlEventType.TOGGLE_PAUSE:
-                            continue
-                        if mocap_session.state == MocapSessionState.PAUSED:
-                            start_qpos = mocap_session.begin_resume()
-                            if reference_timeline is not None:
-                                reference_timeline.clear()
-                            if realtime_reference_manager is not None:
-                                realtime_reference_manager.set_warmup_steps(self._pause_resume_warmup_steps)
-                                realtime_reference_manager.reset()
-                            self._step_runner.soft_reset_reference_state(
-                                reset_alignment=self._pause_reset_alignment_on_resume
-                            )
-                            self._step_runner.last_retarget_qpos = start_qpos.copy()
-                            self._step_runner.arm_motion_transition(
-                                start_qpos,
-                                duration_s=self._pause_resume_transition_duration,
-                            )
-                            # Reset IK solver so the warm-start configuration
-                            # does not get stuck after the pose discontinuity.
-                            _reset_retargeter = getattr(retargeter, "reset", None)
-                            if callable(_reset_retargeter):
-                                _reset_retargeter()
-                            previous_live_human_frame = None
-                            previous_live_retargeted = None
-                            previous_live_timestamp = None
-                            latest_live_human_frame = None
-                            latest_live_retargeted = None
-                            latest_live_timestamp = None
-                            last_live_packet_seq = -1
-                        else:
-                            mocap_session.pause(
-                                self._resolve_hold_qpos(
-                                    last_commanded_motion_qpos,
-                                    self._step_runner.last_retarget_qpos,
-                                    latest_live_retargeted,
-                                    self.robot.get_state(),
-                                )
-                            )
-                            self._step_runner.qpos_interpolator.reset()
-                    new_bvh_frame = frame_seq != last_live_packet_seq
-                    if mocap_session.state == MocapSessionState.PAUSED:
-                        cached_human_frame = human_frame
-                        cached_retargeted = mocap_session.hold_qpos
-                        if cached_retargeted is None:
-                            raise RuntimeError("Paused mocap session is missing a hold pose")
-                    else:
-                        if new_bvh_frame:
-                            previous_live_human_frame = latest_live_human_frame
-                            previous_live_timestamp = latest_live_timestamp
-                            latest_live_human_frame = human_frame
-                            retargeted_qpos = self._step_runner._retarget_to_qpos(retargeter.retarget(human_frame))
-                            if reference_timeline is not None:
-                                reference_timeline.append(retargeted_qpos, float(frame_timestamp))
-                                if realtime_reference_manager is not None:
-                                    realtime_reference_manager.note_realtime_frame()
-                            else:
-                                previous_live_retargeted = latest_live_retargeted
-                                latest_live_retargeted = retargeted_qpos
-                            latest_live_timestamp = float(frame_timestamp)
-                            last_live_packet_seq = int(frame_seq)
-
-                        if latest_live_human_frame is None:
-                            raise RuntimeError("Realtime input did not provide an initial frame")
-
-                        target_base_time = time.monotonic() - realtime_input_delay_s
-                        if (
-                            previous_live_human_frame is not None
-                            and previous_live_timestamp is not None
-                            and latest_live_timestamp is not None
-                            and latest_live_timestamp > previous_live_timestamp + 1e-6
-                        ):
-                            alpha = (target_base_time - previous_live_timestamp) / (
-                                latest_live_timestamp - previous_live_timestamp
-                            )
-                            alpha = float(np.clip(alpha, 0.0, 1.0))
-                            cached_human_frame = interpolate_human_frames(
-                                previous_live_human_frame,
-                                latest_live_human_frame,
-                                alpha,
-                            )
-                        else:
-                            cached_human_frame = latest_live_human_frame
-
-                        if reference_timeline is not None:
-                            if realtime_reference_manager is None:
-                                raise RuntimeError("Realtime reference manager must be initialized when using reference_timeline")
-                            if not realtime_reference_manager.warmup_done:
-                                time.sleep(min(policy_dt, 1.0 / max(input_fps, 1.0)))
-                                continue
-                            reference_window, realtime_reference_diag = realtime_reference_manager.sample(
-                                reference_timeline,
-                                target_base_time,
-                            )
-                            if self._reference_debug_log:
-                                if any(reference_window.fallback_mask()):
-                                    self._log_reference_window(reference_window, len(reference_timeline))
-                                if realtime_reference_diag.used_repeat_padding:
-                                    self._log_repeat_padding(reference_window, realtime_reference_diag, len(reference_timeline))
-                            cached_retargeted = reference_window.current_sample().qpos
-                        else:
-                            if latest_live_retargeted is None:
-                                raise RuntimeError("Realtime input did not provide an initial retargeted frame")
-                            if (
-                                previous_live_retargeted is not None
-                                and previous_live_timestamp is not None
-                                and latest_live_timestamp is not None
-                                and latest_live_timestamp > previous_live_timestamp + 1e-6
-                            ):
-                                alpha = (target_base_time - previous_live_timestamp) / (
-                                    latest_live_timestamp - previous_live_timestamp
-                                )
-                                alpha = float(np.clip(alpha, 0.0, 1.0))
-                                cached_retargeted = interpolate_retarget_qpos(
-                                    previous_live_retargeted,
-                                    latest_live_retargeted,
-                                    alpha,
-                                )
-                            else:
-                                cached_retargeted = latest_live_retargeted
-                else:
-                    bvh_idx = int(frame_f)
-                    new_bvh_frame = bvh_idx != last_bvh_idx
-                    if new_bvh_frame:
-                        if not input_provider.is_available():
-                            break
-                        cached_human_frame = input_provider.get_frame()
-                        cached_retargeted = retargeter.retarget(cached_human_frame)
-                        last_bvh_idx = bvh_idx
-
-                state = self.robot.get_state()
-                if mocap_session.state == MocapSessionState.PAUSED:
-                    hold_qpos = mocap_session.hold_qpos
-                    if hold_qpos is None:
-                        raise RuntimeError("Paused mocap session is missing a hold pose")
-                    preparation = self._step_runner.prepare_static_motion_command(hold_qpos)
-                    if obs_builder_requires_reference_window(self.obs_builder):
-                        reference_window = build_static_reference_window(hold_qpos, self._reference_window_builder, self.policy_hz)
-                else:
-                    preparation = self._step_runner.prepare_motion_command(cached_retargeted, state)
-                    if (
-                        realtime_interpolated_input
-                        and mocap_session.state == MocapSessionState.RESUMING
-                        and not self._qpos_interpolator.is_active
-                    ):
-                        mocap_session.finish_resume()
-
-                obs = self._build_observation(
-                    state=state,
-                    motion_prep=preparation,
-                    last_action=self._step_runner.last_action,
-                    reference_window=reference_window,
-                )
-                policy_obs = self._validate_observation_for_policy(obs)
-                action: Float32Array = np.asarray(self.controller.compute_action(policy_obs), dtype=np.float32).reshape(-1)
-                if action.shape[0] != self._num_actions:
-                    raise ValueError(f"Controller returned {action.shape[0]} actions, expected {self._num_actions}")
-
-                target_dof_pos = self._compute_target_dof_pos(action)
-                torque, final_state = self._step_runner.apply_control(target_dof_pos)
-                self._publish(preparation.mimic_obs, action, final_state)
-                self._record(recorder, final_state, preparation.mimic_obs, action, target_dof_pos, torque)
-                self._viewer_manager.write_sim2sim(self.robot)
-                self._viewer_manager.write_retarget(preparation.retarget_viewer_qpos)
-                if cached_human_frame is not None and (
-                    offline_reference is not None or new_bvh_frame or realtime_interpolated_input
-                ):
-                    self._viewer_manager.write_mocap(cast(object, input_provider), cached_human_frame)
-
-                if debug_writer is not None:
-                    self._write_debug_trace(
-                        debug_writer=debug_writer,
-                        steps_done=steps_done,
-                        policy_time=policy_time,
-                        frame_f=frame_f,
-                        policy_obs=policy_obs,
-                        action=action,
-                        target_dof_pos=target_dof_pos,
-                        torque=torque,
-                        preparation=preparation,
-                        final_state=final_state,
-                        reference_window=reference_window,
-                        reference_timeline=reference_timeline,
-                        realtime_reference_diag=realtime_reference_diag,
-                    )
-
-                # Real-time pacing
-                if needs_pacing:
-                    sim_time = (steps_done + 1) * policy_dt
-                    wall_elapsed = time.monotonic() - wall_start
-                    sleep_time = sim_time - wall_elapsed
-                    if sleep_time > 0:
-                        time.sleep(sleep_time)
-
-                self._step_runner.finish_step(action, preparation.qpos)
-                last_commanded_motion_qpos = preparation.qpos.copy()
-                if (
-                    offline_playback is not None
-                    and mocap_session.state != MocapSessionState.PAUSED
-                ):
-                    if offline_playback.advance():
-                        if offline_playback.pause_on_end:
-                            mocap_session.pause(preparation.qpos.copy())
-                        else:
-                            steps_done += 1
-                            break
-                steps_done += 1
-        except KeyboardInterrupt:
-            pass
-        finally:
-            self._viewer_manager.shutdown()
-            if keyboard_reader is not None:
-                keyboard_reader.close()
-            if debug_writer is not None:
-                debug_writer.save()
-
-        final_state = self.robot.get_state()
-        return {
-            "steps": steps_done,
-            "root_height": self._get_root_height(final_state),
-            "policy_hz": self.policy_hz,
-            "pd_hz": self.pd_hz,
-            "decimation": self.decimation,
-            "playback_stop": int(playback_stop_requested),
-        }
+        session = SimLoopSession(self, input_provider, retargeter, num_steps, recorder)
+        return session.run()
 
     def run_headless(
         self,
@@ -842,6 +166,31 @@ class SimulationLoop:
 
     def _compute_target_dof_pos(self, action: Float32Array) -> Float32Array:
         return self._step_runner.compute_target_dof_pos(action)
+
+    def _build_standing_qpos(self, state: RobotState) -> Float64Array:
+        standing_qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
+        if state.base_pos is not None:
+            standing_qpos[0:3] = np.asarray(state.base_pos, dtype=np.float64)[:3]
+        standing_qpos[3:7] = np.asarray(state.quat, dtype=np.float64)[:4]
+        standing_qpos[7:7 + self._num_actions] = self._default_dof_pos.astype(np.float64)[: self._num_actions]
+        return standing_qpos
+
+    @staticmethod
+    def _drain_realtime_control_events(input_provider: InputProvider) -> tuple[object, ...]:
+        pop_control_events = getattr(input_provider, "pop_control_events", None)
+        if not callable(pop_control_events):
+            return ()
+        return tuple(pop_control_events())
+
+    @staticmethod
+    def _realtime_input_has_frame(input_provider: InputProvider) -> bool:
+        has_frame = getattr(input_provider, "has_frame", None)
+        if callable(has_frame):
+            try:
+                return bool(has_frame())
+            except Exception:
+                return False
+        return True
 
     def _fetch_realtime_input_packet(
         self,
@@ -869,7 +218,7 @@ class SimulationLoop:
         last_commanded_motion_qpos: Float64Array | None,
         last_retarget_qpos: Float64Array | None,
         latest_live_retargeted: Float64Array | None,
-        state: object,
+        state: RobotState,
     ) -> Float64Array:
         if last_commanded_motion_qpos is not None:
             return last_commanded_motion_qpos.copy()
@@ -877,13 +226,32 @@ class SimulationLoop:
             return last_retarget_qpos.copy()
         if latest_live_retargeted is not None:
             return latest_live_retargeted.copy()
-        hold_qpos = np.zeros(36, dtype=np.float64)
-        base_pos = getattr(state, "base_pos", None)
-        if base_pos is not None:
-            hold_qpos[0:3] = np.asarray(base_pos, dtype=np.float64)[:3]
-        hold_qpos[3:7] = np.asarray(getattr(state, "quat"), dtype=np.float64)[:4]
-        hold_qpos[7:7 + self._num_actions] = np.asarray(getattr(state, "qpos"), dtype=np.float64)[: self._num_actions]
+        hold_qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
+        if state.base_pos is not None:
+            hold_qpos[0:3] = np.asarray(state.base_pos, dtype=np.float64)[:3]
+        hold_qpos[3:7] = np.asarray(state.quat, dtype=np.float64)[:4]
+        hold_qpos[7:7 + self._num_actions] = np.asarray(state.qpos, dtype=np.float64)[: self._num_actions]
         return hold_qpos
+
+    def _build_robot_state_qpos(self, state: RobotState) -> Float64Array:
+        qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
+        if state.base_pos is not None:
+            qpos[0:3] = np.asarray(state.base_pos, dtype=np.float64)[:3]
+        qpos[3:7] = np.asarray(state.quat, dtype=np.float64)[:4]
+        qpos[ROOT_DIM:ROOT_DIM + self._num_actions] = np.asarray(
+            state.qpos, dtype=np.float64,
+        )[: self._num_actions]
+        return qpos
+
+    def _build_resume_alignment_qpos(
+        self,
+        hold_qpos: Float64Array | None,
+        state: RobotState,
+    ) -> Float64Array:
+        qpos = self._build_robot_state_qpos(state)
+        if state.base_pos is None and hold_qpos is not None:
+            qpos[0:2] = np.asarray(hold_qpos, dtype=np.float64).reshape(-1)[0:2]
+        return qpos
 
     def _restart_offline_playback(
         self,
@@ -897,15 +265,9 @@ class SimulationLoop:
         self._step_runner.reset()
         self._last_action = np.zeros((self._num_actions,), dtype=np.float32)
         self.controller.reset()
-        reset_obs_builder = getattr(self.obs_builder, "reset", None)
-        if callable(reset_obs_builder):
-            reset_obs_builder()
-        reset_retargeter = getattr(retargeter, "reset", None)
-        if callable(reset_retargeter):
-            reset_retargeter()
-        reset_robot = getattr(self.robot, "reset", None)
-        if callable(reset_robot):
-            reset_robot()
+        self.obs_builder.reset()
+        retargeter.reset()
+        self.robot.reset()
 
     def _pause_offline_playback(
         self,
@@ -916,11 +278,12 @@ class SimulationLoop:
         retargeter: Retargeter,
     ) -> None:
         offline_playback.pause()
+        self._step_runner.reset()
+        self._last_action = np.zeros((self._num_actions,), dtype=np.float32)
+        self.controller.reset()
+        self.obs_builder.reset()
+        retargeter.reset()
         mocap_session.pause(hold_qpos)
-        self._step_runner.qpos_interpolator.reset()
-        reset_retargeter = getattr(retargeter, "reset", None)
-        if callable(reset_retargeter):
-            reset_retargeter()
 
     def _resume_offline_playback(
         self,
@@ -928,20 +291,23 @@ class SimulationLoop:
         offline_playback: OfflinePlaybackController,
         mocap_session: MocapSessionManager,
         retargeter: Retargeter,
+        state: RobotState,
     ) -> None:
-        start_qpos = mocap_session.begin_resume()
+        if mocap_session.hold_qpos is None:
+            raise RuntimeError("Cannot resume offline playback without a paused hold qpos")
+        resume_qpos = self._build_robot_state_qpos(state)
         offline_playback.resume()
-        self._step_runner.soft_reset_reference_state(
-            reset_alignment=self._pause_reset_alignment_on_resume
-        )
-        self._step_runner.last_retarget_qpos = start_qpos.copy()
+        mocap_session.reset()
+        self._step_runner.reset()
+        self._last_action = np.zeros((self._num_actions,), dtype=np.float32)
+        self.controller.reset()
+        self.obs_builder.reset()
+        retargeter.reset()
+        self._step_runner.last_retarget_qpos = resume_qpos.copy()
         self._step_runner.arm_motion_transition(
-            start_qpos,
+            resume_qpos,
             duration_s=self._pause_resume_transition_duration,
         )
-        reset_retargeter = getattr(retargeter, "reset", None)
-        if callable(reset_retargeter):
-            reset_retargeter()
 
     def _build_observation(
         self,
@@ -1016,13 +382,13 @@ class SimulationLoop:
     def _validate_observation_for_policy(self, obs: Float32Array) -> Float32Array:
         return self._step_runner.validate_observation_for_policy(obs)
 
-    def _get_root_height(self, state: object) -> float:
+    def _get_root_height(self, state: RobotState) -> float:
         robot_data = getattr(self.robot, "data", None)
         if robot_data is not None:
-            qpos = np.asarray(getattr(robot_data, "qpos"), dtype=np.float64)
+            qpos = np.asarray(robot_data.qpos, dtype=np.float64)
             if qpos.shape[0] >= 3:
                 return float(qpos[2])
-        qpos_state = np.asarray(getattr(state, "qpos"), dtype=np.float64)
+        qpos_state = np.asarray(state.qpos, dtype=np.float64)
         if qpos_state.shape[0] >= 3:
             return float(qpos_state[2])
         raise ValueError("Unable to infer root height from robot state")
@@ -1037,8 +403,8 @@ class SimulationLoop:
         action: Float32Array,
         target_dof_pos: Float32Array,
         torque: Float32Array,
-        preparation: object,
-        final_state: object,
+        preparation: MotionPreparation,
+        final_state: RobotState,
         reference_window: ReferenceWindow | None,
         reference_timeline: object | None,
         realtime_reference_diag: object | None,
@@ -1047,10 +413,6 @@ class SimulationLoop:
         get_debug_inputs = getattr(self.controller, "get_debug_inputs", None)
         if callable(get_debug_inputs):
             controller_debug_inputs = cast(dict[str, object], get_debug_inputs())
-        final_qpos = np.asarray(getattr(final_state, "qpos"), dtype=np.float32)
-        final_qvel = np.asarray(getattr(final_state, "qvel"), dtype=np.float32)
-        final_quat = np.asarray(getattr(final_state, "quat"), dtype=np.float32)
-        final_base_pos = getattr(final_state, "base_pos", None)
         add_step = getattr(debug_writer, "add_step")
         add_step(
             step=np.int64(steps_done),
@@ -1060,17 +422,17 @@ class SimulationLoop:
             obs_history=controller_debug_inputs.get("obs_history"),
             action=np.asarray(action, dtype=np.float32),
             target_dof_pos=np.asarray(target_dof_pos, dtype=np.float32),
-            motion_qpos=np.asarray(getattr(preparation, "qpos")[: 7 + self._num_actions], dtype=np.float32),
-            motion_joint_vel=np.asarray(getattr(preparation, "raw_motion_joint_vel"), dtype=np.float32),
-            smoothed_motion_joint_vel=np.asarray(getattr(preparation, "motion_joint_vel"), dtype=np.float32),
-            motion_anchor_lin_vel_w=getattr(preparation, "raw_motion_anchor_lin_vel_w"),
-            motion_anchor_ang_vel_w=getattr(preparation, "raw_motion_anchor_ang_vel_w"),
-            smoothed_motion_anchor_lin_vel_w=getattr(preparation, "motion_anchor_lin_vel_w"),
-            smoothed_motion_anchor_ang_vel_w=getattr(preparation, "motion_anchor_ang_vel_w"),
-            robot_qpos=final_qpos,
-            robot_qvel=final_qvel,
-            robot_quat=final_quat,
-            robot_base_pos=(None if final_base_pos is None else np.asarray(final_base_pos, dtype=np.float32)),
+            motion_qpos=np.asarray(preparation.qpos[: 7 + self._num_actions], dtype=np.float32),
+            motion_joint_vel=np.asarray(preparation.raw_motion_joint_vel, dtype=np.float32),
+            smoothed_motion_joint_vel=np.asarray(preparation.motion_joint_vel, dtype=np.float32),
+            motion_anchor_lin_vel_w=preparation.raw_motion_anchor_lin_vel_w,
+            motion_anchor_ang_vel_w=preparation.raw_motion_anchor_ang_vel_w,
+            smoothed_motion_anchor_lin_vel_w=preparation.motion_anchor_lin_vel_w,
+            smoothed_motion_anchor_ang_vel_w=preparation.motion_anchor_ang_vel_w,
+            robot_qpos=np.asarray(final_state.qpos, dtype=np.float32),
+            robot_qvel=np.asarray(final_state.qvel, dtype=np.float32),
+            robot_quat=np.asarray(final_state.quat, dtype=np.float32),
+            robot_base_pos=(None if final_state.base_pos is None else np.asarray(final_state.base_pos, dtype=np.float32)),
             torque=np.asarray(torque, dtype=np.float32),
             reference_base_time_s=(None if reference_window is None else np.asarray(reference_window.base_time_s, dtype=np.float64)),
             reference_steps=(None if reference_window is None else np.asarray(reference_window.reference_steps, dtype=np.int64)),

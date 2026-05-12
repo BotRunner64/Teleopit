@@ -12,10 +12,11 @@ Complete reference for all configurable fields.
 |-------|-------------|---------|
 | `policy_hz` | Policy inference frequency | `50` |
 | `pd_hz` | PD control frequency (simulation only) | `200` |
-| `viewers` | Viewer set: `mocap`, `retarget`, `sim2sim`, `all`, `none` | `sim2sim` |
+| `viewers` | Viewer set: `mocap`, `retarget`, `sim2sim`, `camera`, `all`, `none`. `all` opens `mocap`, `retarget`, and `sim2sim`; add `camera` explicitly. | `sim2sim` |
 | `realtime` | Rate-limit to wall clock | `false` |
 | `num_steps` | Number of steps; `0` = infinite | `0` |
 | `transition_duration` | Smooth transition time (seconds) from current pose to retarget command | - |
+| `keyboard.enabled` | Enable realtime keyboard mode control for sim2sim | `false` |
 | `playback.pause_on_end` | Pause at last frame when offline motion ends | `false` |
 | `playback.keyboard.enabled` | Enable keyboard control for offline playback | `false` |
 
@@ -25,6 +26,7 @@ Complete reference for all configurable fields.
 |-------|-------------|---------|
 | `robot.num_actions` | Joint action dimension | `29` |
 | `robot.xml_path` | MuJoCo XML path | - |
+| `d435i_rgb` | Fixed RGB camera in the G1 MJCF; use `viewers=[sim2sim,camera]` to display it | - |
 | `robot.kps` / `robot.kds` | PD gains | - |
 | `robot.default_angles` | Default standing pose | - |
 | `robot.torque_limits` | Joint torque limits | - |
@@ -56,20 +58,22 @@ Complete reference for all configurable fields.
 | Field | Description | Default |
 |-------|-------------|---------|
 | `input.provider` | `pico4` | `pico4` |
+| `input.human_format` | Retarget skeleton format | `pico_bridge` |
 | `input.pico4_timeout` | Wait timeout in seconds | `60` |
 | `input.pico4_buffer_size` | Frame buffer size | `60` |
 | `input.pause_button` | Button for pause/resume | `A` |
 | `input.pause_debounce_s` | Debounce time for pause button | `0.25` |
-
-### ZMQ Pico 4 (Onboard)
-
-| Field | Description | Default |
-|-------|-------------|---------|
-| `input.provider` | `zmq_pico4` | `zmq_pico4` |
-| `input.zmq_host` | IP of the PC running ZMQ publisher | `192.168.1.100` |
-| `input.zmq_port` | ZMQ PUB port | `5555` |
-| `input.zmq_topic` | ZMQ topic | `pico4` |
-| `input.zmq_timeout` | Wait timeout for first ZMQ frame (seconds) | `30` |
+| `input.bridge_host` | Teleopit host receiver bind host | `0.0.0.0` |
+| `input.bridge_port` | Teleopit host receiver TCP/UDP port | `63901` |
+| `input.bridge_discovery` | Enable pico-bridge discovery advertising | `true` |
+| `input.bridge_advertise_ip` | Optional advertised host IP override | `null` |
+| `input.bridge_start_timeout` | Timeout while starting the bridge | `10.0` |
+| `input.bridge_history_size` | Pico frame history retained by the bridge | `120` |
+| `input.video.enabled` | Stream host camera preview back to Pico through pico-bridge 0.2.0 | `false` |
+| `input.video.source` | Video source: `mujoco`, `realsense`, or `test-pattern` | `null` |
+| `input.video.width` / `height` / `fps` | Video capture/render settings | `1280` / `720` / `30` |
+| `input.video.device` | Optional RealSense serial | `null` |
+| `input.video.fail_on_error` | Fail startup instead of disabling video on error | `false` |
 
 ### Realtime
 
@@ -87,7 +91,7 @@ Complete reference for all configurable fields.
 
 ## Sim2Real
 
-Fields used by sim2real configs (`sim2real.yaml`, `pico4_sim2real.yaml`, `onboard_sim2real.yaml`).
+Fields used by sim2real configs (`sim2real.yaml`, `pico4_sim2real.yaml`).
 
 ### Safety
 
@@ -102,7 +106,7 @@ Fields used by sim2real configs (`sim2real.yaml`, `pico4_sim2real.yaml`, `onboar
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `real_robot.network_interface` | Network interface for DDS communication | `eth0` |
+| `real_robot.network_interface` | Network interface for Unitree DDS communication. For wired PC-to-G1 control, find the cable interface with `ifconfig` and set that name, for example `enp130s0`; for onboard robot execution, `eth0` is usually correct. | `eth0` |
 | `real_robot.kp_real` | Real-robot proportional gains (per joint) | - |
 | `real_robot.kd_real` | Real-robot derivative gains (per joint) | - |
 | `real_robot.kd_damping` | Damping mode kd | `8.0` |
@@ -114,11 +118,12 @@ Fields used by sim2real configs (`sim2real.yaml`, `pico4_sim2real.yaml`, `onboar
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `pause_resume_transition_duration` | Seconds to blend from paused pose back to live mocap | `1.0` |
-| `pause_resume_warmup_steps` | Mocap frames to accumulate before resuming | `2` |
-| `pause_reset_alignment_on_resume` | Rebuild yaw/pivot alignment after pause | `true` |
+| `pause_resume_transition_duration` | Resume blend duration for offline playback; realtime Pico resume uses live tracking re-centering | `1.0` |
+| `pause_resume_warmup_steps` | Realtime mocap frames to collect before tracking resumes | `2` |
 
-### Realtime Catch-up (Pico sim2real / Onboard)
+Realtime Pico resume re-centers heading and ground-plane position before tracking continues. Operators should keep still and stay as close as practical to the paused pose to reduce sudden reference changes.
+
+### Realtime Catch-up (Pico sim2real)
 
 | Field | Description | Default |
 |-------|-------------|---------|
