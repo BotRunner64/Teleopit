@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.3.0] - 2026-05-12
+
+重构实时输入与运行时：Pico 4 切换到 pico-bridge 0.2.0 in-process receiver，新增可选相机预览回传，移除旧 ZMQ/onboard Pico 路径；新增 UDP BVH 实时输入与 online sim 配置；统一 sim/sim2real reference window、realtime buffer、pause/resume realignment 与速度平滑逻辑；新增多 viewer/固定相机 viewer 支持；拆分 sim2real reference processor 与 safety manager；更新 G1 MuJoCo XML 相机资产。
+
 ## [0.2.0] - 2026-04-03
 
 通过 pico-bridge PC receiver 接入 Pico 4 遥操作、G1 Bridge SDK（C++ DDS pybind11）、独立 Standing 控制器（RL policy + timing 诊断）、实时 mocap 缓冲与 catch-up 优化；发布模型升级至 30k checkpoint。

@@ -99,7 +99,7 @@ ModelScope 仅模型仓库支持 tag，数据集仓库不支持。
 python - <<'EOF'
 from modelscope.hub.api import HubApi
 api = HubApi()
-url = api.create_model_tag("BingqianWu/Teleopit-models", "v0.2.0")
+url = api.create_model_tag("BingqianWu/Teleopit-models", "vX.Y.Z")
 print(url)
 EOF
 ```
@@ -140,7 +140,7 @@ HuggingFace 模型仓库支持 tag（数据集仓库不支持）：
 python - <<'EOF'
 from huggingface_hub import HfApi
 api = HfApi()
-api.create_tag("12e21/Teleopit-models", tag="v0.2.0", repo_type="model")
+api.create_tag("12e21/Teleopit-models", tag="vX.Y.Z", repo_type="model")
 EOF
 ```
 
