@@ -56,6 +56,8 @@ python scripts/run/run_sim.py controller.policy_path=track.onnx 'viewers=[retarg
 ## What's Next
 
 - [Offline Sim2Sim Tutorial](../tutorials/offline-sim2sim) - Full guide with recording and rendering
-- [Pico 4 VR](../tutorials/pico4-vr) - Real-time VR teleoperation
-- [Sim2Real](../tutorials/sim2real) - Deploy to Unitree G1 hardware
+- [Pico Sim2Sim](../tutorials/pico-sim2sim) - Verify Pico tracking in MuJoCo
+- [Standalone Standing](../tutorials/standalone-standing) - Check G1 bridge, network, and policy standing
+- [Pico Sim2Real](../tutorials/pico-sim2real) - Deploy Pico teleoperation to Unitree G1
+- [BVH Sim2Real](../tutorials/bvh-sim2real) - Replay offline BVH motions on Unitree G1
 - [Training](../tutorials/training) - Train your own policy

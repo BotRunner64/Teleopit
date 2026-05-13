@@ -1,123 +1,34 @@
 ---
-sidebar_position: 3
+sidebar_position: 99
 ---
 
-# Sim2Real 部署
+# Sim2Real 概览
 
-通过 g1_bridge_sdk（C++ DDS 桥接）将 Teleopit 部署到 Unitree G1 真实机器人上。
+Sim2Real 控制使用 `g1_bridge_sdk`，也就是 Unitree G1 的 C++ DDS bridge。使用本页选择合适的
+真机教程。
 
-:::tip
-如果使用 Pico 4 / Pico 4 Ultra VR 部署，请参阅完整的 [Pico VR 教程](pico4-vr)。
-:::
-
-## 输入源
-
-| 输入源 | 配置 | 说明 |
-|--------|------|------|
-| **Pico 4 / Pico 4 Ultra** | `--config-name pico4_sim2real` | [Pico VR](pico4-vr) |
-| 离线 BVH 文件 | 默认配置 | 本页内容 |
-
-## 前置要求
-
-**硬件：**
-- Unitree G1（29 自由度）
-- Unitree 无线遥控器
-- 机器人与控制 PC 之间的有线网络连接，或在机器人 onboard 计算机上运行
-- Pico 4 头显，或离线 BVH 动捕文件
-
-**软件：**
-```bash
-git submodule update --init --recursive
-bash scripts/setup/setup_g1_bridge.sh
-pip install -e '.[sim2real]'
-```
-
-使用 Pico 路线时，还需安装 pico-bridge：`pip install -e '.[pico4]'`。
-
-## 网络接口
-
-`real_robot.network_interface` 必须填写用于 Unitree DDS 通信的 Linux 网络接口名。PC 通过网线连接 G1 控制时，先在 PC 上运行 `ifconfig`，找到这根网线对应的接口名称并填写。例如你的 G1 网线接口是 `enp130s0`，运行时就设置 `real_robot.network_interface=enp130s0`。
-
-在机器人 onboard 计算机上运行 Teleopit 时，默认的 `eth0` 通常就是正确值。
-
-## 离线 BVH 播放
-
-```bash
-python scripts/run/run_sim2real.py \
-    controller.policy_path=track.onnx \
-    real_robot.network_interface=enp130s0 \
-    input.bvh_file=data/sample_bvh/aiming1_subject1.bvh
-```
-
-### 遥控器按键映射
-
-| 按键 | 功能 |
+| 目标 | 教程 |
 |------|------|
-| `Start` | 进入 `STANDING` |
-| `Y` | 开始播放 / 进入 `MOCAP` |
-| `A` | 暂停 / 恢复 |
-| `B` | 从头重播 |
-| `X` | 返回 `STANDING` |
-| `L1+R1` | 急停（`DAMPING`） |
+| 不接 mocap，先验证 bridge、网络和 policy 站立 | [独立站立测试](standalone-standing) |
+| 使用 Pico 全身追踪控制真实 G1 | [Pico Sim2Real](pico-sim2real) |
+| 在真实 G1 上回放离线 BVH 动作 | [BVH Sim2Real Playback](bvh-sim2real) |
 
-## 控制模式
+## 共同概念
 
-| 模式 | 数据流 | 使用场景 |
-|------|--------|---------|
-| `STANDING` | 默认姿态 -> RL 策略 -> 关节 | 启动、恢复、等待 |
-| `MOCAP` | Pico/BVH -> 重定向 -> RL 策略 -> 关节 | 遥操作 / 动作回放 |
-| `DAMPING` | 发送阻尼指令 | 急停 |
+`real_robot.network_interface` 必须指向用于 Unitree DDS 通信的 Linux 网络接口。
 
-### 状态机
+| 部署方式 | Teleopit 运行位置 | 常见接口 |
+|----------|-------------------|----------|
+| Wired PC-to-G1 | 通过网线连接 G1 的外部 PC | `enp...`，例如 `enp130s0` |
+| Onboard | G1 onboard 计算机 | `eth0` |
 
-```text
-                     +-----------------------------+
-                     |    L1+R1 急停（任意状态）      |
-                     v                             |
-  [IDLE] --Start--> [STANDING] --Y--> [MOCAP] --X--> [STANDING]
-                           ^                       |
-                           +----------Y------------+
-    ^                                                  |
-    +------------------Start---------------------------+
-                           [DAMPING]
-```
+Unitree 遥控器控制真机状态机：
 
-### Pico MOCAP 子状态
+| 按键 | 动作 |
+|------|------|
+| `Start` | 从 `IDLE` 或 `DAMPING` 进入 `STANDING` |
+| `Y` | 从 `STANDING` 进入 `MOCAP` |
+| `X` | 从 `MOCAP` 返回 `STANDING` |
+| `L1+R1` | 急停进入 `DAMPING` |
 
-当使用 `input.provider=pico4` 时，MOCAP 模式包含以下子状态：
-
-- **ACTIVE**：正常的实时动捕追踪
-- **PAUSED**：冻结参考姿态；机器人保持平衡但停止跟随
-
-恢复会在采集新的追踪帧并重新居中航向和地面平面位置后，从 `PAUSED` 回到 `ACTIVE`。操作者应保持静止，并尽量贴近暂停时的姿态，以减少参考突变。
-
-## 常用参数
-
-```bash
-# 调整控制频率
-policy_hz=30
-
-# 指定 BVH 文件
-input.bvh_file=data/sample_bvh/aiming1_subject1.bvh
-
-# Pico 超时时间
-input.pico4_timeout=30
-
-# 暂停/恢复追踪预热
-pause_resume_warmup_steps=3
-
-# 网络接口
-real_robot.network_interface=enp130s0
-```
-
-## 独立站立测试
-
-一个用于快速验证硬件和策略的最小脚本，不依赖主框架：
-
-```bash
-python scripts/run/standalone_standing.py \
-    --policy track.onnx \
-    --network-interface enp130s0
-```
-
-支持 `--dry-run` 模式，在不发送电机指令的情况下进行安全的时序基准测试。
+始终先在仿真中验证 policy，手持 Unitree 遥控器，并且只在输入数据稳定后进入 `MOCAP`。

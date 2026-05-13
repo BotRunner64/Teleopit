@@ -57,7 +57,8 @@ pip install -e '.[pico4]'
 
 Teleopit uses the in-process `pico_bridge.PicoBridge` receiver for Pico tracking.
 The receiver can run on a workstation PC or the robot onboard computer.
-See [Pico 4 VR Tutorial](../tutorials/pico4-vr) for the full setup guide.
+See [Pico Sim2Sim](../tutorials/pico-sim2sim) and
+[Pico Sim2Real](../tutorials/pico-sim2real) for the full setup guides.
 
 ## Verify Installation
 
