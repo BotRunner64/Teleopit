@@ -1,124 +1,36 @@
 ---
-sidebar_position: 3
+sidebar_position: 99
 ---
 
-# Sim2Real Deployment
+# Sim2Real Overview
 
-Deploy Teleopit to control a physical Unitree G1 robot via g1_bridge_sdk (C++ DDS bridge).
+Sim2Real control uses `g1_bridge_sdk`, the C++ DDS bridge for Unitree G1. Use
+this page to choose the right hardware tutorial.
 
-:::tip
-For Pico 4 / Pico 4 Ultra VR deployment, see the complete [Pico VR Tutorial](pico4-vr).
-:::
+| Goal | Tutorial |
+|------|----------|
+| Verify bridge, network, and policy standing without mocap | [Standalone Standing Test](standalone-standing) |
+| Drive the physical G1 from Pico full-body tracking | [Pico Sim2Real](pico-sim2real) |
+| Replay an offline BVH motion on the physical G1 | [BVH Sim2Real Playback](bvh-sim2real) |
 
-## Input Sources
+## Shared Concepts
 
-| Source | Config | Documentation |
-|--------|--------|---------------|
-| **Pico 4 / Pico 4 Ultra** | `--config-name pico4_sim2real` | [Pico VR](pico4-vr) |
-| Offline BVH files | Default config | This page |
+`real_robot.network_interface` must point to the Linux interface used for
+Unitree DDS communication.
 
-## Prerequisites
+| Deployment | Where Teleopit Runs | Typical Interface |
+|------------|---------------------|-------------------|
+| Wired PC-to-G1 | External PC connected to G1 by Ethernet | `enp...`, for example `enp130s0` |
+| Onboard | G1 onboard computer | `eth0` |
 
-**Hardware:**
-- Unitree G1 (29 DOF)
-- Unitree wireless remote controller
-- Wired network connection between robot and control PC, or onboard execution on the robot computer
-- Pico 4 headset, or offline BVH motion files
-
-**Software:**
-```bash
-git submodule update --init --recursive
-bash scripts/setup/setup_g1_bridge.sh
-pip install -e '.[sim2real]'
-```
-
-For Pico path, install pico-bridge as well: `pip install -e '.[pico4]'`.
-
-## Network Interface
-
-`real_robot.network_interface` must be the Linux network interface used for Unitree DDS communication.
-For wired control from a PC, connect the PC to the G1 with an Ethernet cable, run `ifconfig` on the PC, and use the interface name for that cable connection. For example, if `ifconfig` shows the G1 cable on `enp130s0`, run with `real_robot.network_interface=enp130s0`.
-
-When running Teleopit onboard on the robot computer, the default `eth0` is usually the correct value.
-
-## Offline BVH Playback
-
-```bash
-python scripts/run/run_sim2real.py \
-    controller.policy_path=track.onnx \
-    real_robot.network_interface=enp130s0 \
-    input.bvh_file=data/sample_bvh/aiming1_subject1.bvh
-```
-
-### Remote Controller Mapping
+The Unitree remote controls the real-robot state machine:
 
 | Button | Action |
 |--------|--------|
-| `Start` | Enter `STANDING` |
-| `Y` | Enter playback / `MOCAP` |
-| `A` | Pause / Resume |
-| `B` | Replay from start |
-| `X` | Return to `STANDING` |
-| `L1+R1` | Emergency stop (`DAMPING`) |
+| `Start` | Enter `STANDING` from `IDLE` or `DAMPING` |
+| `Y` | Enter `MOCAP` from `STANDING` |
+| `X` | Return from `MOCAP` to `STANDING` |
+| `L1+R1` | Emergency stop into `DAMPING` |
 
-## Control Modes
-
-| Mode | Data Flow | Use Case |
-|------|-----------|----------|
-| `STANDING` | Default pose -> RL policy -> joints | Startup, recovery, waiting |
-| `MOCAP` | Pico/BVH -> retarget -> RL policy -> joints | Teleoperation / playback |
-| `DAMPING` | Send damping command | Emergency stop |
-
-### State Machine
-
-```text
-                     +-----------------------------+
-                     |    L1+R1 E-stop (any state) |
-                     v                             |
-  [IDLE] --Start--> [STANDING] --Y--> [MOCAP] --X--> [STANDING]
-                           ^                       |
-                           +----------Y------------+
-    ^                                                  |
-    +------------------Start---------------------------+
-                           [DAMPING]
-```
-
-### Pico MOCAP Sub-states
-
-When using `input.provider=pico4`, the MOCAP mode has additional sub-states:
-
-- **ACTIVE**: Normal live mocap tracking
-- **PAUSED**: Freeze reference pose; robot maintains balance but stops following
-
-Resume returns from `PAUSED` to `ACTIVE` after collecting fresh tracking frames and re-centering heading and ground-plane position. The operator should keep still and stay as close as practical to the paused pose to reduce sudden reference changes.
-
-## Common Parameters
-
-```bash
-# Adjust control frequency
-policy_hz=30
-
-# Specify BVH file
-input.bvh_file=data/sample_bvh/aiming1_subject1.bvh
-
-# Pico timeout
-input.pico4_timeout=30
-
-# Pause/resume tracking warmup
-pause_resume_warmup_steps=3
-
-# Network interface
-real_robot.network_interface=enp130s0
-```
-
-## Standalone Standing Test
-
-A minimal script for quick hardware and policy verification, independent of the main framework:
-
-```bash
-python scripts/run/standalone_standing.py \
-    --policy track.onnx \
-    --network-interface enp130s0
-```
-
-Supports `--dry-run` for safe timing benchmarks without sending motor commands.
+Always verify the policy in simulation first, keep the Unitree remote in hand,
+and enter `MOCAP` only after input data is stable.

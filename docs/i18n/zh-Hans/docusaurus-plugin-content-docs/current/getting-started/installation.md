@@ -57,7 +57,8 @@ pip install -e '.[pico4]'
 
 Teleopit 使用进程内的 `pico_bridge.PicoBridge` receiver 接收 Pico 追踪数据。
 receiver 可以运行在工作站 PC，也可以运行在机器人 onboard 计算机。
-完整设置流程详见 [Pico 4 VR 教程](../tutorials/pico4-vr)。
+完整设置流程详见 [Pico Sim2Sim](../tutorials/pico-sim2sim) 和
+[Pico Sim2Real](../tutorials/pico-sim2real)。
 
 ## 验证安装
 
