@@ -15,8 +15,12 @@
 
 ## [0.1.1] - 2025-03-28
 
-数据集 shard-only 改造、adaptive_bin 采样、外部资源管理、仓库瘦身。
+- 数据集改为 shard-only 输出。
+- 新增 adaptive_bin 采样。
+- 引入外部资源管理并瘦身仓库。
 
 ## [0.1.0] - 2025-03-25
 
-首个公开版本：General-Tracking-G1 全身追踪训练、ONNX sim2sim 推理、Pico 4 VR 遥操作、Unitree G1 真机部署。
+- 首个公开版本。
+- 支持 General-Tracking-G1 全身追踪训练与 ONNX sim2sim 推理。
+- 支持 Pico 4 VR 遥操作与 Unitree G1 真机部署。
