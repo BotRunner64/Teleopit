@@ -62,11 +62,16 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 
 ### v0.3.0 (2026-05-12)
 
-Realtime input and runtime consolidation: Pico 4 now uses the in-process pico-bridge 0.2.0 receiver with optional camera preview streaming, the old ZMQ/onboard Pico path is removed, UDP BVH realtime input and online sim config are added, sim/sim2real share reference-window buffering and resume realignment, multi-viewer/fixed-camera support is expanded, and sim2real reference/safety handling is split into focused modules. The G1 MuJoCo XML asset is updated with the fixed RGB camera.
+- Consolidated realtime input around pico-bridge 0.2.0 and removed the old ZMQ/onboard Pico path.
+- Unified sim/sim2real reference buffering, resume realignment, and velocity smoothing.
+- Added UDP BVH realtime input, online sim config, multi-viewer support, and fixed camera viewing.
+- Split sim2real reference/safety runtime modules and updated the G1 MuJoCo camera asset.
 
 ### v0.2.0 (2026-04-03)
 
-Pico 4 teleoperation through pico-bridge 0.2.0 on the Teleopit host, optional camera preview streaming back to the headset, G1 Bridge SDK (C++ DDS), simplified offline playback with keyboard controls, Pico sim2sim keyboard mode state machine, standalone standing controller, realtime mocap catch-up; model upgraded to 30k checkpoint.
+- Added Pico 4 teleoperation through pico-bridge and the G1 Bridge SDK.
+- Added offline playback keyboard controls, Pico sim2sim mode control, and a standalone standing controller.
+- Improved realtime mocap buffering/catch-up and upgraded the released model to the 30k checkpoint.
 
 ### v0.1.1 (2025-03-28)
 
