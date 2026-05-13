@@ -96,17 +96,6 @@ def send_all(hands: dict[str, object], pose: Sequence[int], *, label: str) -> No
         hand.finger_move(pose=list(pose))
 
 
-def close_all(hands: dict[str, object]) -> None:
-    for hand in hands.values():
-        close_can = getattr(hand, "close_can", None)
-        if callable(close_can):
-            close_can()
-        inner_hand = getattr(hand, "hand", None)
-        close = getattr(inner_hand, "close", None)
-        if callable(close):
-            close()
-
-
 def main() -> None:
     args = parse_args()
     try:
@@ -152,11 +141,12 @@ def main() -> None:
         print("Interrupted; opening hands before exit", flush=True)
     finally:
         if hands:
-            try:
-                send_all(hands, args.open_pose, label="exit open")
-                time.sleep(0.2)
-            finally:
-                close_all(hands)
+            send_all(hands, args.open_pose, label="exit open")
+            time.sleep(0.2)
+            print(
+                "Exit cleanup intentionally leaves CAN interfaces up to avoid SDK network-down noise.",
+                flush=True,
+            )
 
 
 if __name__ == "__main__":
