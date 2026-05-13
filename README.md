@@ -60,6 +60,10 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 
 ## Changelog
 
+### Unreleased
+
+- Added optional Pico controller control for LinkerHand L6 in sim2real, backed by the LinkerHand SDK submodule.
+
 ### v0.3.0 (2026-05-12)
 
 - Consolidated realtime input around pico-bridge 0.2.0 and removed the old ZMQ/onboard Pico path.

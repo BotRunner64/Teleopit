@@ -8,6 +8,7 @@ Teleopit's realtime ``HumanFrame`` format.
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 import inspect
 import logging
 import threading
@@ -51,6 +52,26 @@ BODY_JOINT_PARENTS = np.array(
     ],
     dtype=np.int32,
 )
+
+
+@dataclass(frozen=True)
+class PicoControllerState:
+    """Latest per-controller input state exposed by pico_bridge."""
+
+    raw: bool
+    grip: float
+    trigger: float
+    present: bool = True
+
+
+@dataclass(frozen=True)
+class PicoControllerSnapshot:
+    """Immutable snapshot of Pico controller inputs for auxiliary runtimes."""
+
+    left: PicoControllerState
+    right: PicoControllerState
+    timestamp_s: float
+    seq: int
 
 _PAUSE_BUTTON_MAP: dict[str, tuple[str, str]] = {
     "A": ("right", "primaryButton"),
@@ -143,6 +164,7 @@ class Pico4InputProvider(RealtimeInputProvider):
         self._last_raw_body_joints: NDArray[np.float64] | None = None
         self._last_frame_timestamp: float | None = None
         self._last_source_seq: int | None = None
+        self._controller_snapshot: PicoControllerSnapshot | None = None
         self._bridge = bridge_cls(
             host=bridge_host,
             port=int(bridge_port),
@@ -223,6 +245,11 @@ class Pico4InputProvider(RealtimeInputProvider):
             self._pending_control_events.clear()
         return control_events
 
+    def get_controller_snapshot(self) -> PicoControllerSnapshot | None:
+        """Return the latest Pico controller-axis snapshot, if one has arrived."""
+        with self._lock:
+            return self._controller_snapshot
+
     def push_video_frame(self, frame: NDArray[np.uint8]) -> int:
         """Push one RGB camera frame to pico-bridge 0.2.0 video output."""
         push_video_frame = getattr(self._bridge, "push_video_frame", None)
@@ -287,6 +314,7 @@ class Pico4InputProvider(RealtimeInputProvider):
 
     def _accept_pico_frame(self, frame: Any) -> bool:
         timestamp = float(getattr(frame, "receive_time_s", time.monotonic()))
+        self._accept_controller_snapshot(frame, timestamp=timestamp)
         self._poll_control_events(frame, timestamp=timestamp)
 
         body = getattr(frame, "body", None)
@@ -327,6 +355,18 @@ class Pico4InputProvider(RealtimeInputProvider):
         self._frame_ready.set()
         return True
 
+    def _accept_controller_snapshot(self, frame: Any, *, timestamp: float) -> None:
+        seq = int(getattr(frame, "seq", self._last_source_seq or -1))
+        controllers = getattr(frame, "controllers", None)
+        snapshot = PicoControllerSnapshot(
+            left=self._read_controller_state(None if controllers is None else getattr(controllers, "left", None)),
+            right=self._read_controller_state(None if controllers is None else getattr(controllers, "right", None)),
+            timestamp_s=float(timestamp),
+            seq=seq,
+        )
+        with self._lock:
+            self._controller_snapshot = snapshot
+
     def _poll_control_events(self, frame: Any, *, timestamp: float) -> bool:
         if self._pause_button_path is None:
             return False
@@ -360,6 +400,16 @@ class Pico4InputProvider(RealtimeInputProvider):
         if pause_button is None:
             return None
         return _PAUSE_BUTTON_MAP.get(pause_button)
+
+    @staticmethod
+    def _read_controller_state(controller: Any) -> PicoControllerState:
+        axis = {} if controller is None else getattr(controller, "axis", {}) or {}
+        return PicoControllerState(
+            raw=bool(False if controller is None else getattr(controller, "raw", False)),
+            grip=float(axis.get("grip", 0.0)),
+            trigger=float(axis.get("trigger", 0.0)),
+            present=controller is not None,
+        )
 
     @staticmethod
     def _convert_body_joints_to_frame(body_joints: NDArray[np.float64]) -> HumanFrame:

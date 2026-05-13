@@ -1,3 +1,6 @@
 [submodule "third_party/unitree_sdk2_python"]
 	path = third_party/unitree_sdk2_python
 	url = https://github.com/unitreerobotics/unitree_sdk2_python.git
+[submodule "third_party/linkerhand-python-sdk"]
+	path = third_party/linkerhand-python-sdk
+	url = https://github.com/BotRunner64/linkerhand-python-sdk.git

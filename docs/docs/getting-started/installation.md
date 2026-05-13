@@ -60,6 +60,15 @@ The receiver can run on a workstation PC or the robot onboard computer.
 See [Pico Sim2Sim](../tutorials/pico-sim2sim) and
 [Pico Sim2Real](../tutorials/pico-sim2real) for the full setup guides.
 
+Optional LinkerHand L6 control for Pico sim2real uses a submodule SDK:
+
+```bash
+git submodule update --init third_party/linkerhand-python-sdk
+pip install -e third_party/linkerhand-python-sdk
+```
+
+This SDK is only required when `dexterous_hand.enabled=true`.
+
 ## Verify Installation
 
 ```bash

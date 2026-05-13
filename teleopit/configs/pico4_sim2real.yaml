@@ -32,6 +32,25 @@ startup_ramp_duration: 2.0
 # Joint velocity safety limit (rad/s) -- trigger emergency damping if exceeded
 joint_vel_limit: 10.0
 
+# Optional LinkerHand L6 control from Pico controller grip/trigger.
+dexterous_hand:
+  enabled: false
+  hand_joint: L6
+  hand_type: both
+  left_can: can0
+  right_can: can1
+  modbus: "None"
+  rate: 30.0
+  frame_timeout: 0.3
+  trigger_deadzone: 0.05
+  deadman_threshold: 0.5
+  thumb_yaw_center: 10
+  speed: [50, 50, 50, 50, 50, 50]
+  open_pose: [250, 10, 250, 250, 250, 250]
+  close_pose: [79, 10, 0, 0, 0, 0]
+  dry_run: false
+  print_input: false
+
 # Physical robot SDK configuration
 real_robot:
   network_interface: "eth0"

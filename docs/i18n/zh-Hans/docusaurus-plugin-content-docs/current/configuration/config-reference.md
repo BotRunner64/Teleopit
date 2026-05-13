@@ -142,6 +142,22 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 
 实时 Pico 恢复追踪时会先重新居中航向和地面平面位置。操作者应保持静止，并尽量贴近暂停时的姿态，以减少参考突变。
 
+### 灵巧手（Pico sim2real）
+
+`dexterous_hand.enabled=true` 要求 `input.provider=pico4`，并安装可选的
+LinkerHand SDK submodule。控制只在 `MOCAP` 中生效；非活动模式和超时会发送张开姿态。
+
+| 字段 | 说明 | 默认值 |
+|---|---|---|
+| `dexterous_hand.enabled` | 启用 Pico 手柄控制 LinkerHand L6 | `false` |
+| `dexterous_hand.hand_type` | 控制侧：`left`、`right` 或 `both` | `both` |
+| `dexterous_hand.left_can` / `right_can` | 左右手 CAN 通道 | `can0` / `can1` |
+| `dexterous_hand.rate` | 最大命令频率（Hz） | `30.0` |
+| `dexterous_hand.frame_timeout` | 手柄超时后张开手的时间 | `0.3` |
+| `dexterous_hand.deadman_threshold` | 启用单侧控制所需的最小 grip 值 | `0.5` |
+| `dexterous_hand.trigger_deadzone` | trigger 两端死区 | `0.05` |
+| `dexterous_hand.open_pose` / `close_pose` | L6 的 6 维张开/闭合姿态 | 见配置 |
+
 ### 实时追赶（Pico sim2real）
 
 | 字段 | 说明 | 默认值 |

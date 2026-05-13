@@ -138,6 +138,39 @@ Resume while standing still and close to the paused pose. This reduces sudden
 reference changes when live tracking resumes.
 :::
 
+## Optional LinkerHand L6 Control
+
+Pico sim2real can drive LinkerHand L6 hands from the Pico controllers. Hold the
+matching side grip as a deadman switch; the matching trigger closes that hand.
+Hand control is active only in `MOCAP`. It sends the open pose in `STANDING`,
+`DAMPING`, paused mocap, frame timeout, and shutdown.
+
+Install the SDK submodule first:
+
+```bash
+git submodule update --init third_party/linkerhand-python-sdk
+pip install -e third_party/linkerhand-python-sdk
+```
+
+Dry-run before connecting CAN:
+
+```bash
+python scripts/run/run_sim2real.py \
+    --config-name pico4_sim2real \
+    controller.policy_path=track.onnx \
+    dexterous_hand.enabled=true \
+    dexterous_hand.dry_run=true
+```
+
+For real hands, configure the CAN channels and disable dry-run:
+
+```bash
+dexterous_hand.enabled=true
+dexterous_hand.dry_run=false
+dexterous_hand.left_can=can0
+dexterous_hand.right_can=can1
+```
+
 ## Optional RealSense Preview
 
 Stream the G1 RealSense color camera back to the Pico headset:
@@ -177,6 +210,9 @@ pause_resume_warmup_steps=2
 # Change Pico pause button
 input.pause_button=right_axis_click
 
+# Enable LinkerHand L6 dry-run
+dexterous_hand.enabled=true dexterous_hand.dry_run=true
+
 # Enable headset video preview
 input.video.enabled=true
 ```
@@ -190,4 +226,5 @@ input.video.enabled=true
 | Cannot enter debug mode | Unitree mode release failed | Stop other robot modes and press `Start` again |
 | Robot enters `STANDING` but not `MOCAP` | Mocap validation failed | Keep tracking active and stable; check `mocap_switch.check_frames` logs |
 | Pico pause does not return to `STANDING` | Expected behavior | Pico pause freezes mocap; press remote `X` for `STANDING` |
+| LinkerHand does not move | Not in `MOCAP`, deadman grip released, SDK not installed, or CAN channel wrong | Enter `MOCAP`, hold the matching side grip, verify `pip install -e third_party/linkerhand-python-sdk`, and check `dexterous_hand.left_can` / `right_can` |
 | Video preview is unavailable | RealSense or video source failed | Check camera permissions, `input.video.source`, and logs |

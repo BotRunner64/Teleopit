@@ -201,6 +201,21 @@ def test_pico4_provider_exposes_pause_control_events_once() -> None:
     assert packet.control_events == ()
 
 
+def test_pico4_provider_marks_controller_present_without_raw_field() -> None:
+    provider = _make_provider()
+    frame = _pico_frame(_body_poses(1.0), seq=1, timestamp=1.0)
+    frame.controllers.left.axis = {"grip": 0.8, "trigger": 0.4}
+
+    assert provider._accept_pico_frame(frame) is True
+
+    snapshot = provider.get_controller_snapshot()
+    assert snapshot is not None
+    assert snapshot.left.present is True
+    assert snapshot.left.raw is False
+    assert snapshot.left.grip == pytest.approx(0.8)
+    assert snapshot.left.trigger == pytest.approx(0.4)
+
+
 def test_pico4_provider_reads_pause_control_events_when_body_inactive() -> None:
     provider = _make_provider()
 

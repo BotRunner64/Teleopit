@@ -138,6 +138,21 @@ class DummyVelCmdObservationBuilder:
         return np.zeros(self.total_obs_size, dtype=np.float32)
 
 
+class DummyHandRuntime:
+    def __init__(self) -> None:
+        self.active_flags: list[bool] = []
+        self.close_calls = 0
+
+    def start(self) -> None:
+        pass
+
+    def tick(self, *, active: bool) -> None:
+        self.active_flags.append(active)
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
 def _make_cfg(transition_duration: float = 1.0) -> dict[str, object]:
     return {
         "policy_hz": 50.0,
@@ -268,6 +283,33 @@ def test_state_machine_allows_mocap_reentry_after_returning_to_standing(monkeypa
     _set_button(ctrl.remote.Y, pressed=True, on_pressed=False)
     ctrl._handle_transitions()
     assert ctrl.mode == RobotMode.MOCAP
+
+
+def test_dexterous_hand_ticks_only_during_active_mocap(monkeypatch) -> None:
+    import teleopit.sim2real.controller as controller_mod
+    from teleopit.runtime.mocap_session import MocapSessionState
+    from teleopit.sim2real.controller import RobotMode, Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    hand_runtime = DummyHandRuntime()
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=np.zeros(36, dtype=np.float64))
+    monkeypatch.setattr(controller_mod, "build_linkerhand_runtime", lambda _cfg, _provider: hand_runtime)
+
+    ctrl = Sim2RealController(_make_cfg())
+
+    ctrl.mode = RobotMode.STANDING
+    ctrl._tick_dexterous_hand()
+
+    ctrl.mode = RobotMode.MOCAP
+    ctrl._mocap_session.reset()
+    assert ctrl._mocap_session.state == MocapSessionState.ACTIVE
+    ctrl._tick_dexterous_hand()
+
+    ctrl._mocap_session.pause(np.zeros(36, dtype=np.float64))
+    ctrl._tick_dexterous_hand()
+
+    assert hand_runtime.active_flags == [False, True, False]
 
 
 def test_can_switch_to_mocap_returns_false_without_blocking_when_realtime_has_no_frame(monkeypatch) -> None:

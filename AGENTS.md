@@ -54,6 +54,9 @@ teleopit/                 # Core inference package
 │   └── mujoco_robot.py   # MuJoCoRobot — MuJoCo sim wrapper
 ├── sim/
 │   └── loop.py           # SimulationLoop — PD control at 1000Hz, policy at 50Hz
+├── sim2real/
+│   ├── controller.py     # G1 state machine and hardware control loop
+│   └── dexterous_hand.py # Optional Pico controller → LinkerHand L6 runtime
 └── recording/            # HDF5Recorder
 scripts/
 ├── run_sim.py            # Offline sim2sim pipeline
@@ -137,6 +140,9 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - Default Pico sim2sim keyboard mappings are `Y` → `MOCAP`, `A` → pause/resume mocap, `X` → back to `STANDING`, `Q` → quit
 - Pico4 sim2real pause/resume is handled as a mocap-session control event (`toggle_pause`), not as a mode switch to `STANDING`
 - Default Pico pause button is `A`; restore tracking by rebuilding the realtime buffer and yaw/XY root-offset alignment, then accept the current live mocap retarget reference directly
+- Optional LinkerHand L6 control uses `third_party/linkerhand-python-sdk` and `dexterous_hand.enabled=true`
+- LinkerHand control reuses `Pico4InputProvider.get_controller_snapshot()`; do not start a second `PicoBridge` for hand control
+- LinkerHand L6 control is active only in sim2real `MOCAP`; `STANDING`, `DAMPING`, mocap pause, frame timeout, and shutdown must send the configured open pose
 
 ### SimulationLoop Runtime Behavior
 - `realtime=true` enforces wall-clock pacing even without a viewer
@@ -204,6 +210,7 @@ python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_general_trac
 - Do not commit robot meshes, datasets, checkpoints, or demo media to Git; use `scripts/setup/download_assets.py`
 - `teleopit/retargeting/gmr/assets/` is gitignored; downloaded at runtime
 - `train_mimic/assets/` is no longer tracked; FK tooling reuses `teleopit/retargeting/gmr/assets/unitree_g1/g1_mjlab.xml`
+- `third_party/linkerhand-python-sdk` is a git submodule for optional LinkerHand L6 sim2real control
 - Run `python scripts/check_large_tracked_files.py` before pushing
 
 Assets are split across two ModelScope repos by type:

@@ -123,6 +123,23 @@ Fields used by sim2real configs (`sim2real.yaml`, `pico4_sim2real.yaml`).
 
 Realtime Pico resume re-centers heading and ground-plane position before tracking continues. Operators should keep still and stay as close as practical to the paused pose to reduce sudden reference changes.
 
+### Dexterous Hand (Pico sim2real)
+
+`dexterous_hand.enabled=true` requires `input.provider=pico4` and the optional
+LinkerHand SDK submodule. Control is active only in `MOCAP`; inactive modes and
+timeouts send the open pose.
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `dexterous_hand.enabled` | Enable Pico controller control for LinkerHand L6 | `false` |
+| `dexterous_hand.hand_type` | Controlled side: `left`, `right`, or `both` | `both` |
+| `dexterous_hand.left_can` / `right_can` | CAN channels for each hand | `can0` / `can1` |
+| `dexterous_hand.rate` | Maximum command rate in Hz | `30.0` |
+| `dexterous_hand.frame_timeout` | Missing-controller timeout before opening hands | `0.3` |
+| `dexterous_hand.deadman_threshold` | Minimum grip value required to enable a side | `0.5` |
+| `dexterous_hand.trigger_deadzone` | Trigger deadzone at both ends | `0.05` |
+| `dexterous_hand.open_pose` / `close_pose` | Six-value L6 open/closed poses | see config |
+
 ### Realtime Catch-up (Pico sim2real)
 
 | Field | Description | Default |

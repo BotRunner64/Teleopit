@@ -45,6 +45,7 @@ from teleopit.sim.reference_utils import (
     obs_builder_requires_reference_window,
 )
 from teleopit.sim.realtime_utils import RealtimeReferenceManager
+from teleopit.sim2real.dexterous_hand import build_linkerhand_runtime
 from teleopit.sim2real.reference_processor import Sim2RealReferenceProcessor
 from teleopit.sim2real.remote import UnitreeRemote
 from teleopit.sim2real.safety import Sim2RealSafetyManager
@@ -120,6 +121,7 @@ class Sim2RealController:
             config=parse_pico_video_config(cfg_get(cfg, "input", {})),
             mode="sim2real",
         )
+        self._hand_runtime = build_linkerhand_runtime(cfg, self.input_provider)
         self._offline_reference: OfflineReferenceMotion | None = None
         self._offline_playback: OfflinePlaybackController | None = None
         if hasattr(self.input_provider, "__len__") and hasattr(self.input_provider, "get_frame_by_index"):
@@ -223,6 +225,7 @@ class Sim2RealController:
 
         try:
             self._video_runtime.start()
+            self._hand_runtime.start()
             while True:
                 t0 = time.monotonic()
                 self._video_runtime.tick()
@@ -236,6 +239,7 @@ class Sim2RealController:
                     if self.mode != RobotMode.DAMPING:
                         logger.warning("EMERGENCY STOP (L1+R1)")
                         self._enter_damping()
+                    self._tick_dexterous_hand()
                     self._sleep_until(t0, dt)
                     continue
 
@@ -247,6 +251,8 @@ class Sim2RealController:
                     self._standing_step()
                 elif self.mode == RobotMode.MOCAP:
                     self._mocap_step()
+
+                self._tick_dexterous_hand()
 
                 # 6. Rate control
                 self._sleep_until(t0, dt)
@@ -563,6 +569,7 @@ class Sim2RealController:
         self._mocap_reentry_armed = prev_mode == RobotMode.MOCAP
 
         self.mode = RobotMode.STANDING
+        self._deactivate_dexterous_hand()
         logger.info("Mode -> STANDING (RL policy maintaining balance at default pose)")
 
     # ------------------------------------------------------------------
@@ -666,6 +673,7 @@ class Sim2RealController:
             self.robot.exit_debug_mode()
 
         self.mode = RobotMode.DAMPING
+        self._deactivate_dexterous_hand()
         self._ref_proc.last_reference_qpos = None
         if self._reference_timeline is not None:
             self._reference_timeline.clear()
@@ -878,6 +886,20 @@ class Sim2RealController:
         self._ref_proc.last_reference_qpos = qpos.copy()
         self._last_commanded_motion_qpos = qpos.copy()
 
+    def _tick_dexterous_hand(self) -> None:
+        active = self.mode == RobotMode.MOCAP and self._mocap_session.state == MocapSessionState.ACTIVE
+        try:
+            self._hand_runtime.tick(active=active)
+        except Exception:
+            logger.exception("Dexterous hand runtime failed -- entering damping")
+            self._enter_damping()
+
+    def _deactivate_dexterous_hand(self) -> None:
+        try:
+            self._hand_runtime.tick(active=False)
+        except Exception:
+            logger.exception("Failed to deactivate dexterous hand runtime")
+
     @staticmethod
     def _sleep_until(t0: float, dt: float) -> None:
         """Sleep to maintain control frequency."""
@@ -905,6 +927,10 @@ class Sim2RealController:
                 pass
         try:
             self._video_runtime.stop()
+        except Exception:
+            pass
+        try:
+            self._hand_runtime.close()
         except Exception:
             pass
         try:

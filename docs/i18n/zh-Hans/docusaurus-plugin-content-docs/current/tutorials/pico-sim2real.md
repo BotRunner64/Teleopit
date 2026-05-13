@@ -130,6 +130,38 @@ Pico 暂停/恢复是 mocap-session control event。
 恢复时请保持静止，并尽量接近暂停时的姿态。这样可以减少实时追踪恢复时的参考突变。
 :::
 
+## 可选 LinkerHand L6 控制
+
+Pico sim2real 可以用 Pico 手柄控制 LinkerHand L6。按住同侧 grip 作为 deadman，
+同侧 trigger 控制对应手闭合。手控只在 `MOCAP` 中生效；在 `STANDING`、`DAMPING`、
+mocap 暂停、帧超时和退出时都会发送张开姿态。
+
+先安装 SDK submodule：
+
+```bash
+git submodule update --init third_party/linkerhand-python-sdk
+pip install -e third_party/linkerhand-python-sdk
+```
+
+连接 CAN 前先 dry-run：
+
+```bash
+python scripts/run/run_sim2real.py \
+    --config-name pico4_sim2real \
+    controller.policy_path=track.onnx \
+    dexterous_hand.enabled=true \
+    dexterous_hand.dry_run=true
+```
+
+使用真实手时，配置 CAN 通道并关闭 dry-run：
+
+```bash
+dexterous_hand.enabled=true
+dexterous_hand.dry_run=false
+dexterous_hand.left_can=can0
+dexterous_hand.right_can=can1
+```
+
 ## 可选 RealSense 预览
 
 将 G1 RealSense 彩色相机推送回 Pico 头显：
@@ -169,6 +201,9 @@ pause_resume_warmup_steps=2
 # 更换 Pico 暂停键
 input.pause_button=right_axis_click
 
+# 开启 LinkerHand L6 dry-run
+dexterous_hand.enabled=true dexterous_hand.dry_run=true
+
 # 开启头显视频预览
 input.video.enabled=true
 ```
@@ -182,4 +217,5 @@ input.video.enabled=true
 | 无法进入 debug mode | Unitree mode 释放失败 | 停止其他机器人模式后再次按 `Start` |
 | 机器人进入 `STANDING` 但不进入 `MOCAP` | 动捕验证失败 | 保持追踪稳定，查看 `mocap_switch.check_frames` 日志 |
 | Pico 暂停没有返回 `STANDING` | 这是预期行为 | Pico 暂停只冻结 mocap；按遥控器 `X` 返回 `STANDING` |
+| LinkerHand 不动 | 不在 `MOCAP`、deadman grip 未按住、SDK 未安装，或 CAN 通道错误 | 进入 `MOCAP`，按住同侧 grip，确认已执行 `pip install -e third_party/linkerhand-python-sdk`，并检查 `dexterous_hand.left_can` / `right_can` |
 | 视频预览不可用 | RealSense 或视频源失败 | 检查相机权限、`input.video.source` 和日志 |
