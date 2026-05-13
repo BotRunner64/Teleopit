@@ -14,6 +14,46 @@ from teleopit.sim2real.dexterous_hand import (
 )
 
 
+class FakeInnerHand:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class FakeLinkerHandApi:
+    instances: list["FakeLinkerHandApi"] = []
+
+    def __init__(self, *, hand_joint: str, hand_type: str, modbus: str, can: str) -> None:
+        self.hand_joint = hand_joint
+        self.hand_type = hand_type
+        self.modbus = modbus
+        self.can = can
+        self.hand = FakeInnerHand()
+        self.close_can_calls = 0
+        self.speed: list[int] | None = None
+        self.poses: list[list[int]] = []
+        FakeLinkerHandApi.instances.append(self)
+
+    def set_speed(self, speed: list[int]) -> None:
+        self.speed = speed
+
+    def finger_move(self, pose: list[int]) -> None:
+        self.poses.append(list(pose))
+
+    def close_can(self) -> None:
+        self.close_can_calls += 1
+
+
+@pytest.fixture(autouse=True)
+def fake_linkerhand_sdk(monkeypatch):
+    FakeLinkerHandApi.instances = []
+    fake_module = SimpleNamespace(LinkerHandApi=FakeLinkerHandApi)
+    monkeypatch.setitem(sys.modules, "LinkerHand.linker_hand_api", fake_module)
+    yield
+
+
 class SnapshotProvider:
     def __init__(self) -> None:
         self.snapshot: PicoControllerSnapshot | None = None
@@ -29,7 +69,7 @@ def _snapshot(
     timestamp_s: float = 10.0,
     seq: int = 1,
 ) -> PicoControllerSnapshot:
-    missing = PicoControllerState(raw=False, grip=0.0, trigger=0.0)
+    missing = PicoControllerState(raw=False, grip=0.0, trigger=0.0, present=False)
     return PicoControllerSnapshot(
         left=left or missing,
         right=right or missing,
@@ -43,7 +83,6 @@ def _runtime(provider: SnapshotProvider) -> LinkerHandRuntime:
         {
             "dexterous_hand": {
                 "enabled": True,
-                "dry_run": True,
                 "hand_type": "both",
             }
         }
@@ -138,14 +177,7 @@ def test_runtime_opens_on_timeout_and_inactive_mode() -> None:
 def test_pose_sender_cleans_up_partial_start_failure(monkeypatch) -> None:
     created_hands = []
 
-    class FakeInnerHand:
-        def __init__(self) -> None:
-            self.close_calls = 0
-
-        def close(self) -> None:
-            self.close_calls += 1
-
-    class FakeLinkerHandApi:
+    class FailingLinkerHandApi:
         def __init__(self, *, hand_joint: str, hand_type: str, modbus: str, can: str) -> None:
             del hand_joint, modbus, can
             if hand_type == "right":
@@ -160,14 +192,13 @@ def test_pose_sender_cleans_up_partial_start_failure(monkeypatch) -> None:
         def close_can(self) -> None:
             self.close_can_calls += 1
 
-    fake_module = SimpleNamespace(LinkerHandApi=FakeLinkerHandApi)
+    fake_module = SimpleNamespace(LinkerHandApi=FailingLinkerHandApi)
     monkeypatch.setitem(sys.modules, "LinkerHand.linker_hand_api", fake_module)
 
     cfg = parse_linkerhand_config(
         {
             "dexterous_hand": {
                 "enabled": True,
-                "dry_run": False,
                 "hand_type": "both",
             }
         }
@@ -187,14 +218,7 @@ def test_pose_sender_cleans_up_partial_start_failure(monkeypatch) -> None:
 def test_pose_sender_wraps_sdk_system_exit_and_cleans_up(monkeypatch) -> None:
     created_hands = []
 
-    class FakeInnerHand:
-        def __init__(self) -> None:
-            self.close_calls = 0
-
-        def close(self) -> None:
-            self.close_calls += 1
-
-    class FakeLinkerHandApi:
+    class ExitingLinkerHandApi:
         def __init__(self, *, hand_joint: str, hand_type: str, modbus: str, can: str) -> None:
             del hand_joint, modbus, can
             if hand_type == "right":
@@ -209,14 +233,13 @@ def test_pose_sender_wraps_sdk_system_exit_and_cleans_up(monkeypatch) -> None:
         def close_can(self) -> None:
             self.close_can_calls += 1
 
-    fake_module = SimpleNamespace(LinkerHandApi=FakeLinkerHandApi)
+    fake_module = SimpleNamespace(LinkerHandApi=ExitingLinkerHandApi)
     monkeypatch.setitem(sys.modules, "LinkerHand.linker_hand_api", fake_module)
 
     cfg = parse_linkerhand_config(
         {
             "dexterous_hand": {
                 "enabled": True,
-                "dry_run": False,
                 "hand_type": "both",
             }
         }

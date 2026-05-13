@@ -40,7 +40,6 @@ class LinkerHandConfig:
     speed: tuple[int, ...] = tuple(DEFAULT_SPEED)
     open_pose: tuple[int, ...] = tuple(OPEN_POSE)
     close_pose: tuple[int, ...] = tuple(CLOSE_POSE)
-    dry_run: bool = False
     print_input: bool = False
 
     @property
@@ -109,7 +108,6 @@ def parse_linkerhand_config(cfg: Any) -> LinkerHandConfig:
         speed=tuple(_pose_values(cfg_get(hand_cfg, "speed", DEFAULT_SPEED), "speed")),
         open_pose=tuple(open_pose),
         close_pose=tuple(close_pose),
-        dry_run=bool(cfg_get(hand_cfg, "dry_run", False)),
         print_input=bool(cfg_get(hand_cfg, "print_input", False)),
     )
     if config.hand_joint != "L6":
@@ -139,10 +137,6 @@ class L6PoseSender:
     def start(self) -> None:
         if self._started:
             return
-        if self._config.dry_run:
-            logger.info("LinkerHand L6 dry-run enabled | hands=%s", ",".join(self._hand_types))
-            self._started = True
-            return
         try:
             from LinkerHand.linker_hand_api import LinkerHandApi
         except ImportError as exc:
@@ -167,8 +161,8 @@ class L6PoseSender:
             self._started = False
             raise RuntimeError(
                 "LinkerHand SDK exited during startup. Check CAN interface configuration "
-                f"({', '.join(self._can_channels[hand_type] for hand_type in self._hand_types)}) "
-                "or use dexterous_hand.dry_run=true before connecting hardware."
+                f"({', '.join(self._can_channels[hand_type] for hand_type in self._hand_types)}). "
+                "Run scripts/dev/test_linkerhand_l6.py to verify the hand connection."
             ) from exc
         except Exception:
             self._close_hands()
@@ -182,14 +176,11 @@ class L6PoseSender:
         next_pose = [int(value) for value in pose]
         if not force and self._last_pose.get(hand_type) == next_pose:
             return
-        if self._config.dry_run:
-            suffix = f" ({reason})" if reason else ""
-            logger.info("dry-run LinkerHand %s pose%s: %s", hand_type, suffix, next_pose)
-        else:
-            hand = self._hands.get(hand_type)
-            if hand is None:
-                raise RuntimeError("L6PoseSender has not been started")
-            hand.finger_move(pose=next_pose)
+        del reason
+        hand = self._hands.get(hand_type)
+        if hand is None:
+            raise RuntimeError("L6PoseSender has not been started")
+        hand.finger_move(pose=next_pose)
         self._last_pose[hand_type] = next_pose
 
     def send_all(self, pose: Sequence[int], *, force: bool = False, reason: str = "") -> None:
