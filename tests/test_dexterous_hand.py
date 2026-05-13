@@ -174,6 +174,24 @@ def test_runtime_opens_on_timeout_and_inactive_mode() -> None:
     assert runtime._sender._last_pose["left"] == list(runtime.config.open_pose)
 
 
+def test_pose_sender_close_leaves_can_interfaces_up() -> None:
+    cfg = parse_linkerhand_config(
+        {
+            "dexterous_hand": {
+                "enabled": True,
+                "hand_type": "both",
+            }
+        }
+    )
+    sender = L6PoseSender(cfg)
+    sender.start()
+
+    sender.close()
+
+    assert [hand.close_can_calls for hand in FakeLinkerHandApi.instances] == [0, 0]
+    assert [hand.hand.close_calls for hand in FakeLinkerHandApi.instances] == [1, 1]
+
+
 def test_pose_sender_cleans_up_partial_start_failure(monkeypatch) -> None:
     created_hands = []
 
@@ -211,7 +229,7 @@ def test_pose_sender_cleans_up_partial_start_failure(monkeypatch) -> None:
     assert sender.started is False
     assert sender._hands == {}
     assert len(created_hands) == 1
-    assert created_hands[0].close_can_calls == 1
+    assert created_hands[0].close_can_calls == 0
     assert created_hands[0].hand.close_calls == 1
 
 
@@ -252,5 +270,5 @@ def test_pose_sender_wraps_sdk_system_exit_and_cleans_up(monkeypatch) -> None:
     assert sender.started is False
     assert sender._hands == {}
     assert len(created_hands) == 1
-    assert created_hands[0].close_can_calls == 1
+    assert created_hands[0].close_can_calls == 0
     assert created_hands[0].hand.close_calls == 1

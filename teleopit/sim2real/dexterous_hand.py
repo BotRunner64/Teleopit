@@ -201,9 +201,6 @@ class L6PoseSender:
 
     def _close_hands(self) -> None:
         for hand in self._hands.values():
-            close_can = getattr(hand, "close_can", None)
-            if callable(close_can):
-                close_can()
             inner_hand = getattr(hand, "hand", None)
             close = getattr(inner_hand, "close", None)
             if callable(close):
