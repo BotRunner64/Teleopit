@@ -493,7 +493,7 @@ def test_mocap_step_waits_for_realtime_warmup_before_running_policy(monkeypatch)
     assert len(ctrl.robot.sent_positions) == 1
 
 
-def test_sim2real_allows_future_reference_steps_without_explicit_high_watermark(monkeypatch) -> None:
+def test_sim2real_allows_future_reference_steps(monkeypatch) -> None:
     from teleopit.sim2real.controller import Sim2RealController
 
     policy = DummyPolicy()
@@ -504,15 +504,11 @@ def test_sim2real_allows_future_reference_steps_without_explicit_high_watermark(
     cfg["reference_steps"] = [0, 1, 2, 3, 4]
     cfg["retarget_buffer_delay_s"] = 0.08
     cfg["retarget_buffer_window_s"] = 0.5
-    cfg["realtime_buffer_low_watermark_steps"] = 0
 
-    ctrl = Sim2RealController(cfg)
-
-    assert ctrl._ref_cfg.realtime_buffer_low_watermark_steps == 0
-    assert ctrl._ref_cfg.realtime_buffer_high_watermark_steps is None
+    Sim2RealController(cfg)
 
 
-def test_mocap_step_reference_qpos_smoothing_filters_motion_change(monkeypatch) -> None:
+def test_mocap_step_uses_current_reference_qpos(monkeypatch) -> None:
     from teleopit.sim2real.controller import Sim2RealController
 
     policy = DummyPolicy()
@@ -523,7 +519,6 @@ def test_mocap_step_reference_qpos_smoothing_filters_motion_change(monkeypatch) 
 
     cfg = _make_cfg(transition_duration=0.0)
     cfg["retarget_buffer_enabled"] = False
-    cfg["reference_qpos_smoothing_alpha"] = 0.5
     ctrl = Sim2RealController(cfg)
     monkeypatch.setattr(
         ctrl._ref_proc,
@@ -540,7 +535,7 @@ def test_mocap_step_reference_qpos_smoothing_filters_motion_change(monkeypatch) 
 
     assert len(obs_builder.build_calls) == 2
     np.testing.assert_allclose(obs_builder.build_calls[0]["motion_qpos"][0], 0.0, atol=1e-6)
-    np.testing.assert_allclose(obs_builder.build_calls[1]["motion_qpos"][0], 0.5, atol=1e-6)
+    np.testing.assert_allclose(obs_builder.build_calls[1]["motion_qpos"][0], 1.0, atol=1e-6)
 
 
 def test_mocap_pause_freezes_reference_and_zeroes_velocities(monkeypatch) -> None:
@@ -606,8 +601,6 @@ def test_mocap_resume_uses_episode_reset_semantics(monkeypatch) -> None:
 
     cfg = _make_cfg(transition_duration=0.0)
     cfg["retarget_buffer_enabled"] = False
-    cfg["pause_resume_transition_duration"] = 1.0
-    cfg["pause_resume_warmup_steps"] = 0
     ctrl = Sim2RealController(cfg)
     monkeypatch.setattr(
         ctrl._ref_proc,

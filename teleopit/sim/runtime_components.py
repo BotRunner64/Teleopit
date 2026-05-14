@@ -14,7 +14,7 @@ _logger = logging.getLogger(__name__)
 from teleopit.constants import FULL_QPOS_DIM, NUM_JOINTS, ROOT_DIM
 from teleopit.bus.topics import TOPIC_ACTION, TOPIC_MIMIC_OBS, TOPIC_ROBOT_STATE
 from teleopit.controllers.observation import VelCmdObservationBuilder
-from teleopit.controllers.qpos_interpolator import QposInterpolator, QposLowPassFilter
+from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.controllers import reference_processing as ref_proc
 from teleopit.interfaces import MessageBus, ObservationBuilder, Recorder, Robot, RobotState
 from teleopit.retargeting.core import extract_mimic_obs
@@ -97,7 +97,6 @@ class PolicyStepRunner:
         qpos_interpolator: QposInterpolator,
         reference_velocity_smoothing_alpha: float = 1.0,
         reference_anchor_velocity_smoothing_alpha: float = 1.0,
-        reference_qpos_smoothing_alpha: float = 1.0,
     ) -> None:
         self.robot = robot
         self.controller = controller
@@ -113,7 +112,6 @@ class PolicyStepRunner:
         self._motion_joint_vel_smoother = ExponentialVecSmoother(reference_velocity_smoothing_alpha)
         self._motion_anchor_lin_vel_smoother = ExponentialVecSmoother(reference_anchor_velocity_smoothing_alpha)
         self._motion_anchor_ang_vel_smoother = ExponentialVecSmoother(reference_anchor_velocity_smoothing_alpha)
-        self._reference_qpos_smoother = QposLowPassFilter(reference_qpos_smoothing_alpha)
         self.last_action: Float32Array = np.zeros((self.num_actions,), dtype=np.float32)
         self.last_retarget_qpos: Float64Array | None = None
         self.last_reference_qpos: Float64Array | None = None
@@ -135,7 +133,6 @@ class PolicyStepRunner:
         self._motion_joint_vel_smoother.reset()
         self._motion_anchor_lin_vel_smoother.reset()
         self._motion_anchor_ang_vel_smoother.reset()
-        self._reference_qpos_smoother.reset()
         self.qpos_interpolator.reset()
 
     def soft_reset_reference_state(self, *, reset_alignment: bool = True) -> None:
@@ -149,7 +146,6 @@ class PolicyStepRunner:
         self._motion_joint_vel_smoother.reset()
         self._motion_anchor_lin_vel_smoother.reset()
         self._motion_anchor_ang_vel_smoother.reset()
-        self._reference_qpos_smoother.reset()
 
     def reset_reference_alignment(self, target_qpos: Float64Array | None = None) -> None:
         self._fixed_reference_yaw_quat = None
@@ -191,7 +187,6 @@ class PolicyStepRunner:
     def prepare_motion_command(self, retargeted: object, state: object) -> MotionPreparation:
         reference_qpos = self._retarget_to_qpos(retargeted)
         reference_qpos = self._align_velcmd_reference_yaw(reference_qpos, state)
-        reference_qpos = self._reference_qpos_smoother.apply(reference_qpos)
         self._pending_reference_qpos = reference_qpos.copy()
 
         if self.last_retarget_qpos is None and self.qpos_interpolator.duration > 0:

@@ -148,13 +148,7 @@ class SimLoopSession:
         if self.reference_timeline is not None:
             self.realtime_reference_manager = RealtimeReferenceManager(
                 reference_window_builder=loop._reference_window_builder,
-                low_watermark_steps=ref_cfg.realtime_buffer_low_watermark_steps,
-                high_watermark_steps=ref_cfg.realtime_buffer_high_watermark_steps,
                 warmup_steps=ref_cfg.realtime_buffer_warmup_steps,
-                catchup_enabled=ref_cfg.realtime_catchup_enabled,
-                catchup_trigger_steps=ref_cfg.realtime_catchup_trigger_steps,
-                catchup_release_steps=ref_cfg.realtime_catchup_release_steps,
-                catchup_target_delay_s=ref_cfg.realtime_catchup_target_delay_s,
             )
 
         # Realtime live-frame tracking
@@ -217,14 +211,12 @@ class SimLoopSession:
     # State-management methods (formerly closures with nonlocal)
     # ------------------------------------------------------------------
 
-    def reset_runtime_tracking(self, *, warmup_steps: int | None = None) -> None:
+    def reset_runtime_tracking(self) -> None:
         ref_cfg = self._loop._ref_cfg
         if self.reference_timeline is not None:
             self.reference_timeline.clear()
         if self.realtime_reference_manager is not None:
-            self.realtime_reference_manager.set_warmup_steps(
-                ref_cfg.realtime_buffer_warmup_steps if warmup_steps is None else warmup_steps
-            )
+            self.realtime_reference_manager.set_warmup_steps(ref_cfg.realtime_buffer_warmup_steps)
             self.realtime_reference_manager.reset()
         self.previous_live_human_frame = None
         self.previous_live_retargeted = None
@@ -236,14 +228,14 @@ class SimLoopSession:
         self.cached_human_frame = None
         self.cached_retargeted = None
 
-    def full_policy_reset(self, *, warmup_steps: int | None = None) -> None:
+    def full_policy_reset(self) -> None:
         self._step_runner.reset()
         self._loop.controller.reset()
         self._loop.obs_builder.reset()
         self._retargeter.reset()
         self.mocap_session.reset()
         self.last_commanded_motion_qpos = None
-        self.reset_runtime_tracking(warmup_steps=warmup_steps)
+        self.reset_runtime_tracking()
 
     def enter_standing_mode(self) -> None:
         from teleopit.sim.loop import SimulationMode
@@ -274,7 +266,7 @@ class SimLoopSession:
             if hold_qpos is None:
                 raise RuntimeError("Cannot resume mocap without a paused hold qpos")
             resume_qpos = loop._build_resume_alignment_qpos(hold_qpos, loop.robot.get_state())
-            self.full_policy_reset(warmup_steps=loop._ref_cfg.pause_resume_warmup_steps)
+            self.full_policy_reset()
             self._step_runner.reset_reference_alignment(resume_qpos)
             self.last_commanded_motion_qpos = resume_qpos.copy()
             return
@@ -485,11 +477,8 @@ class SimLoopSession:
                 self.reference_timeline,
                 target_base_time,
             )
-            if loop._ref_cfg.reference_debug_log:
-                if any(reference_window.fallback_mask()):
-                    loop._log_reference_window(reference_window, len(self.reference_timeline))
-                if realtime_reference_diag.used_repeat_padding:
-                    loop._log_repeat_padding(reference_window, realtime_reference_diag, len(self.reference_timeline))
+            if loop._ref_cfg.reference_debug_log and any(reference_window.fallback_mask()):
+                loop._log_reference_window(reference_window, len(self.reference_timeline))
             self.cached_retargeted = reference_window.current_sample().qpos
         else:
             if self.latest_live_retargeted is None:

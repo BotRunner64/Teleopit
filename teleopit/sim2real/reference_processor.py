@@ -15,7 +15,6 @@ from numpy.typing import NDArray
 
 from teleopit.controllers import reference_processing as ref_proc
 from teleopit.controllers.observation import VelCmdObservationBuilder
-from teleopit.controllers.qpos_interpolator import QposLowPassFilter
 from teleopit.sim.realtime_utils import ExponentialVecSmoother
 from teleopit.sim.reference_timeline import ReferenceWindow
 
@@ -35,7 +34,6 @@ class Sim2RealReferenceProcessor:
         num_actions: int,
         reference_velocity_smoothing_alpha: float,
         reference_anchor_velocity_smoothing_alpha: float,
-        reference_qpos_smoothing_alpha: float,
         max_pos_value: float,
     ) -> None:
         self._obs_builder = obs_builder
@@ -54,7 +52,6 @@ class Sim2RealReferenceProcessor:
         self._motion_joint_vel_smoother = ExponentialVecSmoother(reference_velocity_smoothing_alpha)
         self._motion_anchor_lin_vel_smoother = ExponentialVecSmoother(reference_anchor_velocity_smoothing_alpha)
         self._motion_anchor_ang_vel_smoother = ExponentialVecSmoother(reference_anchor_velocity_smoothing_alpha)
-        self._reference_qpos_smoother = QposLowPassFilter(reference_qpos_smoothing_alpha)
 
         # Last reference qpos for velocity computation
         self._last_reference_qpos: Float64Array | None = None
@@ -201,9 +198,6 @@ class Sim2RealReferenceProcessor:
     # Smoothing
     # ------------------------------------------------------------------
 
-    def apply_qpos_smoothing(self, qpos: Float64Array) -> Float64Array:
-        return self._reference_qpos_smoother.apply(qpos)
-
     def apply_joint_vel_smoothing(self, vel: Float32Array) -> Float32Array:
         return self._motion_joint_vel_smoother.apply(vel)
 
@@ -219,5 +213,4 @@ class Sim2RealReferenceProcessor:
         self._motion_joint_vel_smoother.reset()
         self._motion_anchor_lin_vel_smoother.reset()
         self._motion_anchor_ang_vel_smoother.reset()
-        self._reference_qpos_smoother.reset()
         self._last_reference_qpos = None

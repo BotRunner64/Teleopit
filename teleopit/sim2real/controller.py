@@ -82,9 +82,6 @@ class Sim2RealController:
         # Motion command transition smoothing
         transition_dur = float(cfg_get(cfg, "transition_duration", 0.0) or 0.0)
         self._mocap_transition_duration = transition_dur
-        self._pause_resume_transition_duration = float(
-            cfg_get(cfg, "pause_resume_transition_duration", transition_dur) or 0.0
-        )
         self._qpos_interpolator = QposInterpolator(transition_dur, self.policy_hz)
 
         self._init_components(cfg)
@@ -184,13 +181,7 @@ class Sim2RealController:
         self._reference_manager: RealtimeReferenceManager | None = (
             RealtimeReferenceManager(
                 reference_window_builder=self._reference_window_builder,
-                low_watermark_steps=rc.realtime_buffer_low_watermark_steps,
-                high_watermark_steps=rc.realtime_buffer_high_watermark_steps,
                 warmup_steps=rc.realtime_buffer_warmup_steps,
-                catchup_enabled=rc.realtime_catchup_enabled,
-                catchup_trigger_steps=rc.realtime_catchup_trigger_steps,
-                catchup_release_steps=rc.realtime_catchup_release_steps,
-                catchup_target_delay_s=rc.realtime_catchup_target_delay_s,
             )
             if self._reference_timeline is not None
             else None
@@ -203,7 +194,6 @@ class Sim2RealController:
             num_actions=self.num_actions,
             reference_velocity_smoothing_alpha=rc.reference_velocity_smoothing_alpha,
             reference_anchor_velocity_smoothing_alpha=rc.reference_anchor_velocity_smoothing_alpha,
-            reference_qpos_smoothing_alpha=rc.reference_qpos_smoothing_alpha,
             max_pos_value=float(cfg_get(mocap_sw, "max_position_value", 5.0)),
         )
         self._last_live_packet_seq = -1
@@ -356,21 +346,6 @@ class Sim2RealController:
                     list(reference_window.reference_steps),
                     list(reference_window.modes()),
                 )
-            if self._ref_cfg.reference_debug_log and reference_diag.used_repeat_padding:
-                logger.warning(
-                    "Reference timeline repeat padding | buffer_len=%d | future_horizon_steps=%d | steps=%s",
-                    len(self._reference_timeline),
-                    reference_diag.future_horizon_steps,
-                    list(reference_window.reference_steps),
-                )
-            if self._ref_cfg.reference_debug_log and reference_diag.used_catchup:
-                logger.warning(
-                    "Reference timeline catch-up | requested_base=%.6f | effective_base=%.6f | latest=%.6f | future_horizon_steps=%d",
-                    reference_diag.requested_base_time_s,
-                    reference_diag.effective_base_time_s,
-                    -1.0 if reference_diag.latest_timestamp_s is None else reference_diag.latest_timestamp_s,
-                    reference_diag.future_horizon_steps,
-                )
             reference_qpos = reference_window.current_sample().qpos
         else:
             retargeted = self.retargeter.retarget(human_frame)
@@ -416,9 +391,8 @@ class Sim2RealController:
         robot_state: object,
         reference_window: ReferenceWindow | None,
     ) -> None:
-        """Shared mocap control pipeline: align → smooth → interpolate → infer → send."""
+        """Shared mocap control pipeline: align → interpolate → infer → send."""
         reference_qpos = self._ref_proc.align_reference_yaw(reference_qpos, robot_state=robot_state)
-        reference_qpos = self._ref_proc.apply_qpos_smoothing(reference_qpos)
         qpos = self._qpos_interpolator.apply(reference_qpos)
 
         # Compute joint velocities via finite difference
@@ -700,7 +674,7 @@ class Sim2RealController:
         self.obs_builder.reset()
         self.retargeter.reset()
 
-    def _reset_mocap_reference_state(self, *, warmup_steps: int | None = None) -> None:
+    def _reset_mocap_reference_state(self) -> None:
         """Reset mocap-specific reference state without disrupting policy observation continuity.
 
         Unlike ``_reset_policy_state``, this preserves ``_last_action``, the
@@ -710,9 +684,7 @@ class Sim2RealController:
         if self._reference_timeline is not None:
             self._reference_timeline.clear()
         if self._reference_manager is not None:
-            self._reference_manager.set_warmup_steps(
-                self._ref_cfg.realtime_buffer_warmup_steps if warmup_steps is None else warmup_steps
-            )
+            self._reference_manager.set_warmup_steps(self._ref_cfg.realtime_buffer_warmup_steps)
             self._reference_manager.reset()
         self._ref_proc.reset_smoothers()
         self._last_live_packet_seq = -1
@@ -827,14 +799,10 @@ class Sim2RealController:
         self._last_commanded_motion_qpos = resume_qpos.copy()
 
         # Override warmup steps for the resume-specific buffer warmup.
-        if self._reference_manager is not None:
-            self._reference_manager.set_warmup_steps(self._ref_cfg.pause_resume_warmup_steps)
-            self._reference_manager.reset()
-
         self._ref_proc.reset_alignment(target_qpos=resume_qpos)
         if self._offline_playback is not None:
             self._last_retarget_qpos = resume_qpos.copy()
-            self._arm_qpos_transition(resume_qpos, duration_s=self._pause_resume_transition_duration)
+            self._arm_qpos_transition(resume_qpos, duration_s=self._mocap_transition_duration)
             self._offline_playback.resume()
 
         logger.info("Mocap session -> ACTIVE (episode-reset + reference realignment)")

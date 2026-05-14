@@ -326,7 +326,7 @@ def test_simulation_loop_waits_for_realtime_warmup_before_first_policy_step(monk
 
 
 @requires_mujoco
-def test_simulation_loop_allows_future_reference_steps_without_explicit_high_watermark() -> None:
+def test_simulation_loop_allows_future_reference_steps() -> None:
     from teleopit.sim.loop import SimulationLoop
 
     bus = InProcessBus()
@@ -344,13 +344,9 @@ def test_simulation_loop_allows_future_reference_steps_without_explicit_high_wat
             "reference_steps": [0, 1, 2, 3, 4],
             "retarget_buffer_delay_s": 0.08,
             "retarget_buffer_window_s": 0.5,
-            "realtime_buffer_low_watermark_steps": 0,
         },
         viewers=set(),
     )
-
-    assert loop._ref_cfg.realtime_buffer_low_watermark_steps == 0
-    assert loop._ref_cfg.realtime_buffer_high_watermark_steps is None
 
     class _RealtimeInputProvider:
         fps = 50
@@ -467,8 +463,6 @@ def test_simulation_loop_pause_resume_freezes_then_reanchors_live_retarget(monke
             "transition_duration": 0.0,
             "retarget_buffer_enabled": False,
             "realtime_input_delay_s": 0.0,
-            "pause_resume_transition_duration": 1.0,
-            "pause_resume_warmup_steps": 0,
         },
         viewers=set(),
     )

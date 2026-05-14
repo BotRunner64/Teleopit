@@ -6,22 +6,13 @@ defaults:
 
 policy_hz: 50.0
 transition_duration: 2.0  # seconds to interpolate from default pose to motion command (0.0 to disable)
-pause_resume_transition_duration: 1.0  # offline playback resume blend; realtime mocap resumes from re-centered live tracking
-pause_resume_warmup_steps: 0  # realtime mocap frames to accumulate before resuming live tracking
 input:
   video:
     source: realsense
 retarget_buffer_enabled: true
 retarget_buffer_window_s: 0.5
 retarget_buffer_delay_s: null  # null = auto use one input-frame delay for timeline sampling
-realtime_buffer_low_watermark_steps: 2
-realtime_buffer_high_watermark_steps: 4
 realtime_buffer_warmup_steps: 2
-realtime_catchup_enabled: false
-realtime_catchup_trigger_steps: 6
-realtime_catchup_release_steps: 3
-realtime_catchup_target_delay_s: 0.04
-reference_qpos_smoothing_alpha: 1.0
 reference_velocity_smoothing_alpha: 0.35
 reference_anchor_velocity_smoothing_alpha: 0.25
 reference_steps: [0]

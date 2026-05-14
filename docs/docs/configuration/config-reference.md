@@ -84,8 +84,6 @@ Complete reference for all configurable fields.
 | `retarget_buffer_delay_s` | Buffer delay |
 | `reference_steps` | Reference window steps |
 | `realtime_buffer_warmup_steps` | Warmup before playback |
-| `realtime_buffer_low_watermark_steps` | Low watermark |
-| `realtime_buffer_high_watermark_steps` | High watermark |
 | `reference_velocity_smoothing_alpha` | Velocity smoothing |
 | `reference_anchor_velocity_smoothing_alpha` | Anchor velocity smoothing |
 
@@ -116,11 +114,6 @@ Fields used by sim2real configs (`sim2real.yaml`, `pico4_sim2real.yaml`).
 
 ### Pause/Resume (Pico sim2real)
 
-| Field | Description | Default |
-|-------|-------------|---------|
-| `pause_resume_transition_duration` | Resume blend duration for offline playback; realtime Pico resume uses live tracking re-centering | `1.0` |
-| `pause_resume_warmup_steps` | Realtime mocap frames to collect before tracking resumes | `2` |
-
 Realtime Pico resume re-centers heading and ground-plane position before tracking continues. Operators should keep still and stay as close as practical to the paused pose to reduce sudden reference changes.
 
 ### Dexterous Hand (Pico sim2real)
@@ -139,16 +132,6 @@ timeouts send the open pose.
 | `dexterous_hand.deadman_threshold` | Minimum grip value required to enable a side | `0.5` |
 | `dexterous_hand.trigger_deadzone` | Trigger deadzone at both ends | `0.05` |
 | `dexterous_hand.open_pose` / `close_pose` | Six-value L6 open/closed poses | see config |
-
-### Realtime Catch-up (Pico sim2real)
-
-| Field | Description | Default |
-|-------|-------------|---------|
-| `realtime_catchup_enabled` | Enable catch-up when buffer grows too large | `true` |
-| `realtime_catchup_trigger_steps` | Buffer depth that triggers catch-up | `6` |
-| `realtime_catchup_release_steps` | Buffer depth to release catch-up | `3` |
-| `realtime_catchup_target_delay_s` | Target delay for catch-up | `0.04` |
-| `reference_qpos_smoothing_alpha` | Joint position smoothing (1.0 = no smoothing) | `0.4` |
 
 ## Critical: `default_dof_pos`
 

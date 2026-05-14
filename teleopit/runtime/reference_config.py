@@ -13,7 +13,6 @@ from teleopit.runtime.common import (
     cfg_get,
     parse_alpha,
     parse_nonnegative_int,
-    parse_optional_nonnegative_int,
 )
 
 
@@ -23,17 +22,9 @@ class ReferenceConfig:
     retarget_buffer_window_s: float
     reference_delay_s: float | None
     reference_debug_log: bool
-    realtime_buffer_low_watermark_steps: int
-    realtime_buffer_high_watermark_steps: int | None
     realtime_buffer_warmup_steps: int
-    pause_resume_warmup_steps: int
-    realtime_catchup_enabled: bool
-    realtime_catchup_trigger_steps: int | None
-    realtime_catchup_release_steps: int | None
-    realtime_catchup_target_delay_s: float | None
     reference_velocity_smoothing_alpha: float
     reference_anchor_velocity_smoothing_alpha: float
-    reference_qpos_smoothing_alpha: float
 
 
 def _resolve_delay(cfg: Any, *, provider_fps: float | None) -> float | None:
@@ -46,13 +37,6 @@ def _resolve_delay(cfg: Any, *, provider_fps: float | None) -> float | None:
     if provider_fps is not None:
         return 1.0 / max(provider_fps, 1.0)
     return None
-
-
-def _resolve_catchup_target_delay(cfg: Any) -> float | None:
-    raw = cfg_get(cfg, "realtime_catchup_target_delay_s", None)
-    if raw in (None, "", "null"):
-        return None
-    return float(raw)
 
 
 def parse_reference_config(
@@ -80,38 +64,11 @@ def parse_reference_config(
     reference_debug_log = bool(cfg_get(cfg, "reference_debug_log", False))
     reference_delay_s = _resolve_delay(cfg, provider_fps=provider_fps)
 
-    low = parse_nonnegative_int(
-        cfg_get(cfg, "realtime_buffer_low_watermark_steps", 0),
-        field_name="realtime_buffer_low_watermark_steps",
-        default=0,
-    )
-    high = parse_optional_nonnegative_int(
-        cfg_get(cfg, "realtime_buffer_high_watermark_steps", None),
-        field_name="realtime_buffer_high_watermark_steps",
-    )
-    if high is not None and high < low:
-        raise ValueError("realtime_buffer_high_watermark_steps must be >= realtime_buffer_low_watermark_steps")
-
     warmup = parse_nonnegative_int(
         cfg_get(cfg, "realtime_buffer_warmup_steps", 0),
         field_name="realtime_buffer_warmup_steps",
         default=0,
     )
-    pause_resume_warmup = parse_nonnegative_int(
-        cfg_get(cfg, "pause_resume_warmup_steps", warmup),
-        field_name="pause_resume_warmup_steps",
-        default=warmup,
-    )
-    catchup_enabled = bool(cfg_get(cfg, "realtime_catchup_enabled", False))
-    catchup_trigger = parse_optional_nonnegative_int(
-        cfg_get(cfg, "realtime_catchup_trigger_steps", None),
-        field_name="realtime_catchup_trigger_steps",
-    )
-    catchup_release = parse_optional_nonnegative_int(
-        cfg_get(cfg, "realtime_catchup_release_steps", None),
-        field_name="realtime_catchup_release_steps",
-    )
-    catchup_target_delay = _resolve_catchup_target_delay(cfg)
 
     vel_alpha = parse_alpha(
         cfg_get(cfg, "reference_velocity_smoothing_alpha", 1.0),
@@ -123,26 +80,13 @@ def parse_reference_config(
         field_name="reference_anchor_velocity_smoothing_alpha",
         default=1.0,
     )
-    qpos_alpha = parse_alpha(
-        cfg_get(cfg, "reference_qpos_smoothing_alpha", 1.0),
-        field_name="reference_qpos_smoothing_alpha",
-        default=1.0,
-    )
 
     return ReferenceConfig(
         retarget_buffer_enabled=retarget_buffer_enabled,
         retarget_buffer_window_s=retarget_buffer_window_s,
         reference_delay_s=reference_delay_s,
         reference_debug_log=reference_debug_log,
-        realtime_buffer_low_watermark_steps=low,
-        realtime_buffer_high_watermark_steps=high,
         realtime_buffer_warmup_steps=warmup,
-        pause_resume_warmup_steps=pause_resume_warmup,
-        realtime_catchup_enabled=catchup_enabled,
-        realtime_catchup_trigger_steps=catchup_trigger,
-        realtime_catchup_release_steps=catchup_release,
-        realtime_catchup_target_delay_s=catchup_target_delay,
         reference_velocity_smoothing_alpha=vel_alpha,
         reference_anchor_velocity_smoothing_alpha=anchor_vel_alpha,
-        reference_qpos_smoothing_alpha=qpos_alpha,
     )

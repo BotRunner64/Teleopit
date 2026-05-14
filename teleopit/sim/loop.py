@@ -84,9 +84,6 @@ class SimulationLoop:
         # Motion command transition smoothing
         transition_dur = float(self._try_get_cfg("transition_duration") or 0.0)
         self._mocap_transition_duration = transition_dur
-        self._pause_resume_transition_duration = float(
-            self._try_get_cfg("pause_resume_transition_duration") or transition_dur
-        )
         self._qpos_interpolator = QposInterpolator(transition_dur, self.policy_hz)
 
         self._init_reference_config()
@@ -131,7 +128,6 @@ class SimulationLoop:
             qpos_interpolator=self._qpos_interpolator,
             reference_velocity_smoothing_alpha=self._ref_cfg.reference_velocity_smoothing_alpha,
             reference_anchor_velocity_smoothing_alpha=self._ref_cfg.reference_anchor_velocity_smoothing_alpha,
-            reference_qpos_smoothing_alpha=self._ref_cfg.reference_qpos_smoothing_alpha,
         )
         self._publisher = RuntimePublisher(self.bus)
         self._recorder_helper = RunRecorder()
@@ -306,7 +302,7 @@ class SimulationLoop:
         self._step_runner.last_retarget_qpos = resume_qpos.copy()
         self._step_runner.arm_motion_transition(
             resume_qpos,
-            duration_s=self._pause_resume_transition_duration,
+            duration_s=self._mocap_transition_duration,
         )
 
     def _build_observation(
@@ -444,8 +440,6 @@ class SimulationLoop:
             reference_future_horizon_steps=(None if realtime_reference_diag is None else np.asarray(getattr(realtime_reference_diag, "future_horizon_steps"), dtype=np.int64)),
             reference_real_frame_count=(None if realtime_reference_diag is None else np.asarray(getattr(realtime_reference_diag, "real_frame_count"), dtype=np.int64)),
             reference_warmup_done=(None if realtime_reference_diag is None else np.asarray(getattr(realtime_reference_diag, "warmup_done"), dtype=np.bool_)),
-            reference_used_repeat_padding=(None if realtime_reference_diag is None else np.asarray(getattr(realtime_reference_diag, "used_repeat_padding"), dtype=np.bool_)),
-            reference_padding_active=(None if realtime_reference_diag is None else np.asarray(getattr(realtime_reference_diag, "padding_active"), dtype=np.bool_)),
         )
 
     def _log_reference_window(self, reference_window: ReferenceWindow, buffer_len: int) -> None:
@@ -457,19 +451,4 @@ class SimulationLoop:
             reference_window.base_time_s,
             list(reference_window.reference_steps),
             list(reference_window.modes()),
-        )
-
-    def _log_repeat_padding(
-        self,
-        reference_window: ReferenceWindow,
-        diagnostics: RealtimeReferenceDiagnostics,
-        buffer_len: int,
-    ) -> None:
-        import logging
-
-        logging.getLogger(__name__).warning(
-            "Reference timeline repeat padding | buffer_len=%d | future_horizon_steps=%d | steps=%s",
-            buffer_len,
-            diagnostics.future_horizon_steps,
-            list(reference_window.reference_steps),
         )

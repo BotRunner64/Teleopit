@@ -203,9 +203,6 @@ mocap_switch.check_frames=10
 # Smooth transition into mocap reference
 transition_duration=2.0
 
-# Realtime frames to collect before resume
-pause_resume_warmup_steps=2
-
 # Change Pico pause button
 input.pause_button=right_axis_click
 

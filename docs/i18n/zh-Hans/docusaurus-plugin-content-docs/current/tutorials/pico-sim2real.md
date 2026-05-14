@@ -193,9 +193,6 @@ mocap_switch.check_frames=10
 # 平滑过渡到 mocap 参考
 transition_duration=2.0
 
-# 恢复前采集的实时帧数
-pause_resume_warmup_steps=2
-
 # 更换 Pico 暂停键
 input.pause_button=right_axis_click
 
