@@ -153,6 +153,12 @@ class DummyHandRuntime:
         self.close_calls += 1
 
 
+class FailingHandRuntime(DummyHandRuntime):
+    def tick(self, *, active: bool) -> None:
+        super().tick(active=active)
+        raise RuntimeError("hand send failed")
+
+
 def _make_cfg(transition_duration: float = 1.0) -> dict[str, object]:
     return {
         "policy_hz": 50.0,
@@ -310,6 +316,26 @@ def test_dexterous_hand_ticks_only_during_active_mocap(monkeypatch) -> None:
     ctrl._tick_dexterous_hand()
 
     assert hand_runtime.active_flags == [False, True, False]
+
+
+def test_dexterous_hand_failure_does_not_enter_damping(monkeypatch) -> None:
+    import teleopit.sim2real.controller as controller_mod
+    from teleopit.sim2real.controller import RobotMode, Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    hand_runtime = FailingHandRuntime()
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=np.zeros(36, dtype=np.float64))
+    monkeypatch.setattr(controller_mod, "build_linkerhand_runtime", lambda _cfg, _provider: hand_runtime)
+
+    ctrl = Sim2RealController(_make_cfg())
+    ctrl.mode = RobotMode.MOCAP
+    ctrl._mocap_session.reset()
+
+    ctrl._tick_dexterous_hand()
+
+    assert ctrl.mode == RobotMode.MOCAP
+    assert hand_runtime.active_flags == [True]
 
 
 def test_can_switch_to_mocap_returns_false_without_blocking_when_realtime_has_no_frame(monkeypatch) -> None:

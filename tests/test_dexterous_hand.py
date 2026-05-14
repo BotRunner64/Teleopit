@@ -92,6 +92,10 @@ def _runtime(provider: SnapshotProvider) -> LinkerHandRuntime:
     return runtime
 
 
+def _wait_runtime_idle(runtime: LinkerHandRuntime) -> None:
+    assert runtime._sender.wait_idle(timeout_s=1.0)
+
+
 def test_trigger_to_pose_applies_deadzone_and_fixed_thumb_yaw() -> None:
     pose = trigger_to_pose(
         0.5,
@@ -113,6 +117,7 @@ def test_runtime_opens_when_deadman_released() -> None:
     )
 
     runtime.tick(active=True, now_s=10.0)
+    _wait_runtime_idle(runtime)
 
     assert runtime._sender._last_pose["left"] == list(runtime.config.open_pose)
     assert runtime._sender._last_pose["right"] == list(runtime.config.open_pose)
@@ -127,6 +132,7 @@ def test_runtime_maps_present_controller_even_without_raw_flag() -> None:
     )
 
     runtime.tick(active=True, now_s=10.0)
+    _wait_runtime_idle(runtime)
 
     assert runtime._sender._last_pose["left"] == list(runtime.config.close_pose)
     assert runtime._sender._last_pose["right"] == list(runtime.config.open_pose)
@@ -141,6 +147,7 @@ def test_runtime_maps_trigger_when_deadman_active() -> None:
     )
 
     runtime.tick(active=True, now_s=10.0)
+    _wait_runtime_idle(runtime)
 
     assert runtime._sender._last_pose["left"] == list(runtime.config.close_pose)
     assert runtime._sender._last_pose["right"] == list(runtime.config.open_pose)
@@ -156,10 +163,12 @@ def test_runtime_opens_on_timeout_and_inactive_mode() -> None:
     )
 
     runtime.tick(active=True, now_s=10.0)
+    _wait_runtime_idle(runtime)
     assert runtime._sender._last_pose["left"] == list(runtime.config.close_pose)
 
     provider.snapshot = SimpleNamespace(timestamp_s=9.0, seq=2, left=None, right=None)
     runtime.tick(active=True, now_s=20.0)
+    _wait_runtime_idle(runtime)
     assert runtime._sender._last_pose["left"] == list(runtime.config.open_pose)
 
     provider.snapshot = _snapshot(
@@ -168,9 +177,11 @@ def test_runtime_opens_on_timeout_and_inactive_mode() -> None:
         timestamp_s=20.1,
     )
     runtime.tick(active=True, now_s=20.1)
+    _wait_runtime_idle(runtime)
     assert runtime._sender._last_pose["left"] == list(runtime.config.close_pose)
 
     runtime.tick(active=False, now_s=20.2)
+    _wait_runtime_idle(runtime)
     assert runtime._sender._last_pose["left"] == list(runtime.config.open_pose)
 
 

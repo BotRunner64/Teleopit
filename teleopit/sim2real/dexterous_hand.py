@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import threading
 import time
 from typing import Any, Protocol, Sequence
 
@@ -208,13 +209,139 @@ class L6PoseSender:
         self._hands.clear()
 
 
+class AsyncL6PoseSender:
+    """Run blocking LinkerHand SDK calls outside the robot control loop."""
+
+    def __init__(self, config: LinkerHandConfig):
+        self._config = config
+        self._sync_sender = L6PoseSender(config)
+        self._condition = threading.Condition()
+        self._pending: dict[str, tuple[list[int], bool, str]] = {}
+        self._thread: threading.Thread | None = None
+        self._running = False
+        self._stopping = False
+        self._busy = False
+        self._failed = False
+
+    @property
+    def started(self) -> bool:
+        return self._running and not self._failed
+
+    @property
+    def _last_pose(self) -> dict[str, list[int] | None]:
+        return self._sync_sender._last_pose
+
+    def start(self) -> None:
+        with self._condition:
+            if self._running:
+                return
+            self._running = True
+            self._stopping = False
+            self._failed = False
+            self._busy = True
+            self._thread = threading.Thread(
+                target=self._run,
+                name="linkerhand-l6-sender",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def send(self, hand_type: str, pose: Sequence[int], *, force: bool = False, reason: str = "") -> None:
+        next_pose = [int(value) for value in pose]
+        if not force and self._sync_sender._last_pose.get(hand_type) == next_pose:
+            return
+        with self._condition:
+            if not self._running or self._failed or self._stopping:
+                return
+            self._pending[hand_type] = (next_pose, force, reason)
+            self._condition.notify_all()
+
+    def send_all(self, pose: Sequence[int], *, force: bool = False, reason: str = "") -> None:
+        for hand_type in self._config.selected_hand_types:
+            self.send(hand_type, pose, force=force, reason=reason)
+
+    def close(self) -> None:
+        thread: threading.Thread | None
+        with self._condition:
+            if not self._running:
+                return
+            if not self._failed:
+                for hand_type in self._config.selected_hand_types:
+                    self._pending[hand_type] = (list(self._config.open_pose), True, "exit")
+            self._stopping = True
+            self._condition.notify_all()
+            thread = self._thread
+        if thread is not None:
+            thread.join(timeout=3.0)
+            if thread.is_alive():
+                logger.warning("LinkerHand L6 worker did not stop within timeout")
+
+    def wait_idle(self, timeout_s: float = 1.0) -> bool:
+        deadline = time.monotonic() + timeout_s
+        with self._condition:
+            while self._busy or self._pending:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return False
+                self._condition.wait(timeout=remaining)
+            return True
+
+    def _run(self) -> None:
+        try:
+            self._sync_sender.start()
+            self._sync_sender.send_all(self._config.open_pose, force=True, reason="startup")
+            while True:
+                commands = self._take_commands()
+                if not commands:
+                    break
+                try:
+                    for hand_type, pose, force, reason in commands:
+                        self._sync_sender.send(hand_type, pose, force=force, reason=reason)
+                finally:
+                    with self._condition:
+                        self._busy = False
+                        self._condition.notify_all()
+        except Exception:
+            logger.exception("LinkerHand L6 worker failed; hand control is disabled")
+            with self._condition:
+                self._failed = True
+                self._pending.clear()
+                self._busy = False
+                self._condition.notify_all()
+        finally:
+            try:
+                self._sync_sender.close()
+            except Exception:
+                logger.exception("Failed to close LinkerHand L6 worker cleanly")
+            with self._condition:
+                self._running = False
+                self._busy = False
+                self._condition.notify_all()
+
+    def _take_commands(self) -> list[tuple[str, list[int], bool, str]]:
+        with self._condition:
+            while not self._pending and not self._stopping:
+                self._busy = False
+                self._condition.notify_all()
+                self._condition.wait()
+            if not self._pending and self._stopping:
+                return []
+            self._busy = True
+            commands = [
+                (hand_type, pose, force, reason)
+                for hand_type, (pose, force, reason) in self._pending.items()
+            ]
+            self._pending.clear()
+            return commands
+
+
 class LinkerHandRuntime:
     """Drive LinkerHand L6 from Pico controller grip/trigger snapshots."""
 
     def __init__(self, config: LinkerHandConfig, provider: ControllerSnapshotProvider):
         self.config = config
         self._provider = provider
-        self._sender = L6PoseSender(config)
+        self._sender = AsyncL6PoseSender(config)
         self._interval_s = 1.0 / config.rate
         self._next_tick_s = 0.0
         self._active = False

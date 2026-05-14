@@ -891,8 +891,7 @@ class Sim2RealController:
         try:
             self._hand_runtime.tick(active=active)
         except Exception:
-            logger.exception("Dexterous hand runtime failed -- entering damping")
-            self._enter_damping()
+            logger.exception("Dexterous hand runtime failed; body control continues")
 
     def _deactivate_dexterous_hand(self) -> None:
         try:
