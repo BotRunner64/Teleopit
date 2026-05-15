@@ -163,7 +163,7 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
         "push_robot": EventTermCfg(
             func=mdp.push_by_setting_velocity,
             mode="interval",
-            interval_range_s=(1.0, 3.0),
+            interval_range_s=(4.0, 6.0),
             params={"velocity_range": VELOCITY_RANGE},
         ),
         "base_com": EventTermCfg(
@@ -187,6 +187,51 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
                 "bias_range": (-0.01, 0.01),
             },
         ),
+        "add_joint_default_pos": EventTermCfg(
+            mode="startup",
+            func=dr.joint_default_pos,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+                "operation": "add",
+                "ranges": (-0.01, 0.01),
+            },
+        ),
+        "motor_params_implicit_upper_body_pd": EventTermCfg(
+            mode="reset",
+            func=dr.pd_gains,
+            params={
+                "asset_cfg": SceneEntityCfg(
+                    "robot", actuator_names=r".*(shoulder|elbow|wrist).*"
+                ),
+                "kp_range": (0.9, 1.1),
+                "kd_range": (0.9, 1.1),
+                "distribution": "log_uniform",
+                "operation": "scale",
+            },
+        ),
+        "motor_params_implicit_lower_body_pd": EventTermCfg(
+            mode="reset",
+            func=dr.pd_gains,
+            params={
+                "asset_cfg": SceneEntityCfg(
+                    "robot", actuator_names=r".*(waist|hip|knee|ankle).*"
+                ),
+                "kp_range": (0.5, 2.0),
+                "kd_range": (0.5, 2.0),
+                "distribution": "log_uniform",
+                "operation": "scale",
+            },
+        ),
+        "motor_params_implicit_armature": EventTermCfg(
+            mode="startup",
+            func=dr.joint_armature,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
+                "ranges": (0.75, 1.25),
+                "distribution": "log_uniform",
+                "operation": "scale",
+            },
+        ),
         "physics_material": EventTermCfg(
             mode="startup",
             func=dr.geom_friction,
@@ -201,7 +246,7 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
             func=dr.pseudo_inertia,
             params={
                 "asset_cfg": SceneEntityCfg("robot", body_names=()),  # Set per-robot.
-                "alpha_range": (-0.11157177565710488, 0.4581453659370775),
+                "alpha_range": (-0.1, 0.45),
             },
         ),
     }

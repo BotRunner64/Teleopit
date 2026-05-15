@@ -17,6 +17,10 @@ def test_general_tracking_domain_randomization_matches_gr00t_active_set() -> Non
         "push_robot",
         "base_com",
         "encoder_bias",
+        "add_joint_default_pos",
+        "motor_params_implicit_upper_body_pd",
+        "motor_params_implicit_lower_body_pd",
+        "motor_params_implicit_armature",
         "physics_material",
         "randomize_rigid_body_mass",
     }
@@ -24,7 +28,7 @@ def test_general_tracking_domain_randomization_matches_gr00t_active_set() -> Non
     push_robot = events["push_robot"]
     assert push_robot.func is mdp.push_by_setting_velocity
     assert push_robot.mode == "interval"
-    assert push_robot.interval_range_s == (1.0, 3.0)
+    assert push_robot.interval_range_s == (4.0, 6.0)
     assert push_robot.params["velocity_range"] == {
         "x": (-0.5, 0.5),
         "y": (-0.5, 0.5),
@@ -50,6 +54,45 @@ def test_general_tracking_domain_randomization_matches_gr00t_active_set() -> Non
     assert encoder_bias.mode == "startup"
     assert encoder_bias.params["bias_range"] == (-0.01, 0.01)
 
+    add_joint_default_pos = events["add_joint_default_pos"]
+    assert add_joint_default_pos.func is dr.joint_default_pos
+    assert add_joint_default_pos.mode == "startup"
+    assert add_joint_default_pos.params["asset_cfg"].joint_names == ".*"
+    assert add_joint_default_pos.params["operation"] == "add"
+    assert add_joint_default_pos.params["ranges"] == (-0.01, 0.01)
+
+    upper_motor_pd = events["motor_params_implicit_upper_body_pd"]
+    assert upper_motor_pd.func is dr.pd_gains
+    assert upper_motor_pd.mode == "reset"
+    assert (
+        upper_motor_pd.params["asset_cfg"].actuator_names
+        == r".*(shoulder|elbow|wrist).*"
+    )
+    assert upper_motor_pd.params["kp_range"] == (0.9, 1.1)
+    assert upper_motor_pd.params["kd_range"] == (0.9, 1.1)
+    assert upper_motor_pd.params["distribution"] == "log_uniform"
+    assert upper_motor_pd.params["operation"] == "scale"
+
+    lower_motor_pd = events["motor_params_implicit_lower_body_pd"]
+    assert lower_motor_pd.func is dr.pd_gains
+    assert lower_motor_pd.mode == "reset"
+    assert (
+        lower_motor_pd.params["asset_cfg"].actuator_names
+        == r".*(waist|hip|knee|ankle).*"
+    )
+    assert lower_motor_pd.params["kp_range"] == (0.5, 2.0)
+    assert lower_motor_pd.params["kd_range"] == (0.5, 2.0)
+    assert lower_motor_pd.params["distribution"] == "log_uniform"
+    assert lower_motor_pd.params["operation"] == "scale"
+
+    motor_armature = events["motor_params_implicit_armature"]
+    assert motor_armature.func is dr.joint_armature
+    assert motor_armature.mode == "startup"
+    assert motor_armature.params["asset_cfg"].joint_names == ".*"
+    assert motor_armature.params["ranges"] == (0.75, 1.25)
+    assert motor_armature.params["distribution"] == "log_uniform"
+    assert motor_armature.params["operation"] == "scale"
+
     physics_material = events["physics_material"]
     assert physics_material.func is dr.geom_friction
     assert physics_material.mode == "startup"
@@ -61,10 +104,7 @@ def test_general_tracking_domain_randomization_matches_gr00t_active_set() -> Non
     assert mass.func is dr.pseudo_inertia
     assert mass.mode == "startup"
     assert mass.params["asset_cfg"].body_names == r".*wrist_yaw.*|torso_link"
-    assert mass.params["alpha_range"] == (
-        -0.11157177565710488,
-        0.4581453659370775,
-    )
+    assert mass.params["alpha_range"] == (-0.1, 0.45)
 
 
 def test_play_env_disables_training_only_domain_randomization() -> None:
@@ -77,6 +117,10 @@ def test_play_env_disables_training_only_domain_randomization() -> None:
     assert "push_robot" not in play_cfg.events
     assert "base_com" not in play_cfg.events
     assert "encoder_bias" not in play_cfg.events
+    assert "add_joint_default_pos" not in play_cfg.events
+    assert "motor_params_implicit_upper_body_pd" not in play_cfg.events
+    assert "motor_params_implicit_lower_body_pd" not in play_cfg.events
+    assert "motor_params_implicit_armature" not in play_cfg.events
     assert "physics_material" not in play_cfg.events
     assert "randomize_rigid_body_mass" not in play_cfg.events
     assert play_cfg.events == {}

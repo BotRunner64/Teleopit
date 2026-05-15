@@ -39,6 +39,10 @@ _TRAIN_ONLY_EVENTS = (
     "push_robot",
     "base_com",
     "encoder_bias",
+    "add_joint_default_pos",
+    "motor_params_implicit_upper_body_pd",
+    "motor_params_implicit_lower_body_pd",
+    "motor_params_implicit_armature",
     "physics_material",
     "randomize_rigid_body_mass",
 )
