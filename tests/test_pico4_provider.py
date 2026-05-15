@@ -55,6 +55,7 @@ def _make_provider() -> Pico4InputProvider:
     provider._last_raw_body_joints = None
     provider._last_frame_timestamp = None
     provider._last_source_seq = None
+    provider._ground_lift_offset = None
     provider._closed = False
     return provider
 
@@ -161,6 +162,55 @@ def test_pico4_provider_normalizes_pico_bridge_body_pose_convention() -> None:
 
     frame = Pico4InputProvider._convert_body_joints_to_frame(body_poses)
     np.testing.assert_allclose(frame["Pelvis"][0], [1.0, 3.0, 2.0], atol=1e-6)
+
+
+def test_pico4_provider_applies_fixed_ground_lift_from_first_real_frame() -> None:
+    provider = _make_provider()
+    body_poses = np.zeros((len(BODY_JOINT_NAMES), 7), dtype=np.float64)
+    pelvis_idx = BODY_JOINT_NAMES.index("Pelvis")
+    left_ankle_idx = BODY_JOINT_NAMES.index("Left_Ankle")
+    right_ankle_idx = BODY_JOINT_NAMES.index("Right_Ankle")
+    body_poses[pelvis_idx, 0:3] = [0.0, 0.8, 0.0]
+    body_poses[left_ankle_idx, 0:3] = [0.1, -0.2, 0.0]
+    body_poses[right_ankle_idx, 0:3] = [-0.1, 0.1, 0.0]
+    body_poses[:, 6] = 1.0
+
+    assert provider._accept_pico_frame(_pico_frame(body_poses, seq=1, timestamp=1.0)) is True
+    first_frame, _, _ = provider._frame_cache.latest_packet()
+    np.testing.assert_allclose(first_frame["Pelvis"][0][2], 0.8 + 0.2, atol=1e-6)
+    np.testing.assert_allclose(first_frame["Left_Ankle"][0][2], 0.0, atol=1e-6)
+    assert provider._ground_lift_offset == pytest.approx(0.2)
+
+    body_poses[:, 1] += 0.3
+    assert provider._accept_pico_frame(_pico_frame(body_poses, seq=2, timestamp=1.1)) is True
+    second_frame, _, _ = provider._frame_cache.latest_packet()
+    np.testing.assert_allclose(second_frame["Pelvis"][0][2], first_frame["Pelvis"][0][2] + 0.3, atol=1e-6)
+    np.testing.assert_allclose(second_frame["Left_Ankle"][0][2], 0.3, atol=1e-6)
+
+
+def test_pico4_provider_recomputes_ground_lift_after_timestamp_gap_reset() -> None:
+    provider = _make_provider()
+    body_poses = np.zeros((len(BODY_JOINT_NAMES), 7), dtype=np.float64)
+    pelvis_idx = BODY_JOINT_NAMES.index("Pelvis")
+    left_ankle_idx = BODY_JOINT_NAMES.index("Left_Ankle")
+    right_ankle_idx = BODY_JOINT_NAMES.index("Right_Ankle")
+    body_poses[pelvis_idx, 0:3] = [0.0, 0.8, 0.0]
+    body_poses[left_ankle_idx, 0:3] = [0.1, -0.2, 0.0]
+    body_poses[right_ankle_idx, 0:3] = [-0.1, 0.1, 0.0]
+    body_poses[:, 6] = 1.0
+
+    assert provider._accept_pico_frame(_pico_frame(body_poses, seq=1, timestamp=1.0)) is True
+    assert provider._ground_lift_offset == pytest.approx(0.2)
+
+    body_poses[pelvis_idx, 1] = 0.7
+    body_poses[left_ankle_idx, 1] = -0.5
+    body_poses[right_ankle_idx, 1] = 0.2
+    assert provider._accept_pico_frame(_pico_frame(body_poses, seq=2, timestamp=1.3)) is True
+    latest_frame, _, _ = provider._frame_cache.latest_packet()
+    np.testing.assert_allclose(latest_frame["Left_Ankle"][0][2], 0.0, atol=1e-6)
+    np.testing.assert_allclose(latest_frame["Pelvis"][0][2], 1.2, atol=1e-6)
+    assert provider._ground_lift_offset == pytest.approx(0.5)
+    assert len(provider._frame_cache) == 1
 
 
 def test_pico4_provider_drops_duplicate_raw_body_pose() -> None:

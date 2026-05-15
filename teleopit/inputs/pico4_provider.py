@@ -85,6 +85,32 @@ _PAUSE_BUTTON_MAP: dict[str, tuple[str, str]] = {
 }
 
 
+def _has_non_degenerate_positions(positions: NDArray[np.float64]) -> bool:
+    pos = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    if pos.size == 0:
+        return False
+    finite_mask = np.all(np.isfinite(pos), axis=1)
+    valid_pos = pos[finite_mask]
+    if valid_pos.shape[0] < 2:
+        return False
+    nonzero_pos = valid_pos[np.linalg.norm(valid_pos, axis=1) > 1e-9]
+    if nonzero_pos.shape[0] < 2:
+        return False
+    extent = float(np.max(np.ptp(nonzero_pos, axis=0)))
+    return extent > 1e-6
+
+
+def _compute_ground_lift_offset(positions: NDArray[np.float64]) -> float:
+    pos = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    if pos.size == 0:
+        return 0.0
+    finite_mask = np.all(np.isfinite(pos), axis=1)
+    if not np.any(finite_mask):
+        return 0.0
+    min_z = float(np.min(pos[finite_mask, 2]))
+    return max(-min_z, 0.0)
+
+
 def _bridge_accepts_video_enabled(bridge_cls: type[Any]) -> bool:
     try:
         signature = inspect.signature(bridge_cls)
@@ -165,6 +191,7 @@ class Pico4InputProvider(RealtimeInputProvider):
         self._last_frame_timestamp: float | None = None
         self._last_source_seq: int | None = None
         self._controller_snapshot: PicoControllerSnapshot | None = None
+        self._ground_lift_offset: float | None = None
         self._bridge = bridge_cls(
             host=bridge_host,
             port=int(bridge_port),
@@ -340,6 +367,7 @@ class Pico4InputProvider(RealtimeInputProvider):
                 and timestamp - self._last_frame_timestamp > self._timestamp_gap_reset_s
             ):
                 self._frame_cache.clear()
+                self._ground_lift_offset = None
                 logger.warning(
                     "Pico4InputProvider timestamp-gap reset | gap=%.4fs",
                     timestamp - self._last_frame_timestamp,
@@ -347,6 +375,7 @@ class Pico4InputProvider(RealtimeInputProvider):
             if self._last_frame_timestamp is not None and timestamp <= self._last_frame_timestamp + 1e-9:
                 timestamp = self._last_frame_timestamp + 1e-6
 
+            human_frame = self._apply_ground_lift(human_frame)
             self._frame_cache.append(human_frame, timestamp, fps_timestamp=timestamp)
             self._last_raw_body_joints = body_joints.copy()
             self._last_frame_timestamp = timestamp
@@ -427,6 +456,25 @@ class Pico4InputProvider(RealtimeInputProvider):
         for name, (pos, quat) in body_pose_dict.items():
             result[name] = (np.asarray(pos, dtype=np.float64), np.asarray(quat, dtype=np.float64))
         return result
+
+    def _apply_ground_lift(self, human_frame: HumanFrame) -> HumanFrame:
+        """Apply one fixed Z lift so the initial Pico skeleton sits on the floor."""
+        if self._ground_lift_offset is None:
+            positions = np.asarray([value[0] for value in human_frame.values()], dtype=np.float64)
+            if _has_non_degenerate_positions(positions):
+                self._ground_lift_offset = _compute_ground_lift_offset(positions)
+            else:
+                return human_frame
+
+        offset = float(self._ground_lift_offset)
+        if offset <= 0.0:
+            return human_frame
+
+        z_offset = np.array([0.0, 0.0, offset], dtype=np.float64)
+        lifted: HumanFrame = {}
+        for name, (pos, quat) in human_frame.items():
+            lifted[name] = (np.asarray(pos, dtype=np.float64) + z_offset, np.asarray(quat, dtype=np.float64))
+        return lifted
 
     @staticmethod
     def _normalize_pico_bridge_body_joints(body_joints: NDArray[np.float64]) -> NDArray[np.float64]:
