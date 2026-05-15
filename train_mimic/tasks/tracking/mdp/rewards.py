@@ -143,39 +143,42 @@ def motion_global_body_angular_velocity_error_exp(
     return torch.exp(-error.mean(-1) / std**2)
 
 
-def undesired_contacts(
+def self_collision_cost(
     env: ManagerBasedRlEnv,
     sensor_name: str | tuple[str, ...],
-    threshold: float = 10.0,
+    force_threshold: float = 10.0,
 ) -> torch.Tensor:
-    """Penalize bodies whose contact force exceeds the configured threshold."""
-    hits = _undesired_contact_hits(env, sensor_name, threshold)
-    return hits.sum(dim=-1).float()
+    """Penalize self-collision slots above the configured force threshold."""
+    hit = _self_collision_hits(env, sensor_name, force_threshold)
+    return hit.sum(dim=-1).float()
 
 
-def _undesired_contact_hits(
+def _self_collision_hits(
     env: ManagerBasedRlEnv,
     sensor_name: str | tuple[str, ...],
-    threshold: float,
+    force_threshold: float,
 ) -> torch.Tensor:
     sensor_names = (sensor_name,) if isinstance(sensor_name, str) else sensor_name
-    hit_values = []
+    force_histories = []
+    found_values = []
     for name in sensor_names:
         data = env.scene[name].data
         if data.force_history is not None:
-            force_mag = torch.norm(data.force_history, dim=-1)
-            hit_values.append(force_mag.amax(dim=2) > threshold)
-        elif getattr(data, "force", None) is not None:
-            force_mag = torch.norm(data.force, dim=-1)
-            hit_values.append(force_mag > threshold)
+            force_histories.append(data.force_history)
         else:
             assert data.found is not None
             found = data.found
             if found.ndim == 1:
                 found = found.unsqueeze(-1)
-            hit_values.append(found > 0)
+            found_values.append(found)
 
-    return torch.cat(hit_values, dim=1)
+    if force_histories:
+        force_history = torch.cat(force_histories, dim=1)
+        force_mag = torch.norm(force_history, dim=-1)
+        return (force_mag > force_threshold).any(dim=2)
+
+    found = torch.cat(found_values, dim=1)
+    return (found > 0).any(dim=1, keepdim=True)
 
 
 class joint_torque_limits:

@@ -33,29 +33,27 @@ def test_general_tracking_task_is_registered() -> None:
     assert "critic_history" in env_cfg.observations
     assert env_cfg.commands["motion"].sampling_mode == "uniform"
     assert env_cfg.commands["motion"].window_steps == (0,)
-    reward = env_cfg.rewards["undesired_contacts"]
+    reward = env_cfg.rewards["self_collisions"]
     assert reward.weight == -0.1
     assert reward.params == {
-        "sensor_name": "undesired_contacts",
-        "threshold": 1.0,
+        "sensor_name": "self_collision",
+        "force_threshold": 1.0,
     }
-    assert "self_collisions" not in env_cfg.rewards
+    assert "undesired_contacts" not in env_cfg.rewards
     sensors = {sensor.name: sensor for sensor in env_cfg.scene.sensors}
-    assert set(sensors) == {"undesired_contacts"}
-    assert sensors["undesired_contacts"].primary.mode == "body"
-    assert sensors["undesired_contacts"].primary.pattern == r".*"
-    assert sensors["undesired_contacts"].primary.exclude == (
+    assert set(sensors) == {"self_collision"}
+    assert sensors["self_collision"].primary.mode == "body"
+    assert sensors["self_collision"].primary.pattern == r".*"
+    assert sensors["self_collision"].primary.exclude == (
         "left_ankle_roll_link",
         "right_ankle_roll_link",
         "left_wrist_yaw_link",
         "right_wrist_yaw_link",
-        "left_elbow_link",
-        "right_elbow_link",
     )
-    assert sensors["undesired_contacts"].secondary is None
-    assert sensors["undesired_contacts"].fields == ("force",)
-    assert sensors["undesired_contacts"].reduce == "netforce"
-    assert sensors["undesired_contacts"].history_length == 3
+    assert sensors["self_collision"].secondary.mode == "subtree"
+    assert sensors["self_collision"].secondary.pattern == "pelvis"
+    assert sensors["self_collision"].reduce == "maxforce"
+    assert sensors["self_collision"].history_length == 4
     feet_acc = env_cfg.rewards["feet_acc"]
     assert feet_acc.weight == -2.5e-6
     assert feet_acc.params["asset_cfg"].name == "robot"

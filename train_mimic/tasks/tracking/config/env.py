@@ -116,38 +116,37 @@ _VELCMD_CRITIC_TERMS: dict[str, ObservationTermCfg] = {
 }
 
 
-def _configure_undesired_contacts_reward(cfg: ManagerBasedRlEnvCfg) -> None:
+def _configure_self_collision_reward(cfg: ManagerBasedRlEnvCfg) -> None:
     excluded_body_names = (
         "left_ankle_roll_link",
         "right_ankle_roll_link",
         "left_wrist_yaw_link",
         "right_wrist_yaw_link",
-        "left_elbow_link",
-        "right_elbow_link",
     )
     cfg.scene.sensors = (
         *tuple(getattr(cfg.scene, "sensors", ()) or ()),
         ContactSensorCfg(
-            name="undesired_contacts",
+            name="self_collision",
+            # Exclude only primary bodies: wrist/ankle vs torso is still caught by torso.
             primary=ContactMatch(
                 mode="body",
                 pattern=r".*",
                 entity="robot",
                 exclude=excluded_body_names,
             ),
-            secondary=None,
-            fields=("force",),
-            reduce="netforce",
+            secondary=ContactMatch(mode="subtree", pattern="pelvis", entity="robot"),
+            fields=("found", "force"),
+            reduce="maxforce",
             num_slots=1,
-            history_length=3,
+            history_length=4,
         ),
     )
-    cfg.rewards["undesired_contacts"] = RewardTermCfg(
-        func=mdp.undesired_contacts,
+    cfg.rewards["self_collisions"] = RewardTermCfg(
+        func=mdp.self_collision_cost,
         weight=-0.1,
         params={
-            "sensor_name": "undesired_contacts",
-            "threshold": 1.0,
+            "sensor_name": "self_collision",
+            "force_threshold": 1.0,
         },
     )
 
@@ -189,7 +188,7 @@ def make_general_tracking_env_cfg(
     cfg.events["randomize_rigid_body_mass"].params[
         "asset_cfg"
     ].body_names = r".*wrist_yaw.*|torso_link"
-    _configure_undesired_contacts_reward(cfg)
+    _configure_self_collision_reward(cfg)
     _configure_feet_acc_reward(cfg)
     cfg.terminations["ee_body_pos"].params["body_names"] = (
         "left_ankle_roll_link",
