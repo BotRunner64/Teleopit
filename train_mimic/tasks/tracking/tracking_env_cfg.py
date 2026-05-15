@@ -33,6 +33,11 @@ VELOCITY_RANGE = {
     "yaw": (-0.78, 0.78),
 }
 
+# G1 uses six mjlab actuator groups. dr.pd_gains indexes asset.actuators
+# by group id, not the expanded XML per-joint actuator ids.
+G1_UPPER_BODY_ACTUATOR_GROUP_IDS = (0, 3)
+G1_LOWER_BODY_ACTUATOR_GROUP_IDS = (1, 2, 4, 5)
+
 
 def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
     """Create base tracking task configuration."""
@@ -201,7 +206,7 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
             func=dr.pd_gains,
             params={
                 "asset_cfg": SceneEntityCfg(
-                    "robot", actuator_names=r".*(shoulder|elbow|wrist).*"
+                    "robot", actuator_ids=list(G1_UPPER_BODY_ACTUATOR_GROUP_IDS)
                 ),
                 "kp_range": (0.9, 1.1),
                 "kd_range": (0.9, 1.1),
@@ -214,7 +219,7 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
             func=dr.pd_gains,
             params={
                 "asset_cfg": SceneEntityCfg(
-                    "robot", actuator_names=r".*(waist|hip|knee|ankle).*"
+                    "robot", actuator_ids=list(G1_LOWER_BODY_ACTUATOR_GROUP_IDS)
                 ),
                 "kp_range": (0.5, 2.0),
                 "kd_range": (0.5, 2.0),

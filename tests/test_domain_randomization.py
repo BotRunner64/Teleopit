@@ -64,10 +64,8 @@ def test_general_tracking_domain_randomization_matches_gr00t_active_set() -> Non
     upper_motor_pd = events["motor_params_implicit_upper_body_pd"]
     assert upper_motor_pd.func is dr.pd_gains
     assert upper_motor_pd.mode == "reset"
-    assert (
-        upper_motor_pd.params["asset_cfg"].actuator_names
-        == r".*(shoulder|elbow|wrist).*"
-    )
+    assert upper_motor_pd.params["asset_cfg"].actuator_names is None
+    assert upper_motor_pd.params["asset_cfg"].actuator_ids == [0, 3]
     assert upper_motor_pd.params["kp_range"] == (0.9, 1.1)
     assert upper_motor_pd.params["kd_range"] == (0.9, 1.1)
     assert upper_motor_pd.params["distribution"] == "log_uniform"
@@ -76,10 +74,8 @@ def test_general_tracking_domain_randomization_matches_gr00t_active_set() -> Non
     lower_motor_pd = events["motor_params_implicit_lower_body_pd"]
     assert lower_motor_pd.func is dr.pd_gains
     assert lower_motor_pd.mode == "reset"
-    assert (
-        lower_motor_pd.params["asset_cfg"].actuator_names
-        == r".*(waist|hip|knee|ankle).*"
-    )
+    assert lower_motor_pd.params["asset_cfg"].actuator_names is None
+    assert lower_motor_pd.params["asset_cfg"].actuator_ids == [1, 2, 4, 5]
     assert lower_motor_pd.params["kp_range"] == (0.5, 2.0)
     assert lower_motor_pd.params["kd_range"] == (0.5, 2.0)
     assert lower_motor_pd.params["distribution"] == "log_uniform"
