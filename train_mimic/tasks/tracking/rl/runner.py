@@ -34,6 +34,14 @@ def _resolve_total_iterations(start_iteration: int, num_learning_iterations: int
     return start_iteration + num_learning_iterations
 
 
+def _format_duration(seconds: float) -> str:
+    """Format elapsed/remaining seconds without wrapping after 24 hours."""
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
 class _OnnxMotionModel(nn.Module):
     """ONNX-exportable model that wraps the policy and bundles motion reference data."""
 
@@ -264,9 +272,9 @@ class MotionTrackingOnPolicyRunner(MjlabOnPolicyRunner):
 """
             f"""{'Iteration time:':>{pad}} {iteration_time:.2f}s
 """
-            f"""{'Time elapsed:':>{pad}} {time.strftime('%H:%M:%S', time.gmtime(logger.tot_time))}
+            f"""{'Time elapsed:':>{pad}} {_format_duration(logger.tot_time)}
 """
-            f"""{'ETA:':>{pad}} {time.strftime('%H:%M:%S', time.gmtime(eta))}
+            f"""{'ETA:':>{pad}} {_format_duration(eta)}
 """
         )
         print(log_string)
