@@ -17,9 +17,10 @@ const sidebars: SidebarsConfig = {
       label: 'Tutorials',
       items: [
         'tutorials/offline-sim2sim',
-        'tutorials/pico4-vr',
-        'tutorials/sim2real',
-        'tutorials/onboard-sim2real',
+        'tutorials/pico-sim2sim',
+        'tutorials/standalone-standing',
+        'tutorials/pico-sim2real',
+        'tutorials/bvh-sim2real',
         'tutorials/training',
       ],
     },

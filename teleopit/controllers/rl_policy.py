@@ -10,6 +10,8 @@ from typing import Protocol, cast
 import numpy as np
 from numpy.typing import NDArray
 
+from teleopit.runtime.common import cfg_get
+
 _logger = logging.getLogger(__name__)
 
 
@@ -41,7 +43,7 @@ class RLPolicyController:
         self.default_dof_pos: NDArray[np.float32]
         self.clip_range: tuple[float, float]
 
-        policy_path = Path(str(self._cfg_get(cfg, "policy_path", ""))).expanduser()
+        policy_path = Path(str(cfg_get(cfg, "policy_path", ""))).expanduser()
         if not policy_path.is_file():
             raise FileNotFoundError(f"ONNX policy file not found: {policy_path}")
 
@@ -56,7 +58,7 @@ class RLPolicyController:
 
         providers = self._select_providers(
             cast(Callable[[], Sequence[str]], providers_fn),
-            str(self._cfg_get(cfg, "device", "auto")),
+            str(cfg_get(cfg, "device", "auto")),
         )
         self._session = cast(_OrtSession, session_ctor(str(policy_path), providers=providers))
         onnx_inputs = self._session.get_inputs()
@@ -82,16 +84,16 @@ class RLPolicyController:
                 f"Got inputs: {names}."
             )
 
-        raw_scale = self._cfg_get(cfg, "action_scale", None)
+        raw_scale = cfg_get(cfg, "action_scale", None)
         self.action_scale = self._normalize_action_scale(
             raw_scale if raw_scale is not None else 1.0,
-            self._cfg_get(cfg, "robot_joint_names", self._cfg_get(cfg, "joint_names", None)),
+            cfg_get(cfg, "robot_joint_names", cfg_get(cfg, "joint_names", None)),
         )
         self.default_dof_pos = np.asarray(
-            self._cfg_get(cfg, "default_dof_pos", self._cfg_get(cfg, "default_angles", [])),
+            cfg_get(cfg, "default_dof_pos", cfg_get(cfg, "default_angles", [])),
             dtype=np.float32,
         )
-        self.clip_range = self._normalize_clip_range(self._cfg_get(cfg, "clip_range", (-10.0, 10.0)))
+        self.clip_range = self._normalize_clip_range(cfg_get(cfg, "clip_range", (-10.0, 10.0)))
         self._last_obs_input: NDArray[np.float32] | None = None
         self._last_obs_history_input: NDArray[np.float32] | None = None
 
@@ -176,13 +178,6 @@ class RLPolicyController:
             _logger.warning("NaN/inf after clip_and_scale, damping to zero")
             return np.zeros_like(scaled)
         return scaled
-
-    @staticmethod
-    def _cfg_get(cfg: object, key: str, default: object) -> object:
-        if hasattr(cfg, "get"):
-            value = cast(object, getattr(cfg, "get")(key))
-            return default if value is None else value
-        return cast(object, getattr(cfg, key, default))
 
     @staticmethod
     def _normalize_clip_range(raw: object) -> tuple[float, float]:

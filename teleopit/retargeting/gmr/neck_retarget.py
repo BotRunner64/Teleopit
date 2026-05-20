@@ -3,7 +3,7 @@ from scipy.spatial.transform import Rotation as R
 
 def get_human_neck_orientation(head_pose=None):
       """
-      从XRoboToolkit SDK获取头戴设备姿态并计算neck的roll, pitch, yaw角度
+      从头戴设备姿态计算neck的roll, pitch, yaw角度
       
       Returns:
           tuple: (roll, pitch, yaw) 以度为单位
@@ -40,21 +40,8 @@ def human_head_to_robot_neck(smplx_data=None):
     # Convert to Euler angles (roll, pitch, yaw)
     roll, pitch, yaw = relative_rotation.as_euler('xyz', degrees=True)
 
-    
-
-    # print(f"roll: {roll:.0f}, pitch: {pitch:.0f}, yaw: {yaw:.0f}", end="\r")
-    # return float(roll), float(pitch), float(yaw)
-    neck_yaw = - pitch # 10~150, middlle 90
-    neck_pitch = roll # 8~125, middle 60
-
-
-    # offset
-    # neck_yaw -= 10
-    # neck_pitch -= 8
-
-    # clip to above 0   
-    # neck_yaw = max(neck_yaw, 0)
-    # neck_pitch = max(neck_pitch, 0)
+    neck_yaw = - pitch
+    neck_pitch = roll
 
     # degree to radian
     neck_yaw = np.deg2rad(neck_yaw)

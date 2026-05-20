@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from teleopit.controllers.observation import VelCmdObservationBuilder
+from teleopit.inputs.pico_video import bridge_video_source, parse_pico_video_config
 
 from .common import cfg_get, cfg_set, normalize_path_in_cfg, parse_viewers, require_section
 
@@ -32,30 +33,18 @@ class MocapComponents:
 def build_simulation_cfg(cfg: Any) -> dict[str, object]:
     playback_cfg = cfg_get(cfg, "playback", {}) or {}
     playback_keyboard_cfg = cfg_get(playback_cfg, "keyboard", {}) or {}
+    realtime_keyboard_cfg = cfg_get(cfg, "keyboard", {}) or {}
     return {
         "policy_hz": float(cfg_get(cfg, "policy_hz", 50.0)),
         "pd_hz": float(cfg_get(cfg, "pd_hz", 1000.0)),
         "transition_duration": float(cfg_get(cfg, "transition_duration", 0.0) or 0.0),
-        "pause_resume_transition_duration": float(
-            cfg_get(cfg, "pause_resume_transition_duration", cfg_get(cfg, "transition_duration", 0.0)) or 0.0
-        ),
-        "pause_resume_warmup_steps": cfg_get(cfg, "pause_resume_warmup_steps", None),
-        "pause_reset_alignment_on_resume": cfg_get(cfg, "pause_reset_alignment_on_resume", None),
-        "velcmd_fixed_ref_yaw_alignment": bool(cfg_get(cfg, "velcmd_fixed_ref_yaw_alignment", True)),
         "retarget_buffer_enabled": bool(cfg_get(cfg, "retarget_buffer_enabled", True)),
         "retarget_buffer_window_s": float(cfg_get(cfg, "retarget_buffer_window_s", 0.5)),
         "retarget_buffer_delay_s": cfg_get(cfg, "retarget_buffer_delay_s", None),
         "reference_steps": cfg_get(cfg, "reference_steps", [0]),
         "reference_debug_log": bool(cfg_get(cfg, "reference_debug_log", False)),
         "realtime_input_delay_s": cfg_get(cfg, "realtime_input_delay_s", None),
-        "realtime_buffer_low_watermark_steps": cfg_get(cfg, "realtime_buffer_low_watermark_steps", None),
-        "realtime_buffer_high_watermark_steps": cfg_get(cfg, "realtime_buffer_high_watermark_steps", None),
         "realtime_buffer_warmup_steps": cfg_get(cfg, "realtime_buffer_warmup_steps", None),
-        "realtime_catchup_enabled": bool(cfg_get(cfg, "realtime_catchup_enabled", False)),
-        "realtime_catchup_trigger_steps": cfg_get(cfg, "realtime_catchup_trigger_steps", None),
-        "realtime_catchup_release_steps": cfg_get(cfg, "realtime_catchup_release_steps", None),
-        "realtime_catchup_target_delay_s": cfg_get(cfg, "realtime_catchup_target_delay_s", None),
-        "reference_qpos_smoothing_alpha": float(cfg_get(cfg, "reference_qpos_smoothing_alpha", 1.0)),
         "reference_velocity_smoothing_alpha": float(cfg_get(cfg, "reference_velocity_smoothing_alpha", 1.0)),
         "reference_anchor_velocity_smoothing_alpha": float(
             cfg_get(cfg, "reference_anchor_velocity_smoothing_alpha", 1.0)
@@ -67,6 +56,9 @@ def build_simulation_cfg(cfg: Any) -> dict[str, object]:
             "keyboard": {
                 "enabled": bool(cfg_get(playback_keyboard_cfg, "enabled", False)),
             },
+        },
+        "keyboard": {
+            "enabled": bool(cfg_get(realtime_keyboard_cfg, "enabled", False)),
         },
     }
 
@@ -184,17 +176,17 @@ def _prepare_input_cfg(input_cfg: Any, project_root: Path, *, sim2real: bool) ->
             required=True,
             missing_message="input.bvh_file must be set for offline BVH input",
         )
-    elif provider_kind == "zmq_pico4":
-        pass  # no path normalization needed
+    elif provider_kind == "udp_bvh":
+        pass  # skeleton resolved automatically from bvh_format
     elif provider_kind != "pico4":
         raise ValueError(
             f"Unsupported input.provider='{provider_kind}'. "
-            "Supported providers are bvh, pico4, zmq_pico4."
+            "Supported providers are bvh, pico4, udp_bvh."
         )
 
-    if sim2real and provider_kind not in ("bvh", "pico4", "zmq_pico4"):
+    if sim2real and provider_kind not in ("bvh", "pico4", "udp_bvh"):
         raise ValueError(
-            f"Sim2real only supports bvh, pico4, or zmq_pico4 input providers; got '{provider_kind}'."
+            f"Sim2real only supports bvh, pico4, or udp_bvh input providers; got '{provider_kind}'."
         )
     return provider_kind
 
@@ -207,29 +199,35 @@ def _build_input_provider(
     bvh_input_cls: type[Any],
     pico4_input_cls: type[Any],
 ) -> Any:
-    if provider_kind == "zmq_pico4":
-        from teleopit.inputs.zmq_provider import ZMQInputProvider
+    if provider_kind == "udp_bvh":
+        from teleopit.inputs.udp_bvh_provider import UDPBVHInputProvider
 
-        return ZMQInputProvider(
-            host=str(cfg_get(input_cfg, "zmq_host", "192.168.1.100")),
-            port=int(cfg_get(input_cfg, "zmq_port", 5555)),
-            topic=str(cfg_get(input_cfg, "zmq_topic", "pico4")),
-            human_format=str(cfg_get(input_cfg, "human_format", "xrobot")),
-            timeout=float(cfg_get(input_cfg, "zmq_timeout", 30.0)),
-            conflate=bool(cfg_get(input_cfg, "zmq_conflate", True)),
-            recv_hwm=int(cfg_get(input_cfg, "zmq_rcv_hwm", 1)),
-            seq_gap_reset_threshold=int(cfg_get(input_cfg, "zmq_seq_gap_reset_threshold", 4)),
+        return UDPBVHInputProvider(
+            bvh_format=str(cfg_get(input_cfg, "bvh_format", "hc_mocap")),
+            human_height=float(cfg_get(input_cfg, "human_height", 1.75)),
+            udp_host=str(cfg_get(input_cfg, "udp_host", "")),
+            udp_port=int(cfg_get(input_cfg, "udp_port", 1118)),
+            udp_timeout=float(cfg_get(input_cfg, "udp_timeout", 30.0)),
         )
 
     if provider_kind == "pico4":
+        video_cfg = parse_pico_video_config(input_cfg)
+        video_source = bridge_video_source(video_cfg)
         return pico4_input_cls(
-            human_format=str(cfg_get(input_cfg, "human_format", "xrobot")),
+            human_format=str(cfg_get(input_cfg, "human_format", "pico_bridge")),
             timeout=float(cfg_get(input_cfg, "pico4_timeout", 60.0)),
             buffer_size=int(cfg_get(input_cfg, "pico4_buffer_size", 60)),
             timestamp_gap_reset_s=float(cfg_get(input_cfg, "pico4_timestamp_gap_reset_s", 0.15)),
-            poll_sleep_s=float(cfg_get(input_cfg, "pico4_poll_sleep_s", 0.002)),
             pause_button=cfg_get(input_cfg, "pause_button", "A"),
             pause_debounce_s=float(cfg_get(input_cfg, "pause_debounce_s", 0.25)),
+            bridge_host=str(cfg_get(input_cfg, "bridge_host", "0.0.0.0")),
+            bridge_port=int(cfg_get(input_cfg, "bridge_port", 63901)),
+            bridge_discovery=bool(cfg_get(input_cfg, "bridge_discovery", True)),
+            bridge_advertise_ip=cfg_get(input_cfg, "bridge_advertise_ip", None),
+            bridge_video=video_source,
+            bridge_video_enabled=video_cfg.enabled,
+            bridge_start_timeout=float(cfg_get(input_cfg, "bridge_start_timeout", 10.0)),
+            bridge_history_size=int(cfg_get(input_cfg, "bridge_history_size", 120)),
         )
 
     return bvh_input_cls(
@@ -243,7 +241,7 @@ def _resolve_human_format(input_cfg: Any, input_provider: Any) -> str:
     if hasattr(input_provider, "human_format"):
         provider_format = input_provider.human_format
         provider_kind = str(cfg_get(input_cfg, "provider", "bvh")).lower()
-        if provider_kind in ("pico4", "zmq_pico4"):
+        if provider_kind == "pico4":
             return str(provider_format)
         return f"bvh_{provider_format}"
 
@@ -251,9 +249,25 @@ def _resolve_human_format(input_cfg: Any, input_provider: Any) -> str:
     if human_format and str(human_format) != "null":
         return str(human_format)
 
-    if str(cfg_get(input_cfg, "provider", "bvh")).lower() in ("pico4", "zmq_pico4"):
-        return str(cfg_get(input_cfg, "human_format", "xrobot"))
+    if str(cfg_get(input_cfg, "provider", "bvh")).lower() == "pico4":
+        return str(cfg_get(input_cfg, "human_format", "pico_bridge"))
     return f"bvh_{cfg_get(input_cfg, 'bvh_format', 'lafan1')}"
+
+
+def _resolve_actual_human_height(input_cfg: Any, input_provider: Any) -> float:
+    del input_provider
+    configured_height = cfg_get(input_cfg, "human_height", None)
+    if configured_height not in (None, "", "null"):
+        actual_human_height = float(configured_height)
+    else:
+        actual_human_height = 1.75
+
+    if actual_human_height <= 0.0:
+        raise ValueError(
+            f"Resolved human height must be > 0, got {actual_human_height}. "
+            "Set input.human_height or provide a valid input provider human_height."
+        )
+    return actual_human_height
 
 
 
@@ -261,7 +275,7 @@ def _build_retargeter(input_cfg: Any, input_provider: Any, retargeter_cls: type[
     return retargeter_cls(
         robot_name=str(cfg_get(input_cfg, "robot_name", "unitree_g1")),
         human_format=_resolve_human_format(input_cfg, input_provider),
-        actual_human_height=float(cfg_get(input_cfg, "human_height", 1.75)),
+        actual_human_height=_resolve_actual_human_height(input_cfg, input_provider),
     )
 
 

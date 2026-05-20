@@ -109,31 +109,3 @@ class QposInterpolator:
         # Joints: lerp
         result[7:] = (1.0 - alpha) * self._start_qpos[7:] + alpha * target_qpos[7:]
         return result
-
-
-class QposLowPassFilter:
-    """Low-pass filter for retargeted qpos."""
-
-    def __init__(self, alpha: float) -> None:
-        alpha_f = float(alpha)
-        if not np.isfinite(alpha_f) or alpha_f <= 0.0 or alpha_f > 1.0:
-            raise ValueError(f"alpha must be finite and in (0, 1], got {alpha}")
-        self._alpha = alpha_f
-        self._state: NDArray | None = None
-
-    def reset(self) -> None:
-        self._state = None
-
-    def apply(self, target_qpos: NDArray) -> NDArray:
-        target = np.asarray(target_qpos, dtype=np.float64).reshape(-1)
-        if self._state is None or self._state.shape != target.shape or self._alpha >= 1.0 - 1e-6:
-            self._state = target.copy()
-            return self._state.copy()
-
-        alpha = float(self._alpha)
-        filtered = np.empty_like(target)
-        filtered[0:3] = (1.0 - alpha) * self._state[0:3] + alpha * target[0:3]
-        filtered[3:7] = _slerp(self._state[3:7], target[3:7], alpha)
-        filtered[7:] = (1.0 - alpha) * self._state[7:] + alpha * target[7:]
-        self._state = filtered
-        return filtered.copy()

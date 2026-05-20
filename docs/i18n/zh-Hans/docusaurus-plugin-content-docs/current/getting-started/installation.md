@@ -53,18 +53,22 @@ bash scripts/setup/setup_g1_bridge.sh
 
 ```bash
 pip install -e '.[pico4]'
-bash scripts/setup/setup_pico4.sh
 ```
 
-完整设置流程详见 [Pico 4 VR 教程](../tutorials/pico4-vr)。
+Teleopit 使用进程内的 `pico_bridge.PicoBridge` receiver 接收 Pico 追踪数据。
+receiver 可以运行在工作站 PC，也可以运行在机器人 onboard 计算机。
+完整设置流程详见 [Pico Sim2Sim](../tutorials/pico-sim2sim) 和
+[Pico Sim2Real](../tutorials/pico-sim2real)。
 
-### 机载部署（G1 NX）
+Pico sim2real 可选的 LinkerHand L6 控制通过 `dexhand` extra 安装。SDK
+本身由仓库 submodule 提供，因此需要先初始化 submodule：
 
 ```bash
-bash scripts/setup/setup_onboard.sh
+git submodule update --init --recursive
+pip install -e '.[dexhand]'
 ```
 
-该脚本会安装系统依赖、编译 `g1_bridge_sdk`，并安装 `teleopit[onboard]`。
+只有在 `dexterous_hand.enabled=true` 时才需要安装这个 extra。
 
 ## 验证安装
 

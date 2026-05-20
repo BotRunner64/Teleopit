@@ -30,7 +30,7 @@ teleopit/           # 核心推理与部署包
 ├── pipeline.py     # TeleopPipeline 门面
 ├── controllers/    # RL 策略控制器 + 观测构建器
 ├── robots/         # MuJoCoRobot 实现
-├── inputs/         # BVHInputProvider、Pico4InputProvider、ZMQInputProvider
+├── inputs/         # BVHInputProvider、Pico4InputProvider、UDPBVHInputProvider
 ├── retargeting/    # GMR 动作重定向
 ├── sim/            # SimulationLoop、参考运动工具
 ├── sim2real/       # 真机状态机
@@ -45,7 +45,7 @@ train_mimic/        # 训练 pipeline 与 RL 框架
 └── data/           # 数据集构建工具
 
 scripts/            # 入口脚本
-├── run/            # run_sim.py、run_sim2real.py、run_onboard_sim2real.py
+├── run/            # run_sim.py、run_sim2real.py
 ├── setup/          # 资源下载与环境配置
 ├── dev/            # 开发工具
 └── render/         # 视频渲染

@@ -12,10 +12,11 @@ Complete reference for all configurable fields.
 |-------|-------------|---------|
 | `policy_hz` | Policy inference frequency | `50` |
 | `pd_hz` | PD control frequency (simulation only) | `200` |
-| `viewers` | Viewer set: `mocap`, `retarget`, `sim2sim`, `all`, `none` | `sim2sim` |
+| `viewers` | Viewer set: `mocap`, `retarget`, `sim2sim`, `camera`, `all`, `none`. `all` opens `mocap`, `retarget`, and `sim2sim`; add `camera` explicitly. | `sim2sim` |
 | `realtime` | Rate-limit to wall clock | `false` |
 | `num_steps` | Number of steps; `0` = infinite | `0` |
 | `transition_duration` | Smooth transition time (seconds) from current pose to retarget command | - |
+| `keyboard.enabled` | Enable realtime keyboard mode control for sim2sim | `false` |
 | `playback.pause_on_end` | Pause at last frame when offline motion ends | `false` |
 | `playback.keyboard.enabled` | Enable keyboard control for offline playback | `false` |
 
@@ -25,6 +26,7 @@ Complete reference for all configurable fields.
 |-------|-------------|---------|
 | `robot.num_actions` | Joint action dimension | `29` |
 | `robot.xml_path` | MuJoCo XML path | - |
+| `d435i_rgb` | Fixed RGB camera in the G1 MJCF; use `viewers=[sim2sim,camera]` to display it | - |
 | `robot.kps` / `robot.kds` | PD gains | - |
 | `robot.default_angles` | Default standing pose | - |
 | `robot.torque_limits` | Joint torque limits | - |
@@ -56,20 +58,22 @@ Complete reference for all configurable fields.
 | Field | Description | Default |
 |-------|-------------|---------|
 | `input.provider` | `pico4` | `pico4` |
+| `input.human_format` | Retarget skeleton format | `pico_bridge` |
 | `input.pico4_timeout` | Wait timeout in seconds | `60` |
 | `input.pico4_buffer_size` | Frame buffer size | `60` |
 | `input.pause_button` | Button for pause/resume | `A` |
 | `input.pause_debounce_s` | Debounce time for pause button | `0.25` |
-
-### ZMQ Pico 4 (Onboard)
-
-| Field | Description | Default |
-|-------|-------------|---------|
-| `input.provider` | `zmq_pico4` | `zmq_pico4` |
-| `input.zmq_host` | IP of the PC running ZMQ publisher | `192.168.1.100` |
-| `input.zmq_port` | ZMQ PUB port | `5555` |
-| `input.zmq_topic` | ZMQ topic | `pico4` |
-| `input.zmq_timeout` | Wait timeout for first ZMQ frame (seconds) | `30` |
+| `input.bridge_host` | Teleopit host receiver bind host | `0.0.0.0` |
+| `input.bridge_port` | Teleopit host receiver TCP/UDP port | `63901` |
+| `input.bridge_discovery` | Enable pico-bridge discovery advertising | `true` |
+| `input.bridge_advertise_ip` | Optional advertised host IP override | `null` |
+| `input.bridge_start_timeout` | Timeout while starting the bridge | `10.0` |
+| `input.bridge_history_size` | Pico frame history retained by the bridge | `120` |
+| `input.video.enabled` | Stream host camera preview back to Pico through pico-bridge 0.2.0 | `false` |
+| `input.video.source` | Video source: `mujoco`, `realsense`, or `test-pattern` | `null` |
+| `input.video.width` / `height` / `fps` | Video capture/render settings | `1280` / `720` / `30` |
+| `input.video.device` | Optional RealSense serial | `null` |
+| `input.video.fail_on_error` | Fail startup instead of disabling video on error | `false` |
 
 ### Realtime
 
@@ -80,14 +84,12 @@ Complete reference for all configurable fields.
 | `retarget_buffer_delay_s` | Buffer delay |
 | `reference_steps` | Reference window steps |
 | `realtime_buffer_warmup_steps` | Warmup before playback |
-| `realtime_buffer_low_watermark_steps` | Low watermark |
-| `realtime_buffer_high_watermark_steps` | High watermark |
 | `reference_velocity_smoothing_alpha` | Velocity smoothing |
 | `reference_anchor_velocity_smoothing_alpha` | Anchor velocity smoothing |
 
 ## Sim2Real
 
-Fields used by sim2real configs (`sim2real.yaml`, `pico4_sim2real.yaml`, `onboard_sim2real.yaml`).
+Fields used by sim2real configs (`sim2real.yaml`, `pico4_sim2real.yaml`).
 
 ### Safety
 
@@ -102,7 +104,7 @@ Fields used by sim2real configs (`sim2real.yaml`, `pico4_sim2real.yaml`, `onboar
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `real_robot.network_interface` | Network interface for DDS communication | `eth0` |
+| `real_robot.network_interface` | Network interface for Unitree DDS communication. For wired PC-to-G1 control, find the cable interface with `ifconfig` and set that name, for example `enp130s0`; for onboard robot execution, `eth0` is usually correct. | `eth0` |
 | `real_robot.kp_real` | Real-robot proportional gains (per joint) | - |
 | `real_robot.kd_real` | Real-robot derivative gains (per joint) | - |
 | `real_robot.kd_damping` | Damping mode kd | `8.0` |
@@ -112,21 +114,24 @@ Fields used by sim2real configs (`sim2real.yaml`, `pico4_sim2real.yaml`, `onboar
 
 ### Pause/Resume (Pico sim2real)
 
+Realtime Pico resume re-centers heading and ground-plane position before tracking continues. Operators should keep still and stay as close as practical to the paused pose to reduce sudden reference changes.
+
+### Dexterous Hand (Pico sim2real)
+
+`dexterous_hand.enabled=true` requires `input.provider=pico4` and the optional
+`dexhand` extra. Control is active only in `MOCAP`; inactive modes and timeouts
+send the open pose.
+
 | Field | Description | Default |
 |-------|-------------|---------|
-| `pause_resume_transition_duration` | Seconds to blend from paused pose back to live mocap | `1.0` |
-| `pause_resume_warmup_steps` | Mocap frames to accumulate before resuming | `2` |
-| `pause_reset_alignment_on_resume` | Rebuild yaw/pivot alignment after pause | `true` |
-
-### Realtime Catch-up (Pico sim2real / Onboard)
-
-| Field | Description | Default |
-|-------|-------------|---------|
-| `realtime_catchup_enabled` | Enable catch-up when buffer grows too large | `true` |
-| `realtime_catchup_trigger_steps` | Buffer depth that triggers catch-up | `6` |
-| `realtime_catchup_release_steps` | Buffer depth to release catch-up | `3` |
-| `realtime_catchup_target_delay_s` | Target delay for catch-up | `0.04` |
-| `reference_qpos_smoothing_alpha` | Joint position smoothing (1.0 = no smoothing) | `0.4` |
+| `dexterous_hand.enabled` | Enable Pico controller control for LinkerHand L6 | `false` |
+| `dexterous_hand.hand_type` | Controlled side: `left`, `right`, or `both` | `both` |
+| `dexterous_hand.left_can` / `right_can` | CAN channels for each hand | `can0` / `can1` |
+| `dexterous_hand.rate` | Maximum command rate in Hz | `30.0` |
+| `dexterous_hand.frame_timeout` | Missing-controller timeout before opening hands | `0.3` |
+| `dexterous_hand.deadman_threshold` | Minimum grip value required to enable a side | `0.5` |
+| `dexterous_hand.trigger_deadzone` | Trigger deadzone at both ends | `0.05` |
+| `dexterous_hand.open_pose` / `close_pose` | Six-value L6 open/closed poses | see config |
 
 ## Critical: `default_dof_pos`
 

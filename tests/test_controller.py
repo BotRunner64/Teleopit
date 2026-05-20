@@ -80,12 +80,12 @@ class TestRLPolicyStaticHelpers:
         assert "CPUExecutionProvider" in providers
 
     def test_cfg_get_dict(self):
-        from teleopit.controllers.rl_policy import RLPolicyController
-        assert RLPolicyController._cfg_get({"a": 1}, "a", 0) == 1
+        from teleopit.runtime.common import cfg_get
+        assert cfg_get({"a": 1}, "a", 0) == 1
 
     def test_cfg_get_default(self):
-        from teleopit.controllers.rl_policy import RLPolicyController
-        assert RLPolicyController._cfg_get({"a": 1}, "b", 99) == 99
+        from teleopit.runtime.common import cfg_get
+        assert cfg_get({"a": 1}, "b", 99) == 99
 
 
 class TestRLPolicyControllerInit:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "teleopit"
-version = "0.2.0"
+version = "0.3.0"
 description = "Teleoperation framework for humanoid robots with motion retargeting"
 authors = [
     {name = "Teleopit Team"}
@@ -48,15 +48,11 @@ train = [
     "tqdm>=4.65.0",
 ]
 pico4 = [
-    # xrobotoolkit_sdk is a proprietary Pico4 SDK — install manually from vendor package
-    "pyzmq>=25.0",
-    "msgpack>=1.0",
+    "pico-bridge[camera] @ https://github.com/BotRunner64/pico-bridge/releases/download/v0.2.0/pico_bridge-0.2.0-py3-none-any.whl",
     "teleopit[sim2real]",
 ]
-onboard = [
-    "pyzmq>=25.0",
-    "msgpack>=1.0",
-    "teleopit[sim2real]",
+dexhand = [
+    "linkerhand-python-sdk @ file:third_party/linkerhand-python-sdk",
 ]
 
 [tool.setuptools.packages.find]

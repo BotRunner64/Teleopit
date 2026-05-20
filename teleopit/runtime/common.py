@@ -5,16 +5,32 @@ from typing import Any
 
 _MISSING = object()
 
-_VALID_VIEWERS = frozenset({"mocap", "retarget", "sim2sim"})
+_ALL_VIEWERS = frozenset({"mocap", "retarget", "sim2sim"})
+_VALID_VIEWERS = _ALL_VIEWERS | frozenset({"camera"})
 
 
-def cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
+def cfg_get(cfg: Any, key: str, default: Any = _MISSING) -> Any:
+    """Read *key* from *cfg* (dict, OmegaConf, or plain object).
+
+    When *default* is omitted the key is **required** — a `KeyError` is raised
+    if it cannot be found.
+    """
     if isinstance(cfg, dict):
+        if default is _MISSING:
+            return cfg[key]
         return cfg.get(key, default)
     if hasattr(cfg, "get"):
         value = cfg.get(key)
-        return default if value is None else value
-    return getattr(cfg, key, default)
+        if value is not None:
+            return value
+        if default is _MISSING:
+            raise KeyError(key)
+        return default
+    if hasattr(cfg, key):
+        return getattr(cfg, key)
+    if default is _MISSING:
+        raise KeyError(key)
+    return default
 
 
 def cfg_set(cfg: Any, key: str, value: Any) -> None:
@@ -43,7 +59,7 @@ def parse_viewers(cfg: Any) -> set[str]:
     else:
         raw = str(viewers_raw).strip().lower()
         if raw == "all":
-            return set(_VALID_VIEWERS)
+            return set(_ALL_VIEWERS)
         if raw in ("none", "false", ""):
             return set()
         raw = raw.strip("'\"[]")

@@ -12,10 +12,11 @@ sidebar_position: 2
 |---|---|---|---|
 | `policy_hz` | int | — | 策略推理频率（Hz） |
 | `pd_hz` | int | `200` | PD 控制器频率（Hz，仅仿真），通常高于 `policy_hz` |
-| `viewers` | bool | `false` | 是否启用可视化窗口 |
+| `viewers` | str/list | `sim2sim` | 可视化窗口集合：`mocap`、`retarget`、`sim2sim`、`camera`、`all`、`none`。`all` 打开 `mocap`、`retarget` 和 `sim2sim`；如需相机画面需显式加入 `camera` |
 | `realtime` | bool | `false` | 是否启用实时模式（实机部署时需开启） |
 | `num_steps` | int | — | 仿真总步数；设为 `-1` 表示无限运行 |
 | `transition_duration` | float | — | 从静止姿态过渡到策略控制的时长（秒） |
+| `keyboard.enabled` | bool | `false` | 是否启用 sim2sim 实时键盘模式控制 |
 | `playback.pause_on_end` | bool | `false` | 回放结束后是否暂停（而非退出） |
 | `playback.keyboard.enabled` | bool | `false` | 是否启用键盘控制回放进度 |
 
@@ -27,6 +28,7 @@ sidebar_position: 2
 |---|---|---|
 | `num_actions` | int | 策略输出的动作维度（即受控关节数） |
 | `xml_path` | str | MuJoCo MJCF 模型文件路径 |
+| `d435i_rgb` | camera | G1 MJCF 中的固定 RGB 相机；配合 `viewers=[sim2sim,camera]` 显示画面 |
 | `kps` | list[float] | 各关节的比例增益（P 增益） |
 | `kds` | list[float] | 各关节的微分增益（D 增益） |
 | `default_angles` | list[float] | 默认关节角度（弧度），也是策略动作的零点 |
@@ -73,20 +75,22 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `provider` | str | `pico4` | 输入源类型 |
+| `human_format` | str | `pico_bridge` | 重定向骨架格式 |
 | `pico4_timeout` | float | `60` | 等待设备连接的超时时间（秒） |
 | `pico4_buffer_size` | int | `60` | 帧缓冲区大小 |
 | `pause_button` | str | `A` | 用于暂停/恢复的手柄按钮名称 |
 | `pause_debounce_s` | float | `0.25` | 暂停按钮防抖时间 |
-
-### ZMQ Pico 4 输入（`input/zmq_pico4.yaml`，机载模式）
-
-| 字段 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `provider` | str | `zmq_pico4` | 输入源类型 |
-| `zmq_host` | str | `192.168.1.100` | 运行 ZMQ 发布端的 PC IP |
-| `zmq_port` | int | `5555` | ZMQ PUB 端口 |
-| `zmq_topic` | str | `pico4` | ZMQ 主题 |
-| `zmq_timeout` | float | `30` | 等待首帧 ZMQ 数据的超时时间（秒） |
+| `bridge_host` | str | `0.0.0.0` | Teleopit host receiver 绑定地址 |
+| `bridge_port` | int | `63901` | Teleopit host receiver TCP/UDP 端口 |
+| `bridge_discovery` | bool | `true` | 是否启用 pico-bridge 发现广播 |
+| `bridge_advertise_ip` | str/null | `null` | 可选的 host 广播 IP 覆盖 |
+| `bridge_start_timeout` | float | `10.0` | 启动 bridge 的超时时间 |
+| `bridge_history_size` | int | `120` | bridge 保留的 Pico 帧历史长度 |
+| `video.enabled` | bool | `false` | 通过 pico-bridge 0.2.0 将 host 相机预览发送回 Pico |
+| `video.source` | str/null | `null` | 视频源：`mujoco`、`realsense` 或 `test-pattern` |
+| `video.width` / `height` / `fps` | int | `1280` / `720` / `30` | 视频采集/渲染设置 |
+| `video.device` | str/null | `null` | 可选的 RealSense 序列号 |
+| `video.fail_on_error` | bool | `false` | 视频失败时是否让启动失败，而不是关闭视频后继续 |
 
 ## Realtime 字段
 
@@ -99,14 +103,12 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 | `retarget_buffer_delay_s` | 缓冲延迟 |
 | `reference_steps` | 参考轨迹窗口步数 |
 | `realtime_buffer_warmup_steps` | 播放前预热帧数 |
-| `realtime_buffer_low_watermark_steps` | 低水位线 |
-| `realtime_buffer_high_watermark_steps` | 高水位线 |
 | `reference_velocity_smoothing_alpha` | 速度平滑系数 |
 | `reference_anchor_velocity_smoothing_alpha` | 锚点速度平滑系数 |
 
 ## Sim2Real 字段
 
-以下字段用于 sim2real 配置（`sim2real.yaml`、`pico4_sim2real.yaml`、`onboard_sim2real.yaml`）。
+以下字段用于 sim2real 配置（`sim2real.yaml`、`pico4_sim2real.yaml`）。
 
 ### 安全相关
 
@@ -121,7 +123,7 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 
 | 字段 | 说明 | 默认值 |
 |---|---|---|
-| `real_robot.network_interface` | DDS 通信网络接口 | `eth0` |
+| `real_robot.network_interface` | Unitree DDS 通信网络接口。PC 通过网线连接 G1 控制时，用 `ifconfig` 找到这根网线对应的接口名并填写，例如 `enp130s0`；在机器人 onboard 计算机上运行时通常使用 `eth0` | `eth0` |
 | `real_robot.kp_real` | 真机比例增益（各关节） | — |
 | `real_robot.kd_real` | 真机微分增益（各关节） | — |
 | `real_robot.kd_damping` | 阻尼模式 kd | `8.0` |
@@ -131,18 +133,20 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 
 ### 暂停/恢复（Pico sim2real）
 
+实时 Pico 恢复追踪时会先重新居中航向和地面平面位置。操作者应保持静止，并尽量贴近暂停时的姿态，以减少参考突变。
+
+### 灵巧手（Pico sim2real）
+
+`dexterous_hand.enabled=true` 要求 `input.provider=pico4`，并安装可选的
+`dexhand` extra。控制只在 `MOCAP` 中生效；非活动模式和超时会发送张开姿态。
+
 | 字段 | 说明 | 默认值 |
 |---|---|---|
-| `pause_resume_transition_duration` | 从暂停姿态混合回实时动捕的时长（秒） | `1.0` |
-| `pause_resume_warmup_steps` | 恢复前需要积累的动捕帧数 | `2` |
-| `pause_reset_alignment_on_resume` | 暂停后重建偏航/轴心对齐 | `true` |
-
-### 实时追赶（Pico sim2real / 机载模式）
-
-| 字段 | 说明 | 默认值 |
-|---|---|---|
-| `realtime_catchup_enabled` | 缓冲区过大时启用追赶 | `true` |
-| `realtime_catchup_trigger_steps` | 触发追赶的缓冲区深度 | `6` |
-| `realtime_catchup_release_steps` | 释放追赶的缓冲区深度 | `3` |
-| `realtime_catchup_target_delay_s` | 追赶目标延迟 | `0.04` |
-| `reference_qpos_smoothing_alpha` | 关节位置平滑系数（1.0 = 无平滑） | `0.4` |
+| `dexterous_hand.enabled` | 启用 Pico 手柄控制 LinkerHand L6 | `false` |
+| `dexterous_hand.hand_type` | 控制侧：`left`、`right` 或 `both` | `both` |
+| `dexterous_hand.left_can` / `right_can` | 左右手 CAN 通道 | `can0` / `can1` |
+| `dexterous_hand.rate` | 最大命令频率（Hz） | `30.0` |
+| `dexterous_hand.frame_timeout` | 手柄超时后张开手的时间 | `0.3` |
+| `dexterous_hand.deadman_threshold` | 启用单侧控制所需的最小 grip 值 | `0.5` |
+| `dexterous_hand.trigger_deadzone` | trigger 两端死区 | `0.05` |
+| `dexterous_hand.open_pose` / `close_pose` | L6 的 6 维张开/闭合姿态 | 见配置 |

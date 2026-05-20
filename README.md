@@ -13,8 +13,8 @@
 <p align="center">
   <a href="https://BotRunner64.github.io/Teleopit/">Documentation</a> &bull;
   <a href="https://BotRunner64.github.io/Teleopit/zh-Hans/">中文文档</a> &bull;
-  <a href="https://BotRunner64.github.io/Teleopit/tutorials/pico4-vr">Pico VR</a> &bull;
-  <a href="https://BotRunner64.github.io/Teleopit/tutorials/sim2real">Sim2Real</a> &bull;
+  <a href="https://BotRunner64.github.io/Teleopit/tutorials/pico-sim2sim">Pico Sim2Sim</a> &bull;
+  <a href="https://BotRunner64.github.io/Teleopit/tutorials/pico-sim2real">Pico Sim2Real</a> &bull;
   <a href="https://BotRunner64.github.io/Teleopit/tutorials/training">Training</a>
 </p>
 
@@ -45,15 +45,37 @@ python scripts/run/run_sim.py \
 
 You should see a MuJoCo viewer with the robot tracking the BVH motion.
 
+To show the simulated D435i RGB camera view, add the explicit `camera` viewer:
+
+```bash
+python scripts/run/run_sim.py \
+    controller.policy_path=track.onnx \
+    input.bvh_file=data/sample_bvh/aiming1_subject1.bvh \
+    'viewers=[sim2sim,camera]'
+```
+
 ## Documentation
 
 Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Teleopit/)**, covering installation profiles, all tutorials, configuration reference, and architecture.
 
 ## Changelog
 
+### Unreleased
+
+- Added optional Pico controller control for LinkerHand L6 in sim2real, backed by the LinkerHand SDK submodule.
+
+### v0.3.0 (2026-05-12)
+
+- Consolidated realtime input around pico-bridge 0.2.0 and removed the old ZMQ/onboard Pico path.
+- Unified sim/sim2real reference buffering, resume realignment, and velocity smoothing.
+- Added UDP BVH realtime input, online sim config, multi-viewer support, and fixed camera viewing.
+- Split sim2real reference/safety runtime modules and updated the G1 MuJoCo camera asset.
+
 ### v0.2.0 (2026-04-03)
 
-Onboard Sim2Real (G1 NX + ZMQ Pico4), G1 Bridge SDK (C++ DDS), simplified offline playback with keyboard controls, standalone standing controller, realtime mocap catch-up; model upgraded to 30k checkpoint.
+- Added Pico 4 teleoperation through pico-bridge and the G1 Bridge SDK.
+- Added offline playback keyboard controls, Pico sim2sim mode control, and a standalone standing controller.
+- Improved realtime mocap buffering/catch-up and upgraded the released model to the 30k checkpoint.
 
 ### v0.1.1 (2025-03-28)
 

@@ -53,18 +53,23 @@ See [G1 Bridge SDK](../reference/g1-bridge-sdk) for details.
 
 ```bash
 pip install -e '.[pico4]'
-bash scripts/setup/setup_pico4.sh
 ```
 
-See [Pico 4 VR Tutorial](../tutorials/pico4-vr) for the full setup guide.
+Teleopit uses the in-process `pico_bridge.PicoBridge` receiver for Pico tracking.
+The receiver can run on a workstation PC or the robot onboard computer.
+See [Pico Sim2Sim](../tutorials/pico-sim2sim) and
+[Pico Sim2Real](../tutorials/pico-sim2real) for the full setup guides.
 
-### Onboard (G1 NX)
+Optional LinkerHand L6 control for Pico sim2real is installed through the
+`dexhand` extra. The SDK itself is provided by the repository submodule, so make
+sure submodules are initialized first:
 
 ```bash
-bash scripts/setup/setup_onboard.sh
+git submodule update --init --recursive
+pip install -e '.[dexhand]'
 ```
 
-This script installs system dependencies, builds `g1_bridge_sdk`, and installs `teleopit[onboard]`.
+This extra is only required when `dexterous_hand.enabled=true`.
 
 ## Verify Installation
 

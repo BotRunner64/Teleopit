@@ -89,6 +89,9 @@ class DummyRetargeter:
     def retarget(self, _frame: object) -> np.ndarray:
         return self._qpos.copy()
 
+    def reset(self) -> None:
+        pass
+
 
 class DummyPolicy:
     def __init__(self, expected_obs_dim: int = 166) -> None:
@@ -133,6 +136,27 @@ class DummyVelCmdObservationBuilder:
             }
         )
         return np.zeros(self.total_obs_size, dtype=np.float32)
+
+
+class DummyHandRuntime:
+    def __init__(self) -> None:
+        self.active_flags: list[bool] = []
+        self.close_calls = 0
+
+    def start(self) -> None:
+        pass
+
+    def tick(self, *, active: bool) -> None:
+        self.active_flags.append(active)
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class FailingHandRuntime(DummyHandRuntime):
+    def tick(self, *, active: bool) -> None:
+        super().tick(active=active)
+        raise RuntimeError("hand send failed")
 
 
 def _make_cfg(transition_duration: float = 1.0) -> dict[str, object]:
@@ -267,6 +291,80 @@ def test_state_machine_allows_mocap_reentry_after_returning_to_standing(monkeypa
     assert ctrl.mode == RobotMode.MOCAP
 
 
+def test_dexterous_hand_ticks_only_during_active_mocap(monkeypatch) -> None:
+    import teleopit.sim2real.controller as controller_mod
+    from teleopit.runtime.mocap_session import MocapSessionState
+    from teleopit.sim2real.controller import RobotMode, Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    hand_runtime = DummyHandRuntime()
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=np.zeros(36, dtype=np.float64))
+    monkeypatch.setattr(controller_mod, "build_linkerhand_runtime", lambda _cfg, _provider: hand_runtime)
+
+    ctrl = Sim2RealController(_make_cfg())
+
+    ctrl.mode = RobotMode.STANDING
+    ctrl._tick_dexterous_hand()
+
+    ctrl.mode = RobotMode.MOCAP
+    ctrl._mocap_session.reset()
+    assert ctrl._mocap_session.state == MocapSessionState.ACTIVE
+    ctrl._tick_dexterous_hand()
+
+    ctrl._mocap_session.pause(np.zeros(36, dtype=np.float64))
+    ctrl._tick_dexterous_hand()
+
+    assert hand_runtime.active_flags == [False, True, False]
+
+
+def test_dexterous_hand_failure_does_not_enter_damping(monkeypatch) -> None:
+    import teleopit.sim2real.controller as controller_mod
+    from teleopit.sim2real.controller import RobotMode, Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    hand_runtime = FailingHandRuntime()
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=np.zeros(36, dtype=np.float64))
+    monkeypatch.setattr(controller_mod, "build_linkerhand_runtime", lambda _cfg, _provider: hand_runtime)
+
+    ctrl = Sim2RealController(_make_cfg())
+    ctrl.mode = RobotMode.MOCAP
+    ctrl._mocap_session.reset()
+
+    ctrl._tick_dexterous_hand()
+
+    assert ctrl.mode == RobotMode.MOCAP
+    assert hand_runtime.active_flags == [True]
+
+
+def test_can_switch_to_mocap_returns_false_without_blocking_when_realtime_has_no_frame(monkeypatch) -> None:
+    from teleopit.sim2real.controller import Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    _install_controller_mocks(
+        monkeypatch,
+        policy=policy,
+        obs_builder=obs_builder,
+        qpos=np.zeros(36, dtype=np.float64),
+    )
+
+    ctrl = Sim2RealController(_make_cfg())
+    get_frame_calls = 0
+
+    def blocking_get_frame() -> dict[str, tuple[np.ndarray, np.ndarray]]:
+        nonlocal get_frame_calls
+        get_frame_calls += 1
+        raise AssertionError("get_frame should not be called before a realtime frame is available")
+
+    ctrl.input_provider.has_frame = lambda: False
+    ctrl.input_provider.get_frame = blocking_get_frame
+
+    assert ctrl._can_switch_to_mocap() is False
+    assert get_frame_calls == 0
+
+
 def test_mocap_step_episode_reset_on_transition(monkeypatch) -> None:
     """After _transition_to_mocap (episode-reset), the first mocap step should
     produce zero anchor velocities because _last_reference_qpos is None."""
@@ -281,8 +379,8 @@ def test_mocap_step_episode_reset_on_transition(monkeypatch) -> None:
     ctrl = Sim2RealController(_make_cfg(transition_duration=2.0))
     ctrl._transition_to_mocap()
     monkeypatch.setattr(
-        ctrl,
-        "_compute_anchor_velocities",
+        ctrl._ref_proc,
+        "compute_anchor_velocities",
         lambda _qpos: (
             np.array([1.0, 2.0, 3.0], dtype=np.float32),
             np.array([4.0, 5.0, 6.0], dtype=np.float32),
@@ -312,8 +410,8 @@ def test_mocap_step_velcmd_applies_fixed_initial_yaw_alignment(monkeypatch) -> N
     ctrl = Sim2RealController(_make_cfg(transition_duration=0.0))
     ctrl.robot._state.quat = np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32)
     monkeypatch.setattr(
-        ctrl,
-        "_compute_anchor_velocities",
+        ctrl._ref_proc,
+        "compute_anchor_velocities",
         lambda _qpos: (
             np.zeros(3, dtype=np.float32),
             np.zeros(3, dtype=np.float32),
@@ -340,8 +438,8 @@ def test_mocap_step_velcmd_keeps_fixed_yaw_after_start(monkeypatch) -> None:
 
     ctrl = Sim2RealController(_make_cfg(transition_duration=0.0))
     monkeypatch.setattr(
-        ctrl,
-        "_compute_anchor_velocities",
+        ctrl._ref_proc,
+        "compute_anchor_velocities",
         lambda _qpos: (
             np.zeros(3, dtype=np.float32),
             np.zeros(3, dtype=np.float32),
@@ -360,37 +458,6 @@ def test_mocap_step_velcmd_keeps_fixed_yaw_after_start(monkeypatch) -> None:
     )
 
 
-def test_mocap_step_velcmd_can_disable_fixed_yaw_alignment(monkeypatch) -> None:
-    from teleopit.sim2real.controller import Sim2RealController
-
-    policy = DummyPolicy()
-    obs_builder = DummyVelCmdObservationBuilder()
-    target_qpos = np.zeros(36, dtype=np.float64)
-    target_qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
-
-    cfg = _make_cfg(transition_duration=0.0)
-    cfg["velcmd_fixed_ref_yaw_alignment"] = False
-    ctrl = Sim2RealController(cfg)
-    ctrl.robot._state.quat = np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32)
-    monkeypatch.setattr(
-        ctrl,
-        "_compute_anchor_velocities",
-        lambda _qpos: (
-            np.zeros(3, dtype=np.float32),
-            np.zeros(3, dtype=np.float32),
-        ),
-    )
-
-    ctrl._mocap_step()
-
-    np.testing.assert_allclose(
-        obs_builder.build_calls[0]["motion_qpos"][3:7],
-        np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
-        atol=1e-6,
-    )
-
-
 def test_mocap_step_waits_for_realtime_warmup_before_running_policy(monkeypatch) -> None:
     from teleopit.sim2real.controller import Sim2RealController
 
@@ -404,8 +471,8 @@ def test_mocap_step_waits_for_realtime_warmup_before_running_policy(monkeypatch)
     cfg['realtime_buffer_warmup_steps'] = 2
     ctrl = Sim2RealController(cfg)
     monkeypatch.setattr(
-        ctrl,
-        '_compute_anchor_velocities',
+        ctrl._ref_proc,
+        'compute_anchor_velocities',
         lambda _qpos: (
             np.zeros(3, dtype=np.float32),
             np.zeros(3, dtype=np.float32),
@@ -426,7 +493,7 @@ def test_mocap_step_waits_for_realtime_warmup_before_running_policy(monkeypatch)
     assert len(ctrl.robot.sent_positions) == 1
 
 
-def test_sim2real_allows_future_reference_steps_without_explicit_high_watermark(monkeypatch) -> None:
+def test_sim2real_allows_future_reference_steps(monkeypatch) -> None:
     from teleopit.sim2real.controller import Sim2RealController
 
     policy = DummyPolicy()
@@ -437,15 +504,11 @@ def test_sim2real_allows_future_reference_steps_without_explicit_high_watermark(
     cfg["reference_steps"] = [0, 1, 2, 3, 4]
     cfg["retarget_buffer_delay_s"] = 0.08
     cfg["retarget_buffer_window_s"] = 0.5
-    cfg["realtime_buffer_low_watermark_steps"] = 0
 
-    ctrl = Sim2RealController(cfg)
-
-    assert ctrl._realtime_buffer_low_watermark_steps == 0
-    assert ctrl._realtime_buffer_high_watermark_steps is None
+    Sim2RealController(cfg)
 
 
-def test_mocap_step_reference_qpos_smoothing_filters_motion_change(monkeypatch) -> None:
+def test_mocap_step_uses_current_reference_qpos(monkeypatch) -> None:
     from teleopit.sim2real.controller import Sim2RealController
 
     policy = DummyPolicy()
@@ -456,12 +519,10 @@ def test_mocap_step_reference_qpos_smoothing_filters_motion_change(monkeypatch) 
 
     cfg = _make_cfg(transition_duration=0.0)
     cfg["retarget_buffer_enabled"] = False
-    cfg["velcmd_fixed_ref_yaw_alignment"] = False
-    cfg["reference_qpos_smoothing_alpha"] = 0.5
     ctrl = Sim2RealController(cfg)
     monkeypatch.setattr(
-        ctrl,
-        "_compute_anchor_velocities",
+        ctrl._ref_proc,
+        "compute_anchor_velocities",
         lambda _qpos: (
             np.zeros(3, dtype=np.float32),
             np.zeros(3, dtype=np.float32),
@@ -474,7 +535,7 @@ def test_mocap_step_reference_qpos_smoothing_filters_motion_change(monkeypatch) 
 
     assert len(obs_builder.build_calls) == 2
     np.testing.assert_allclose(obs_builder.build_calls[0]["motion_qpos"][0], 0.0, atol=1e-6)
-    np.testing.assert_allclose(obs_builder.build_calls[1]["motion_qpos"][0], 0.5, atol=1e-6)
+    np.testing.assert_allclose(obs_builder.build_calls[1]["motion_qpos"][0], 1.0, atol=1e-6)
 
 
 def test_mocap_pause_freezes_reference_and_zeroes_velocities(monkeypatch) -> None:
@@ -490,11 +551,10 @@ def test_mocap_pause_freezes_reference_and_zeroes_velocities(monkeypatch) -> Non
 
     cfg = _make_cfg(transition_duration=0.0)
     cfg["retarget_buffer_enabled"] = False
-    cfg["velcmd_fixed_ref_yaw_alignment"] = False
     ctrl = Sim2RealController(cfg)
     monkeypatch.setattr(
-        ctrl,
-        "_compute_anchor_velocities",
+        ctrl._ref_proc,
+        "compute_anchor_velocities",
         lambda _qpos: (
             np.zeros(3, dtype=np.float32),
             np.zeros(3, dtype=np.float32),
@@ -528,8 +588,7 @@ def test_mocap_pause_freezes_reference_and_zeroes_velocities(monkeypatch) -> Non
 
 
 def test_mocap_resume_uses_episode_reset_semantics(monkeypatch) -> None:
-    """Resume now does an episode-reset: state goes directly to ACTIVE (not
-    RESUMING) and reference starts from the current robot state."""
+    """Resume does an episode reset and reanchors live mocap root XY."""
     from teleopit.sim2real.controller import Sim2RealController
     from teleopit.runtime.mocap_session import MocapSessionState
 
@@ -542,13 +601,10 @@ def test_mocap_resume_uses_episode_reset_semantics(monkeypatch) -> None:
 
     cfg = _make_cfg(transition_duration=0.0)
     cfg["retarget_buffer_enabled"] = False
-    cfg["velcmd_fixed_ref_yaw_alignment"] = False
-    cfg["pause_resume_transition_duration"] = 1.0
-    cfg["pause_resume_warmup_steps"] = 0
     ctrl = Sim2RealController(cfg)
     monkeypatch.setattr(
-        ctrl,
-        "_compute_anchor_velocities",
+        ctrl._ref_proc,
+        "compute_anchor_velocities",
         lambda _qpos: (
             np.zeros(3, dtype=np.float32),
             np.zeros(3, dtype=np.float32),
@@ -569,8 +625,9 @@ def test_mocap_resume_uses_episode_reset_semantics(monkeypatch) -> None:
     ctrl._mocap_step()
     assert ctrl._mocap_session.state == MocapSessionState.PAUSED
 
-    # Resume: should go directly to ACTIVE (no RESUMING state)
+    # Resume: should stay on the ACTIVE/PAUSED state model.
     ctrl.retargeter._qpos[0] = 1.0
+    ctrl.retargeter._qpos[7] = 1.0
     ctrl.input_provider._control_events = (
         ControlEvent(
             event_type=ControlEventType.TOGGLE_PAUSE,
@@ -586,3 +643,8 @@ def test_mocap_resume_uses_episode_reset_semantics(monkeypatch) -> None:
     assert ctrl._mocap_session.state == MocapSessionState.ACTIVE
     # Policy was reset (last_action zeroed, history cleared)
     assert np.allclose(ctrl._last_action, 0.0)
+    # Retarget reference jumps to the live mocap pose (joint 0), while root XY
+    # is reanchored to the paused reference because real-robot XY is unobserved.
+    np.testing.assert_allclose(obs_builder.build_calls[-1]["motion_qpos"][0], 0.2, atol=1e-6)
+    np.testing.assert_allclose(obs_builder.build_calls[-1]["motion_qpos"][7], 1.0, atol=1e-6)
+    np.testing.assert_allclose(obs_builder.build_calls[-1]["motion_joint_vel"], np.zeros(29, dtype=np.float32))

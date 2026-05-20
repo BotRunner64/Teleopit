@@ -9,20 +9,13 @@ from teleopit.bus.in_process import InProcessBus
 from teleopit.controllers.observation import VelCmdObservationBuilder
 from teleopit.controllers.rl_policy import RLPolicyController
 from teleopit.inputs import BVHInputProvider, Pico4InputProvider
+from teleopit.inputs.pico_video import PicoVideoRuntime, parse_pico_video_config
 from teleopit.recording.hdf5_recorder import HDF5Recorder
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.robots.mujoco_robot import MuJoCoRobot
+from teleopit.runtime.common import cfg_get
 from teleopit.runtime.factory import build_inference_components
 from teleopit.sim.loop import SimulationLoop
-
-
-def _cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
-    if isinstance(cfg, dict):
-        return cfg.get(key, default)
-    if hasattr(cfg, "get"):
-        value = cfg.get(key)
-        return default if value is None else value
-    return getattr(cfg, key, default)
 
 
 class TeleopPipeline:
@@ -46,6 +39,13 @@ class TeleopPipeline:
         self.input_provider = components.input_provider
         self.retargeter = components.retargeter
         self.bus = InProcessBus()
+        input_cfg = cfg_get(self.cfg, "input", {})
+        self.video_runtime = PicoVideoRuntime(
+            provider=self.input_provider,
+            config=parse_pico_video_config(input_cfg),
+            mode="sim2sim",
+            robot=self.robot,
+        )
         self.loop = SimulationLoop(
             cast(Any, self.robot),
             cast(Any, self.controller),
@@ -53,6 +53,7 @@ class TeleopPipeline:
             cast(Any, self.bus),
             components.sim_cfg,
             viewers=components.viewers,
+            video_runtime=self.video_runtime,
         )
 
     def run(self, num_steps: int, record: bool = False) -> dict[str, float | int | str]:
@@ -64,8 +65,8 @@ class TeleopPipeline:
         if not record:
             return dict(self.loop.run(cast(Any, self.input_provider), cast(Any, self.retargeter), num_steps=num_steps))
 
-        rec_cfg = cast(Any, _cfg_get(self.cfg, "recording", {}))
-        output_path = Path(str(_cfg_get(rec_cfg, "output_path", "teleop_session.h5"))).expanduser()
+        rec_cfg = cast(Any, cfg_get(self.cfg, "recording", {}))
+        output_path = Path(str(cfg_get(rec_cfg, "output_path", "teleop_session.h5"))).expanduser()
         if not output_path.is_absolute():
             output_path = (Path.cwd() / output_path).resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)

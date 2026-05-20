@@ -6,17 +6,10 @@ defaults:
 
 policy_hz: 50.0
 transition_duration: 2.0  # seconds to interpolate from default pose to motion command (0.0 to disable)
-pause_resume_transition_duration: 1.0  # seconds to blend from paused hold pose back into live mocap
-pause_resume_warmup_steps: 2  # realtime mocap frames to accumulate before resuming live tracking
-pause_reset_alignment_on_resume: true  # rebuild yaw/pivot alignment after pause to avoid large corrective motion
-velcmd_fixed_ref_yaw_alignment: true  # apply one fixed startup yaw offset to VelCmd reference motion
 retarget_buffer_enabled: true
 retarget_buffer_window_s: 0.5
 retarget_buffer_delay_s: null  # null = auto use one input-frame delay for timeline sampling
-realtime_buffer_low_watermark_steps: 2
-realtime_buffer_high_watermark_steps: 4
 realtime_buffer_warmup_steps: 2
-reference_qpos_smoothing_alpha: 1.0
 reference_velocity_smoothing_alpha: 0.35
 reference_anchor_velocity_smoothing_alpha: 0.25
 reference_steps: [0]
@@ -28,6 +21,24 @@ playback:
 startup_ramp_duration: 2.0
 # Joint velocity safety limit (rad/s) -- trigger emergency damping if exceeded
 joint_vel_limit: 10.0
+
+# Optional LinkerHand L6 control. Enable only with input.provider=pico4.
+dexterous_hand:
+  enabled: false
+  hand_joint: L6
+  hand_type: both
+  left_can: can0
+  right_can: can1
+  modbus: "None"
+  rate: 30.0
+  frame_timeout: 0.3
+  trigger_deadzone: 0.05
+  deadman_threshold: 0.5
+  thumb_yaw_center: 10
+  speed: [50, 50, 50, 50, 50, 50]
+  open_pose: [250, 10, 250, 250, 250, 250]
+  close_pose: [79, 10, 0, 0, 0, 0]
+  print_input: false
 
 # Physical robot SDK configuration
 real_robot:

@@ -109,6 +109,42 @@ def compute_ground_lift_offset(positions: Float64Array) -> float:
     return max(-min_z, 0.0)
 
 
+def has_non_degenerate_mocap_positions(
+    positions: Float64Array,
+    *,
+    zero_atol: float = 1e-9,
+    min_extent: float = 1e-6,
+) -> bool:
+    """Return true once shared mocap positions look like a real skeleton frame."""
+    pos = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    if pos.size == 0:
+        return False
+
+    finite_mask = np.all(np.isfinite(pos), axis=1)
+    valid_pos = pos[finite_mask]
+    if valid_pos.shape[0] == 0:
+        return False
+
+    nonzero_pos = valid_pos[np.linalg.norm(valid_pos, axis=1) > zero_atol]
+    if nonzero_pos.shape[0] < 2:
+        return False
+
+    extent = float(np.max(np.ptp(nonzero_pos, axis=0)))
+    return extent > min_extent
+
+
+def resolve_mocap_ground_lift_offset(
+    positions: Float64Array,
+    current_lift_offset: float | None,
+) -> float | None:
+    """Initialize a stable mocap ground lift only after receiving a real frame."""
+    if current_lift_offset is not None:
+        return current_lift_offset
+    if has_non_degenerate_mocap_positions(positions):
+        return compute_ground_lift_offset(positions)
+    return None
+
+
 def lift_positions_above_ground(
     positions: Float64Array,
     *,

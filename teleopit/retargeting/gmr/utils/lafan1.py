@@ -40,9 +40,7 @@ def load_bvh_file(bvh_file, format="lafan1"):
             
         frames.append(result)
     
-    # human_height = result["Head"][0][2] - min(result["LeftFootMod"][0][2], result["RightFootMod"][0][2])
-    # human_height = human_height + 0.2  # cm to m
-    human_height = 1.75  # cm to m
+    human_height = 1.75
 
     return frames, human_height
 

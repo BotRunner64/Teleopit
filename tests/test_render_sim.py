@@ -10,7 +10,7 @@ from omegaconf import OmegaConf
 
 
 def _install_render_sim_fakes(monkeypatch, *, builtin_pd: bool, provider_fps: int) -> dict[str, object]:
-    render_sim_path = Path(__file__).resolve().parent.parent / "scripts" / "render_sim.py"
+    render_sim_path = Path(__file__).resolve().parent.parent / "scripts" / "render" / "render_sim.py"
     spec = spec_from_file_location("test_render_sim_module", render_sim_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load render_sim module from {render_sim_path}")
