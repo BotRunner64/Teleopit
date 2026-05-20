@@ -31,6 +31,14 @@ def test_general_tracking_task_is_registered() -> None:
         assert body_name in {
             robot_model.body(i).name for i in range(robot_model.nbody)
         }
+    for geom_name in (
+        "left_dexhand_payload_collision",
+        "right_dexhand_payload_collision",
+        "head_gimbal_payload_collision",
+    ):
+        geom = robot_model.geom(geom_name)
+        assert int(geom.contype[0]) == 0
+        assert int(geom.conaffinity[0]) == 0
     for terms in (actor_terms, critic_terms):
         assert "projected_gravity" in terms
         assert "ref_base_lin_vel_b" in terms
@@ -82,7 +90,7 @@ def test_general_tracking_task_is_registered() -> None:
     assert lower_pd_asset.actuator_ids == [1, 2, 4, 5]
     rl_cfg = load_rl_cfg(DEFAULT_TASK)
     assert rl_cfg.experiment_name == GENERAL_TRACKING_EXPERIMENT_NAME
-    assert rl_cfg.actor.hidden_dims == (1024, 512, 256, 256, 128)
+    assert rl_cfg.actor.hidden_dims == (2048, 1024, 512, 256, 128)
     assert load_runner_cls(DEFAULT_TASK) is MotionTrackingOnPolicyRunner
 
 
