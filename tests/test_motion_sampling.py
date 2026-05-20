@@ -18,6 +18,7 @@ def _clip_dict(num_frames: int = 6, fps: int = 1) -> dict[str, object]:
 
     body_pos_w = np.zeros((num_frames, 3, 3), dtype=np.float32)
     body_pos_w[:, :, 0] = time[:, None]
+    body_pos_w[:, :, 1] = np.arange(3, dtype=np.float32)[None, :]
     body_quat_w = np.zeros((num_frames, 3, 4), dtype=np.float32)
     body_quat_w[:, :, 0] = 1.0
     body_lin_vel_w = np.zeros((num_frames, 3, 3), dtype=np.float32)
@@ -107,6 +108,27 @@ def test_motion_lib_get_window_frames_returns_requested_offsets(tmp_path: Path) 
     )
     assert current["joint_pos"].shape == (1, 29)
     assert torch.allclose(current["joint_pos"][0, :1], torch.tensor([2.0], dtype=torch.float32))
+
+
+def test_motion_lib_selects_bodies_by_dataset_names(tmp_path: Path) -> None:
+    motion_path = _write_shard_dir(tmp_path / "motion_named_bodies", [_clip_dict()])
+
+    motion = MotionLib(
+        str(motion_path),
+        body_indexes=torch.tensor([99, 0], dtype=torch.long),
+        body_names=["right_ankle_roll_link", "pelvis"],
+        window_steps=(0,),
+    )
+    frames = motion.get_frames(
+        torch.tensor([0], dtype=torch.long),
+        torch.tensor([2.0], dtype=torch.float32),
+    )
+
+    assert frames["body_pos_w"].shape == (1, 2, 3)
+    assert torch.allclose(
+        frames["body_pos_w"][0, :, 1],
+        torch.tensor([2.0, 0.0], dtype=torch.float32),
+    )
 
 
 def test_motion_lib_window_start_and_end_times_follow_valid_center_range(tmp_path: Path) -> None:

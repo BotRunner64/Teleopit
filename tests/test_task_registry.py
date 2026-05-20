@@ -20,8 +20,17 @@ def test_general_tracking_task_is_registered() -> None:
     env_cfg = load_env_cfg(DEFAULT_TASK)
     actor_terms = env_cfg.observations["actor"].terms
     critic_terms = env_cfg.observations["critic"].terms
+    robot_model = env_cfg.scene.entities["robot"].spec_fn().compile()
 
     assert DEFAULT_TASK == GENERAL_TRACKING_TASK
+    for body_name in (
+        "left_dexhand_payload",
+        "right_dexhand_payload",
+        "head_gimbal_payload",
+    ):
+        assert body_name in {
+            robot_model.body(i).name for i in range(robot_model.nbody)
+        }
     for terms in (actor_terms, critic_terms):
         assert "projected_gravity" in terms
         assert "ref_base_lin_vel_b" in terms

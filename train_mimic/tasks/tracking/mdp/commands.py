@@ -170,6 +170,7 @@ class MotionLib:
         self,
         motion_file: str,
         body_indexes: torch.Tensor,
+        body_names: tuple[str, ...] | list[str] | None = None,
         device: str = "cpu",
         window_steps: tuple[int, ...] | list[int] | None = None,
     ) -> None:
@@ -182,7 +183,27 @@ class MotionLib:
                 f"motion_file must be a shard directory, got: {motion_file}"
             )
         data = _load_shard_dir(motion_path)
-        body_idx_np = body_indexes.cpu().numpy()
+        if body_names is None:
+            body_idx_np = body_indexes.cpu().numpy()
+        else:
+            dataset_body_names = [str(name) for name in np.asarray(data["body_names"])]
+            dataset_body_index_by_name = {
+                name: index for index, name in enumerate(dataset_body_names)
+            }
+            missing_body_names = [
+                name for name in body_names if name not in dataset_body_index_by_name
+            ]
+            if missing_body_names:
+                raise ValueError(
+                    "Motion dataset body_names do not contain all requested tracking "
+                    f"bodies. Missing: {missing_body_names}. "
+                    "Rebuild the dataset with the current G1 body metadata or update "
+                    "motion command body_names."
+                )
+            body_idx_np = np.asarray(
+                [dataset_body_index_by_name[name] for name in body_names],
+                dtype=np.int64,
+            )
 
         self._joint_pos = np.asarray(data["joint_pos"], dtype=np.float32)  # (T, 29)
         self._joint_vel = np.asarray(data["joint_vel"], dtype=np.float32)  # (T, 29)
@@ -462,6 +483,7 @@ class MotionCommand(CommandTerm):
         self.motion = MotionLib(
             self.cfg.motion_file,
             self.body_indexes,
+            body_names=self.cfg.body_names,
             device=self.device,
             window_steps=self.cfg.window_steps,
         )

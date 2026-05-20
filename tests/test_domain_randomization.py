@@ -23,6 +23,10 @@ def test_general_tracking_domain_randomization_matches_gr00t_active_set() -> Non
         "motor_params_implicit_armature",
         "physics_material",
         "randomize_rigid_body_mass",
+        "randomize_dexhand_payload_mass",
+        "randomize_gimbal_payload_mass",
+        "randomize_dexhand_payload_pos",
+        "randomize_gimbal_payload_pos",
     }
 
     push_robot = events["push_robot"]
@@ -99,8 +103,48 @@ def test_general_tracking_domain_randomization_matches_gr00t_active_set() -> Non
     mass = events["randomize_rigid_body_mass"]
     assert mass.func is dr.pseudo_inertia
     assert mass.mode == "startup"
-    assert mass.params["asset_cfg"].body_names == r".*wrist_yaw.*|torso_link"
+    assert mass.params["asset_cfg"].body_names == "torso_link"
     assert mass.params["alpha_range"] == (-0.1, 0.45)
+
+    dexhand_mass = events["randomize_dexhand_payload_mass"]
+    assert dexhand_mass.func is dr.pseudo_inertia
+    assert dexhand_mass.mode == "startup"
+    assert dexhand_mass.params["asset_cfg"].body_names == (
+        "left_dexhand_payload",
+        "right_dexhand_payload",
+    )
+    assert dexhand_mass.params["alpha_range"] == (-8.0, 0.34657359027997264)
+
+    gimbal_mass = events["randomize_gimbal_payload_mass"]
+    assert gimbal_mass.func is dr.pseudo_inertia
+    assert gimbal_mass.mode == "startup"
+    assert gimbal_mass.params["asset_cfg"].body_names == ("head_gimbal_payload",)
+    assert gimbal_mass.params["alpha_range"] == (-8.0, 0.34657359027997264)
+
+    dexhand_pos = events["randomize_dexhand_payload_pos"]
+    assert dexhand_pos.func is dr.body_pos
+    assert dexhand_pos.mode == "startup"
+    assert dexhand_pos.params["asset_cfg"].body_names == (
+        "left_dexhand_payload",
+        "right_dexhand_payload",
+    )
+    assert dexhand_pos.params["operation"] == "abs"
+    assert dexhand_pos.params["ranges"] == {
+        0: (0.04, 0.12),
+        1: (-0.03, 0.03),
+        2: (-0.03, 0.03),
+    }
+
+    gimbal_pos = events["randomize_gimbal_payload_pos"]
+    assert gimbal_pos.func is dr.body_pos
+    assert gimbal_pos.mode == "startup"
+    assert gimbal_pos.params["asset_cfg"].body_names == ("head_gimbal_payload",)
+    assert gimbal_pos.params["operation"] == "abs"
+    assert gimbal_pos.params["ranges"] == {
+        0: (0.03, 0.12),
+        1: (-0.03, 0.03),
+        2: (0.40, 0.50),
+    }
 
 
 def test_play_env_disables_training_only_domain_randomization() -> None:
@@ -119,4 +163,8 @@ def test_play_env_disables_training_only_domain_randomization() -> None:
     assert "motor_params_implicit_armature" not in play_cfg.events
     assert "physics_material" not in play_cfg.events
     assert "randomize_rigid_body_mass" not in play_cfg.events
+    assert "randomize_dexhand_payload_mass" not in play_cfg.events
+    assert "randomize_gimbal_payload_mass" not in play_cfg.events
+    assert "randomize_dexhand_payload_pos" not in play_cfg.events
+    assert "randomize_gimbal_payload_pos" not in play_cfg.events
     assert play_cfg.events == {}

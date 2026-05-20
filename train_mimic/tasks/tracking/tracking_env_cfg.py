@@ -254,6 +254,50 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
                 "alpha_range": (-0.1, 0.45),
             },
         ),
+        "randomize_dexhand_payload_mass": EventTermCfg(
+            mode="startup",
+            func=dr.pseudo_inertia,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=()),  # Set per-robot.
+                # Nominal is 0.5 kg per hand. Scale covers 0-1.0 kg.
+                "alpha_range": (-8.0, 0.34657359027997264),
+            },
+        ),
+        "randomize_gimbal_payload_mass": EventTermCfg(
+            mode="startup",
+            func=dr.pseudo_inertia,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=()),  # Set per-robot.
+                # Nominal is 0.25 kg. Scale covers 0-0.5 kg.
+                "alpha_range": (-8.0, 0.34657359027997264),
+            },
+        ),
+        "randomize_dexhand_payload_pos": EventTermCfg(
+            mode="startup",
+            func=dr.body_pos,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=()),  # Set per-robot.
+                "operation": "abs",
+                "ranges": {
+                    0: (0.04, 0.12),
+                    1: (-0.03, 0.03),
+                    2: (-0.03, 0.03),
+                },
+            },
+        ),
+        "randomize_gimbal_payload_pos": EventTermCfg(
+            mode="startup",
+            func=dr.body_pos,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=()),  # Set per-robot.
+                "operation": "abs",
+                "ranges": {
+                    0: (0.03, 0.12),
+                    1: (-0.03, 0.03),
+                    2: (0.40, 0.50),
+                },
+            },
+        ),
     }
 
     ##
