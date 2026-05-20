@@ -138,7 +138,7 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 ### 灵巧手（Pico sim2real）
 
 `dexterous_hand.enabled=true` 要求 `input.provider=pico4`，并安装可选的
-LinkerHand SDK submodule。控制只在 `MOCAP` 中生效；非活动模式和超时会发送张开姿态。
+`dexhand` extra。控制只在 `MOCAP` 中生效；非活动模式和超时会发送张开姿态。
 
 | 字段 | 说明 | 默认值 |
 |---|---|---|

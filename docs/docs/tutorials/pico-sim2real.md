@@ -145,11 +145,11 @@ matching side grip as a deadman switch; the matching trigger closes that hand.
 Hand control is active only in `MOCAP`. It sends the open pose in `STANDING`,
 `DAMPING`, paused mocap, frame timeout, and shutdown.
 
-Install the SDK submodule first:
+Install the dexhand extra first if it was not installed with the main Pico
+profile:
 
 ```bash
-git submodule update --init third_party/linkerhand-python-sdk
-pip install -e third_party/linkerhand-python-sdk
+pip install -e '.[dexhand]'
 ```
 
 Before enabling full sim2real, verify the hand connection with a standalone

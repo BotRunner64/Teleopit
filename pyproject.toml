@@ -51,6 +51,9 @@ pico4 = [
     "pico-bridge[camera] @ https://github.com/BotRunner64/pico-bridge/releases/download/v0.2.0/pico_bridge-0.2.0-py3-none-any.whl",
     "teleopit[sim2real]",
 ]
+dexhand = [
+    "linkerhand-python-sdk @ file:third_party/linkerhand-python-sdk",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

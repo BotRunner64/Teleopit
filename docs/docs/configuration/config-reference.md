@@ -119,8 +119,8 @@ Realtime Pico resume re-centers heading and ground-plane position before trackin
 ### Dexterous Hand (Pico sim2real)
 
 `dexterous_hand.enabled=true` requires `input.provider=pico4` and the optional
-LinkerHand SDK submodule. Control is active only in `MOCAP`; inactive modes and
-timeouts send the open pose.
+`dexhand` extra. Control is active only in `MOCAP`; inactive modes and timeouts
+send the open pose.
 
 | Field | Description | Default |
 |-------|-------------|---------|
