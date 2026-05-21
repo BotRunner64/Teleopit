@@ -219,6 +219,14 @@ def _resolve_device(args: argparse.Namespace, torch_module: object) -> str:
     return "cuda:0" if torch_module.cuda.is_available() else "cpu"
 
 
+def _resolve_worker_seed(base_seed: int, env: dict[str, str] | None = None) -> int:
+    runtime_env = os.environ if env is None else env
+    if not _is_distributed_env(runtime_env):
+        return base_seed
+    global_rank = int(runtime_env.get("RANK", "0"))
+    return base_seed + global_rank * 100003
+
+
 def _launch_multi_gpu(args: argparse.Namespace, argv: Sequence[str]) -> None:
     _validate_multi_gpu_args(args)
     command = _build_torchrun_command(args, argv)
@@ -291,7 +299,7 @@ def _run_worker(args: argparse.Namespace) -> None:
         agent_cfg.logger = "tensorboard"
 
     # CLI overrides
-    env_cfg.seed = args.seed
+    env_cfg.seed = _resolve_worker_seed(args.seed)
     if args.num_envs is not None:
         env_cfg.scene.num_envs = args.num_envs
     if args.motion_file is not None:

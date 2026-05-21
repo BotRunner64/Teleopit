@@ -104,6 +104,16 @@ class TestTrainLauncherHelpers:
         with pytest.raises(ValueError, match="LOCAL_RANK=1"):
             train._resolve_device(_args(device="cuda:0"), _TorchStub())
 
+    def test_resolve_worker_seed_offsets_by_global_rank(self) -> None:
+        assert train._resolve_worker_seed(42, env={"WORLD_SIZE": "4", "RANK": "0"}) == 42
+        assert train._resolve_worker_seed(42, env={"WORLD_SIZE": "4", "RANK": "3"}) == 300051
+
+    def test_resolve_worker_seed_defaults_to_base_seed_without_rank(self) -> None:
+        assert train._resolve_worker_seed(123, env={}) == 123
+
+    def test_resolve_worker_seed_ignores_rank_outside_distributed_mode(self) -> None:
+        assert train._resolve_worker_seed(42, env={"WORLD_SIZE": "1", "RANK": "3"}) == 42
+
     def test_main_uses_launcher_branch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         called: dict[str, object] = {}
 
