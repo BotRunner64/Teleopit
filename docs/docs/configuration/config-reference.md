@@ -69,7 +69,7 @@ Complete reference for all configurable fields.
 | `input.bridge_advertise_ip` | Optional advertised host IP override | `null` |
 | `input.bridge_start_timeout` | Timeout while starting the bridge | `10.0` |
 | `input.bridge_history_size` | Pico frame history retained by the bridge | `120` |
-| `input.video.enabled` | Stream host camera preview back to Pico through pico-bridge 0.2.0 | `false` |
+| `input.video.enabled` | Stream host camera preview back to Pico through pico-bridge 0.2.1 | `false` |
 | `input.video.source` | Video source: `mujoco`, `realsense`, or `test-pattern` | `null` |
 | `input.video.width` / `height` / `fps` | Video capture/render settings | `1280` / `720` / `30` |
 | `input.video.device` | Optional RealSense serial | `null` |

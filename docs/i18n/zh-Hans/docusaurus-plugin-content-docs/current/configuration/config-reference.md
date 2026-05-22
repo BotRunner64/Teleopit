@@ -86,7 +86,7 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 | `bridge_advertise_ip` | str/null | `null` | 可选的 host 广播 IP 覆盖 |
 | `bridge_start_timeout` | float | `10.0` | 启动 bridge 的超时时间 |
 | `bridge_history_size` | int | `120` | bridge 保留的 Pico 帧历史长度 |
-| `video.enabled` | bool | `false` | 通过 pico-bridge 0.2.0 将 host 相机预览发送回 Pico |
+| `video.enabled` | bool | `false` | 通过 pico-bridge 0.2.1 将 host 相机预览发送回 Pico |
 | `video.source` | str/null | `null` | 视频源：`mujoco`、`realsense` 或 `test-pattern` |
 | `video.width` / `height` / `fps` | int | `1280` / `720` / `30` | 视频采集/渲染设置 |
 | `video.device` | str/null | `null` | 可选的 RealSense 序列号 |

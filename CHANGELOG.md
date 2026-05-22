@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- 支持 pico-bridge 0.2.1，并适配其修正后的 tracking pose 语义。
+
 ## [0.3.0] - 2026-05-12
 
 - 重构实时输入栈，Pico 4 统一使用 pico-bridge 0.2.0 in-process receiver，并移除旧 ZMQ/onboard Pico 路径。

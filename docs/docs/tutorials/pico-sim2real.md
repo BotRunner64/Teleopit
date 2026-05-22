@@ -21,9 +21,7 @@ There are two deployment styles:
 Both styles use `Pico4InputProvider` and the in-process pico-bridge receiver.
 There is no separate onboard Pico input mode.
 
-For Teleopit 0.3.0, keep the host receiver on pico-bridge 0.2.0. pico-bridge
-0.2.1 changes interface semantics and is not the supported receiver version for
-this Teleopit release.
+Teleopit targets pico-bridge 0.2.1 and its `pico_native` tracking semantics.
 
 ## 1. Install Runtime Dependencies
 

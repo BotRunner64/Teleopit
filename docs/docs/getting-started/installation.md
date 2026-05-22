@@ -56,9 +56,7 @@ pip install -e '.[pico4]'
 ```
 
 Teleopit uses the in-process `pico_bridge.PicoBridge` receiver for Pico tracking.
-For Teleopit 0.3.0, use pico-bridge 0.2.0. Do not upgrade the receiver to
-pico-bridge 0.2.1, because 0.2.1 changes interface semantics that Teleopit
-0.3.0 does not target.
+Teleopit targets pico-bridge 0.2.1 and its `pico_native` tracking semantics.
 The receiver can run on a workstation PC or the robot onboard computer.
 See [Pico Sim2Sim](../tutorials/pico-sim2sim) and
 [Pico Sim2Real](../tutorials/pico-sim2real) for the full setup guides.

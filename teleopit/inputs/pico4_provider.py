@@ -1,7 +1,7 @@
 """Pico4 VR full-body motion capture input provider.
 
 Uses the in-process ``pico_bridge`` receiver to collect PICO tracking frames.
-The provider converts native PICO/Unity poses (meters, xyzw quaternions) into
+The provider converts native PICO poses (meters, xyzw quaternions) into
 Teleopit's realtime ``HumanFrame`` format.
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 import inspect
+from importlib.metadata import PackageNotFoundError, version
 import logging
 import threading
 import time
@@ -32,7 +33,7 @@ from teleopit.sim.reference_motion import interpolate_human_frames
 
 logger = logging.getLogger(__name__)
 
-# PICO/Unity -> Teleopit retarget input space.
+# PICO native -> Teleopit retarget input space.
 _INPUT_TO_TELEOPIT_MATRIX = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float64)
 _INPUT_TO_TELEOPIT_QUAT = R.from_matrix(_INPUT_TO_TELEOPIT_MATRIX).as_quat(scalar_first=True)
 
@@ -122,6 +123,20 @@ def _bridge_accepts_video_enabled(bridge_cls: type[Any]) -> bool:
     return any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values())
 
 
+def _installed_pico_bridge_version() -> tuple[int, ...] | None:
+    try:
+        raw_version = version("pico-bridge")
+    except PackageNotFoundError:
+        return None
+    release = raw_version.split("+", 1)[0].split("-", 1)[0]
+    parts: list[int] = []
+    for part in release.split("."):
+        if not part.isdigit():
+            break
+        parts.append(int(part))
+    return tuple(parts) if parts else None
+
+
 def _coordinate_transform_input(body_pose_dict: dict[str, list]) -> dict[str, list]:
     """Transform provider-space poses into Teleopit's expected coordinates."""
     for body_name, value in body_pose_dict.items():
@@ -167,10 +182,16 @@ class Pico4InputProvider(RealtimeInputProvider):
                     "pico_bridge is required for Pico4 input. Install the receiver package, "
                     "for example: pip install -e '.[pico4]'"
                 ) from exc
+            installed_version = _installed_pico_bridge_version()
+            if installed_version is None or installed_version < (0, 2, 1):
+                raise RuntimeError(
+                    "pico_bridge >= 0.2.1 is required for Pico4 input. Reinstall the Pico extra with "
+                    "pip install -e '.[pico4]' so Teleopit receives pico_native tracking semantics."
+                )
             bridge_cls = PicoBridge
         if not _bridge_accepts_video_enabled(bridge_cls):
             raise RuntimeError(
-                "pico_bridge >= 0.2.0 is required for Pico4 input. Reinstall the Pico extra with "
+                "pico_bridge >= 0.2.1 is required for Pico4 input. Reinstall the Pico extra with "
                 "pip install -e '.[pico4]' so PicoBridge accepts video_enabled and push_video_frame()."
             )
 
@@ -278,10 +299,10 @@ class Pico4InputProvider(RealtimeInputProvider):
             return self._controller_snapshot
 
     def push_video_frame(self, frame: NDArray[np.uint8]) -> int:
-        """Push one RGB camera frame to pico-bridge 0.2.0 video output."""
+        """Push one RGB camera frame to pico-bridge 0.2.1 video output."""
         push_video_frame = getattr(self._bridge, "push_video_frame", None)
         if not callable(push_video_frame):
-            raise RuntimeError("Installed pico_bridge does not expose push_video_frame(); use pico-bridge 0.2.0")
+            raise RuntimeError("Installed pico_bridge does not expose push_video_frame(); use pico-bridge 0.2.1")
         return int(push_video_frame(frame))
 
     def has_frame(self) -> bool:
@@ -442,11 +463,10 @@ class Pico4InputProvider(RealtimeInputProvider):
 
     @staticmethod
     def _convert_body_joints_to_frame(body_joints: NDArray[np.float64]) -> HumanFrame:
-        body_joints = Pico4InputProvider._normalize_pico_bridge_body_joints(body_joints)
         body_pose_dict: dict[str, list] = {}
         for i, joint_name in enumerate(BODY_JOINT_NAMES):
             pos = [body_joints[i][0], body_joints[i][1], body_joints[i][2]]
-            # pico_bridge returns [x, y, z, qx, qy, qz, qw].
+            # pico_bridge 0.2.1 returns pico_native [x, y, z, qx, qy, qz, qw].
             rot = [body_joints[i][6], body_joints[i][3], body_joints[i][4], body_joints[i][5]]
             body_pose_dict[joint_name] = [pos, rot]
 
@@ -475,12 +495,3 @@ class Pico4InputProvider(RealtimeInputProvider):
         for name, (pos, quat) in human_frame.items():
             lifted[name] = (np.asarray(pos, dtype=np.float64) + z_offset, np.asarray(quat, dtype=np.float64))
         return lifted
-
-    @staticmethod
-    def _normalize_pico_bridge_body_joints(body_joints: NDArray[np.float64]) -> NDArray[np.float64]:
-        """Match Teleopit's calibrated Pico body-pose convention."""
-        converted = np.array(body_joints, dtype=np.float64, copy=True)
-        converted[:, 2] *= -1.0
-        converted[:, 5] *= -1.0
-        converted[:, 6] *= -1.0
-        return converted

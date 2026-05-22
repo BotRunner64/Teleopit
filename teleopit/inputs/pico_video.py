@@ -1,4 +1,4 @@
-"""Optional camera-to-Pico video streaming for pico-bridge 0.2.0."""
+"""Optional camera-to-Pico video streaming for pico-bridge 0.2.1."""
 
 from __future__ import annotations
 

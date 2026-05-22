@@ -62,6 +62,7 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 
 ### Unreleased
 
+- Bumped Pico input support to pico-bridge 0.2.1 and its corrected tracking pose semantics.
 - Added optional Pico controller control for LinkerHand L6 in sim2real, backed by the LinkerHand SDK submodule.
 
 ### v0.3.0 (2026-05-12)

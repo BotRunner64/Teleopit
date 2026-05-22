@@ -130,8 +130,8 @@ def test_pico4_provider_starts_pico_bridge_receiver_with_config() -> None:
     assert bridge.closed is True
 
 
-def test_pico4_provider_requires_pico_bridge_0_2_signature() -> None:
-    with pytest.raises(RuntimeError, match=r"pico_bridge >= 0\.2\.0"):
+def test_pico4_provider_requires_pico_bridge_0_2_1_signature() -> None:
+    with pytest.raises(RuntimeError, match=r"pico_bridge >= 0\.2\.1"):
         Pico4InputProvider(timeout=0.01, bridge_cls=_LegacyBridge)
 
 
@@ -153,15 +153,12 @@ def test_pico4_provider_pushes_video_frame_to_bridge() -> None:
         delattr(_FakeBridge, "push_video_frame")
 
 
-def test_pico4_provider_normalizes_pico_bridge_body_pose_convention() -> None:
+def test_pico4_provider_converts_pico_native_body_pose_convention() -> None:
     body_poses = _body_poses(0.0)
     body_poses[0] = [1.0, 2.0, 3.0, 0.1, 0.2, 0.3, 0.9]
 
-    converted = Pico4InputProvider._normalize_pico_bridge_body_joints(body_poses)
-    np.testing.assert_allclose(converted[0], [1.0, 2.0, -3.0, 0.1, 0.2, -0.3, -0.9])
-
     frame = Pico4InputProvider._convert_body_joints_to_frame(body_poses)
-    np.testing.assert_allclose(frame["Pelvis"][0], [1.0, 3.0, 2.0], atol=1e-6)
+    np.testing.assert_allclose(frame["Pelvis"][0], [1.0, -3.0, 2.0], atol=1e-6)
 
 
 def test_pico4_provider_applies_fixed_ground_lift_from_first_real_frame() -> None:

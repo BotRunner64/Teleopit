@@ -130,7 +130,7 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 ### Pico4 Realtime Input
 - `Pico4InputProvider` reads realtime body tracking from the in-process `pico_bridge.PicoBridge`
 - The pico-bridge receiver runs on the Teleopit host, which can be a workstation PC or robot onboard computer; do not maintain a separate onboard Pico input mode
-- pico-bridge 0.2.0 is the supported runtime; camera preview uses `PicoBridge(video="frames").push_video_frame(rgb_uint8)`
+- pico-bridge 0.2.1 is the supported runtime; camera preview uses `PicoBridge(video="frames").push_video_frame(rgb_uint8)`
 - Pico video preview is optional and disabled by default; sim2sim uses the MuJoCo `d435i_rgb` camera and sim2real uses RealSense when `input.video.enabled=true`
 - Bone naming follows `pico_bridge_to_g1.json`
 - The provider applies an input-space transform to match the current retarget config
