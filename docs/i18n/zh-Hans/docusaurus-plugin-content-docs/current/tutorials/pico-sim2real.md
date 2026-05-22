@@ -21,6 +21,9 @@ Pico 头显 -> Teleopit host -> retarget -> RL policy -> g1_bridge_sdk -> G1
 两种方式都使用 `Pico4InputProvider` 和进程内 pico-bridge receiver。不存在单独的
 onboard Pico 输入模式。
 
+Teleopit 0.3.0 请保持 host receiver 使用 pico-bridge 0.2.0。pico-bridge
+0.2.1 修改了接口语义，不是该 Teleopit 版本支持的 receiver 版本。
+
 ## 1. 安装运行时依赖
 
 在运行 Teleopit 的机器上安装 Pico 和 sim2real 依赖：
