@@ -134,8 +134,6 @@ def _payload_g1_robot_cfg():
 
 def _configure_self_collision_reward(cfg: ManagerBasedRlEnvCfg) -> None:
     excluded_body_names = (
-        "left_ankle_roll_link",
-        "right_ankle_roll_link",
         "left_wrist_yaw_link",
         "right_wrist_yaw_link",
     )
@@ -143,7 +141,7 @@ def _configure_self_collision_reward(cfg: ManagerBasedRlEnvCfg) -> None:
         *tuple(getattr(cfg.scene, "sensors", ()) or ()),
         ContactSensorCfg(
             name="self_collision",
-            # Exclude only primary bodies: wrist/ankle vs torso is still caught by torso.
+            # Exclude only primary wrist bodies; wrist vs torso is still caught by torso.
             primary=ContactMatch(
                 mode="body",
                 pattern=r".*",

@@ -62,8 +62,6 @@ def test_general_tracking_task_is_registered() -> None:
     assert sensors["self_collision"].primary.mode == "body"
     assert sensors["self_collision"].primary.pattern == r".*"
     assert sensors["self_collision"].primary.exclude == (
-        "left_ankle_roll_link",
-        "right_ankle_roll_link",
         "left_wrist_yaw_link",
         "right_wrist_yaw_link",
     )
