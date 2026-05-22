@@ -47,6 +47,10 @@ Teleopit starts `pico_bridge.PicoBridge` in-process through
 `Pico4InputProvider`. The same Pico input path is used later for wired and
 onboard sim2real deployment.
 
+For Teleopit 0.3.0, keep the host receiver on pico-bridge 0.2.0. pico-bridge
+0.2.1 changes interface semantics and is not the supported receiver version for
+this Teleopit release.
+
 ## 3. Download Assets
 
 ```bash

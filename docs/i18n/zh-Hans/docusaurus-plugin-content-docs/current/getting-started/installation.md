@@ -56,6 +56,8 @@ pip install -e '.[pico4]'
 ```
 
 Teleopit 使用进程内的 `pico_bridge.PicoBridge` receiver 接收 Pico 追踪数据。
+Teleopit 0.3.0 请使用 pico-bridge 0.2.0，不要升级到 pico-bridge 0.2.1；
+0.2.1 修改了接口语义，Teleopit 0.3.0 未按该语义适配。
 receiver 可以运行在工作站 PC，也可以运行在机器人 onboard 计算机。
 完整设置流程详见 [Pico Sim2Sim](../tutorials/pico-sim2sim) 和
 [Pico Sim2Real](../tutorials/pico-sim2real)。

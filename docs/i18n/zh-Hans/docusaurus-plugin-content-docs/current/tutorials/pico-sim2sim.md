@@ -46,6 +46,9 @@ python -c "from pico_bridge import PicoBridge; print('OK')"
 Teleopit 会通过 `Pico4InputProvider` 在进程内启动 `pico_bridge.PicoBridge`。
 后续 wired 和 onboard sim2real 部署也使用同一条 Pico 输入路径。
 
+Teleopit 0.3.0 请保持 host receiver 使用 pico-bridge 0.2.0。pico-bridge
+0.2.1 修改了接口语义，不是该 Teleopit 版本支持的 receiver 版本。
+
 ## 3. 下载资源
 
 ```bash
