@@ -192,6 +192,8 @@ class SimLoopSession:
         self.simulation_mode: SimulationMode = (
             SimulationMode.STANDING if self.realtime_keyboard_mode_enabled else SimulationMode.MOCAP
         )
+        if self.simulation_mode == SimulationMode.STANDING:
+            loop._set_standing_reference(loop.robot.get_state())
 
         # Debug writer
         self.debug_writer: RolloutTraceWriter | None = None
@@ -228,18 +230,23 @@ class SimLoopSession:
         self.cached_human_frame = None
         self.cached_retargeted = None
 
-    def full_policy_reset(self) -> None:
+    def reset_policy_reference_state(self, *, reset_mocap_session: bool = True) -> None:
         self._step_runner.reset()
         self._loop.controller.reset()
         self._loop.obs_builder.reset()
-        self._retargeter.reset()
-        self.mocap_session.reset()
+        if reset_mocap_session:
+            self.mocap_session.reset()
         self.last_commanded_motion_qpos = None
         self.reset_runtime_tracking()
+
+    def full_policy_reset(self) -> None:
+        self.reset_policy_reference_state()
+        self._retargeter.reset()
 
     def enter_standing_mode(self) -> None:
         from teleopit.sim.loop import SimulationMode
         self.full_policy_reset()
+        self._loop._set_standing_reference(self._loop.robot.get_state())
         self.simulation_mode = SimulationMode.STANDING
 
     def enter_mocap_mode(self) -> None:
@@ -252,10 +259,6 @@ class SimLoopSession:
         start_qpos = loop._resolve_hold_qpos(None, None, None, state)
         self.full_policy_reset()
         self._step_runner.last_retarget_qpos = start_qpos.copy()
-        self._step_runner.arm_motion_transition(
-            start_qpos,
-            duration_s=loop._mocap_transition_duration,
-        )
         self.last_commanded_motion_qpos = start_qpos.copy()
         self.simulation_mode = SimulationMode.MOCAP
 
@@ -266,7 +269,7 @@ class SimLoopSession:
             if hold_qpos is None:
                 raise RuntimeError("Cannot resume mocap without a paused hold qpos")
             resume_qpos = loop._build_resume_alignment_qpos(hold_qpos, loop.robot.get_state())
-            self.full_policy_reset()
+            self.reset_policy_reference_state()
             self._step_runner.reset_reference_alignment(resume_qpos)
             self.last_commanded_motion_qpos = resume_qpos.copy()
             return
@@ -276,7 +279,7 @@ class SimLoopSession:
             self.latest_live_retargeted,
             loop.robot.get_state(),
         )
-        self.full_policy_reset()
+        self.reset_policy_reference_state()
         self.mocap_session.pause(hold_qpos)
         self.last_commanded_motion_qpos = hold_qpos.copy()
 
@@ -335,7 +338,6 @@ class SimLoopSession:
                     loop._resume_offline_playback(
                         offline_playback=self.offline_playback,
                         mocap_session=self.mocap_session,
-                        retargeter=self._retargeter,
                         state=loop.robot.get_state(),
                     )
                     self.last_commanded_motion_qpos = None
@@ -350,7 +352,6 @@ class SimLoopSession:
                     offline_playback=self.offline_playback,
                     mocap_session=self.mocap_session,
                     hold_qpos=hold_qpos,
-                    retargeter=self._retargeter,
                 )
         return False
 
@@ -360,9 +361,11 @@ class SimLoopSession:
 
     def _fetch_standing_input(self) -> tuple[bool, ReferenceWindow | None, RealtimeReferenceDiagnostics | None]:
         """Fetch input when in STANDING mode (keyboard). Returns (new_bvh_frame, ref_window, diag)."""
-        state = self._loop.robot.get_state()
         self.cached_human_frame = None
-        self.cached_retargeted = self._loop._build_standing_qpos(state)
+        if self._loop._standing_qpos is None:
+            self.cached_retargeted = self._loop._set_standing_reference(self._loop.robot.get_state())
+        else:
+            self.cached_retargeted = self._loop._standing_qpos.copy()
         return False, None, None
 
     def _fetch_offline_reference_input(

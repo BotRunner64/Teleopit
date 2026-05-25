@@ -37,7 +37,6 @@ def build_simulation_cfg(cfg: Any) -> dict[str, object]:
     return {
         "policy_hz": float(cfg_get(cfg, "policy_hz", 50.0)),
         "pd_hz": float(cfg_get(cfg, "pd_hz", 1000.0)),
-        "transition_duration": float(cfg_get(cfg, "transition_duration", 0.0) or 0.0),
         "retarget_buffer_enabled": bool(cfg_get(cfg, "retarget_buffer_enabled", True)),
         "retarget_buffer_window_s": float(cfg_get(cfg, "retarget_buffer_window_s", 0.5)),
         "retarget_buffer_delay_s": cfg_get(cfg, "retarget_buffer_delay_s", None),

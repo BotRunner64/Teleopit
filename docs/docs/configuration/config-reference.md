@@ -15,7 +15,6 @@ Complete reference for all configurable fields.
 | `viewers` | Viewer set: `mocap`, `retarget`, `sim2sim`, `camera`, `all`, `none`. `all` opens `mocap`, `retarget`, and `sim2sim`; add `camera` explicitly. | `sim2sim` |
 | `realtime` | Rate-limit to wall clock | `false` |
 | `num_steps` | Number of steps; `0` = infinite | `0` |
-| `transition_duration` | Smooth transition time (seconds) from current pose to retarget command | - |
 | `keyboard.enabled` | Enable realtime keyboard mode control for sim2sim | `false` |
 | `playback.pause_on_end` | Pause at last frame when offline motion ends | `false` |
 | `playback.keyboard.enabled` | Enable keyboard control for offline playback | `false` |

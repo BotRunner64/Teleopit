@@ -81,7 +81,6 @@ def test_pipeline_inherits_robot_action_decode_config(monkeypatch, tmp_path: Pat
             },
             "policy_hz": 50,
             "pd_hz": 1000,
-            "transition_duration": 1.5,
             "keyboard": {"enabled": True},
             "retarget_buffer_enabled": True,
             "retarget_buffer_window_s": 0.75,
@@ -105,7 +104,6 @@ def test_pipeline_inherits_robot_action_decode_config(monkeypatch, tmp_path: Pat
     loop_cfg = captured["loop_args"][4]
     assert list(controller_cfg.default_dof_pos) == robot_default_angles
     assert list(controller_cfg.action_scale) == robot_action_scale
-    assert loop_cfg["transition_duration"] == pytest.approx(1.5)
     assert loop_cfg["keyboard"]["enabled"] is True
     assert loop_cfg["retarget_buffer_enabled"] is True
     assert loop_cfg["retarget_buffer_window_s"] == pytest.approx(0.75)

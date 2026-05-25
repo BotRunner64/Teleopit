@@ -110,6 +110,9 @@ class _DummyInputProvider:
 
 
 class _DummyRetargeter:
+    def __init__(self) -> None:
+        self.reset_calls = 0
+
     def retarget(self, human_data: dict[str, tuple[np.ndarray, np.ndarray]]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         pelvis_x = float(human_data["Pelvis"][0][0])
         return (
@@ -119,7 +122,7 @@ class _DummyRetargeter:
         )
 
     def reset(self) -> None:
-        pass
+        self.reset_calls += 1
 
 
 class _DummyRecorder:
@@ -154,7 +157,7 @@ def test_standing_qpos_keeps_yaw_but_drops_roll() -> None:
         controller=_DummyController(),
         obs_builder=_DummyObsBuilder(),
         bus=bus,
-        cfg={"policy_hz": 50.0, "pd_hz": 50.0, "realtime": False, "transition_duration": 0.0},
+        cfg={"policy_hz": 50.0, "pd_hz": 50.0, "realtime": False},
         viewers=set(),
     )
 
@@ -180,6 +183,46 @@ def test_standing_qpos_keeps_yaw_but_drops_roll() -> None:
     np.testing.assert_allclose(standing_qpos[7:9], robot.default_dof_pos, atol=1e-6)
 
 
+def test_standing_reference_is_fixed_after_initialization() -> None:
+    from teleopit.sim.loop import SimulationLoop
+
+    bus = InProcessBus()
+    robot = _DummyRobot()
+    loop = SimulationLoop(
+        robot=robot,
+        controller=_DummyController(),
+        obs_builder=_DummyObsBuilder(),
+        bus=bus,
+        cfg={"policy_hz": 50.0, "pd_hz": 50.0, "realtime": False},
+        viewers=set(),
+    )
+
+    first_state = RobotState(
+        qpos=np.zeros(2, dtype=np.float32),
+        qvel=np.zeros(2, dtype=np.float32),
+        quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        ang_vel=np.zeros(3, dtype=np.float32),
+        timestamp=0.0,
+        base_pos=np.array([1.0, 2.0, 0.9], dtype=np.float32),
+        base_lin_vel=np.zeros(3, dtype=np.float32),
+    )
+    first = loop._set_standing_reference(first_state)
+
+    drifted_state = RobotState(
+        qpos=np.zeros(2, dtype=np.float32),
+        qvel=np.zeros(2, dtype=np.float32),
+        quat=np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32),
+        ang_vel=np.zeros(3, dtype=np.float32),
+        timestamp=1.0,
+        base_pos=np.array([5.0, 6.0, 0.9], dtype=np.float32),
+        base_lin_vel=np.zeros(3, dtype=np.float32),
+    )
+    live = loop._build_standing_qpos(drifted_state)
+
+    np.testing.assert_allclose(loop._standing_qpos, first, atol=1e-6)
+    assert not np.allclose(live[0:7], first[0:7])
+
+
 @requires_mujoco
 def test_simulation_loop_runs_and_records_without_viewers() -> None:
     from teleopit.sim.loop import SimulationLoop
@@ -191,7 +234,7 @@ def test_simulation_loop_runs_and_records_without_viewers() -> None:
         controller=_DummyController(),
         obs_builder=_DummyObsBuilder(),
         bus=bus,
-        cfg={"policy_hz": 50.0, "pd_hz": 50.0, "realtime": False, "transition_duration": 0.0},
+        cfg={"policy_hz": 50.0, "pd_hz": 50.0, "realtime": False},
         viewers=set(),
     )
 
@@ -263,7 +306,7 @@ def test_simulation_loop_interpolates_realtime_input_with_one_frame_delay(monkey
         controller=_DummyController(),
         obs_builder=obs_builder,
         bus=bus,
-        cfg={"policy_hz": 50.0, "pd_hz": 50.0, "realtime": False, "transition_duration": 0.0},
+        cfg={"policy_hz": 50.0, "pd_hz": 50.0, "realtime": False},
         viewers=set(),
     )
 
@@ -293,7 +336,6 @@ def test_simulation_loop_rejects_nonzero_reference_steps_without_realtime_timeli
             "policy_hz": 50.0,
             "pd_hz": 50.0,
             "realtime": False,
-            "transition_duration": 0.0,
             "retarget_buffer_enabled": True,
             "reference_steps": [0, 1],
         },
@@ -357,7 +399,6 @@ def test_simulation_loop_waits_for_realtime_warmup_before_first_policy_step(monk
             'policy_hz': 50.0,
             'pd_hz': 50.0,
             'realtime': False,
-            'transition_duration': 0.0,
             'realtime_buffer_warmup_steps': 2,
         },
         viewers=set(),
@@ -390,7 +431,6 @@ def test_simulation_loop_allows_future_reference_steps() -> None:
             "policy_hz": 50.0,
             "pd_hz": 50.0,
             "realtime": False,
-            "transition_duration": 0.0,
             "reference_steps": [0, 1, 2, 3, 4],
             "retarget_buffer_delay_s": 0.08,
             "retarget_buffer_window_s": 0.5,
@@ -510,7 +550,6 @@ def test_simulation_loop_pause_resume_freezes_then_reanchors_live_retarget(monke
             "policy_hz": 50.0,
             "pd_hz": 50.0,
             "realtime": False,
-            "transition_duration": 0.0,
             "retarget_buffer_enabled": False,
             "realtime_input_delay_s": 0.0,
         },
@@ -528,8 +567,10 @@ def test_simulation_loop_pause_resume_freezes_then_reanchors_live_retarget(monke
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[1], np.array([0.2], dtype=np.float32), atol=1e-6)
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[2], np.array([0.0], dtype=np.float32), atol=1e-6)
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[3], np.array([0.0], dtype=np.float32), atol=1e-6)
+    assert loop._step_runner.last_retarget_qpos is not None
 
 
+@requires_mujoco
 @requires_mujoco
 def test_simulation_loop_realtime_keyboard_mode_transitions(monkeypatch) -> None:
     from teleopit.sim.loop import SimulationLoop
@@ -606,7 +647,6 @@ def test_simulation_loop_realtime_keyboard_mode_transitions(monkeypatch) -> None
             "policy_hz": 50.0,
             "pd_hz": 50.0,
             "realtime": False,
-            "transition_duration": 0.0,
             "retarget_buffer_enabled": False,
             "realtime_input_delay_s": 0.0,
             "keyboard": {"enabled": True},
@@ -707,7 +747,6 @@ def test_simulation_loop_realtime_keyboard_mode_drains_stale_pause_events(monkey
             "policy_hz": 50.0,
             "pd_hz": 50.0,
             "realtime": False,
-            "transition_duration": 0.0,
             "retarget_buffer_enabled": False,
             "realtime_input_delay_s": 0.0,
             "keyboard": {"enabled": True},
@@ -775,7 +814,6 @@ def test_simulation_loop_realtime_keyboard_mode_keeps_standing_when_input_not_re
             "policy_hz": 50.0,
             "pd_hz": 50.0,
             "realtime": False,
-            "transition_duration": 0.0,
             "retarget_buffer_enabled": False,
             "realtime_input_delay_s": 0.0,
             "keyboard": {"enabled": True},

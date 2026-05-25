@@ -6,7 +6,6 @@ from types import SimpleNamespace
 import numpy as np
 
 from teleopit.controllers.observation import VelCmdObservationBuilder
-from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.sim.runtime_components import PolicyStepRunner
 
 
@@ -39,7 +38,6 @@ def _make_runner(
         kds=np.ones(29, dtype=np.float32),
         torque_limits=np.ones(29, dtype=np.float32),
         default_dof_pos=np.zeros(29, dtype=np.float32),
-        qpos_interpolator=QposInterpolator(0.0, 50.0),
         reference_velocity_smoothing_alpha=reference_velocity_smoothing_alpha,
     )
 

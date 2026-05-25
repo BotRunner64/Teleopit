@@ -11,10 +11,9 @@ from numpy.typing import NDArray
 
 _logger = logging.getLogger(__name__)
 
-from teleopit.constants import FULL_QPOS_DIM, NUM_JOINTS, ROOT_DIM
+from teleopit.constants import FULL_QPOS_DIM
 from teleopit.bus.topics import TOPIC_ACTION, TOPIC_MIMIC_OBS, TOPIC_ROBOT_STATE
 from teleopit.controllers.observation import VelCmdObservationBuilder
-from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.controllers import reference_processing as ref_proc
 from teleopit.interfaces import MessageBus, ObservationBuilder, Recorder, Robot, RobotState
 from teleopit.retargeting.core import extract_mimic_obs
@@ -94,7 +93,6 @@ class PolicyStepRunner:
         kds: Float32Array,
         torque_limits: Float32Array,
         default_dof_pos: Float32Array,
-        qpos_interpolator: QposInterpolator,
         reference_velocity_smoothing_alpha: float = 1.0,
         reference_anchor_velocity_smoothing_alpha: float = 1.0,
     ) -> None:
@@ -108,7 +106,6 @@ class PolicyStepRunner:
         self.kds = kds
         self.torque_limits = torque_limits
         self.default_dof_pos = default_dof_pos
-        self.qpos_interpolator = qpos_interpolator
         self._motion_joint_vel_smoother = ExponentialVecSmoother(reference_velocity_smoothing_alpha)
         self._motion_anchor_lin_vel_smoother = ExponentialVecSmoother(reference_anchor_velocity_smoothing_alpha)
         self._motion_anchor_ang_vel_smoother = ExponentialVecSmoother(reference_anchor_velocity_smoothing_alpha)
@@ -133,7 +130,6 @@ class PolicyStepRunner:
         self._motion_joint_vel_smoother.reset()
         self._motion_anchor_lin_vel_smoother.reset()
         self._motion_anchor_ang_vel_smoother.reset()
-        self.qpos_interpolator.reset()
 
     def soft_reset_reference_state(self, *, reset_alignment: bool = True) -> None:
         self.last_reference_qpos = None
@@ -156,11 +152,6 @@ class PolicyStepRunner:
             if target_qpos is None
             else np.asarray(target_qpos[0:2], dtype=np.float32).reshape(2).copy()
         )
-
-    def arm_motion_transition(self, start_qpos: Float64Array, *, duration_s: float) -> None:
-        self.qpos_interpolator.reset()
-        self.qpos_interpolator.configure(duration_s)
-        self.qpos_interpolator.start(start_qpos)
 
     def prepare_static_motion_command(self, qpos: Float64Array) -> MotionPreparation:
         hold_qpos = self._retarget_to_qpos(qpos)
@@ -188,14 +179,7 @@ class PolicyStepRunner:
         reference_qpos = self._retarget_to_qpos(retargeted)
         reference_qpos = self._align_velcmd_reference_yaw(reference_qpos, state)
         self._pending_reference_qpos = reference_qpos.copy()
-
-        if self.last_retarget_qpos is None and self.qpos_interpolator.duration > 0:
-            start_qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
-            start_qpos[0:3] = np.asarray(state.base_pos[:3], dtype=np.float64)
-            start_qpos[3:7] = np.asarray(state.quat[:4], dtype=np.float64)
-            start_qpos[ROOT_DIM:FULL_QPOS_DIM] = np.asarray(state.qpos[:NUM_JOINTS], dtype=np.float64)
-            self.qpos_interpolator.start(start_qpos)
-        qpos = self.qpos_interpolator.apply(reference_qpos)
+        qpos = reference_qpos.copy()
 
         mimic_obs = extract_mimic_obs(qpos=qpos, last_qpos=self.last_retarget_qpos, dt=1.0 / self.policy_hz)
         retarget_viewer_qpos = qpos.copy()
@@ -209,13 +193,6 @@ class PolicyStepRunner:
         if obs_builder_requires_reference_window(self.obs_builder):
             motion_anchor_lin_vel_w = None
             motion_anchor_ang_vel_w = None
-        elif self.qpos_interpolator.is_active:
-            true_lin_vel_w, true_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
-            blend = np.float32(self.qpos_interpolator.last_alpha)
-            raw_motion_anchor_lin_vel_w = np.asarray(true_lin_vel_w * blend, dtype=np.float32)
-            raw_motion_anchor_ang_vel_w = np.asarray(true_ang_vel_w * blend, dtype=np.float32)
-            motion_anchor_lin_vel_w = self._motion_anchor_lin_vel_smoother.apply(raw_motion_anchor_lin_vel_w)
-            motion_anchor_ang_vel_w = self._motion_anchor_ang_vel_smoother.apply(raw_motion_anchor_ang_vel_w)
         else:
             raw_motion_anchor_lin_vel_w, raw_motion_anchor_ang_vel_w = self._compute_anchor_velocities(reference_qpos)
             motion_anchor_lin_vel_w = self._motion_anchor_lin_vel_smoother.apply(raw_motion_anchor_lin_vel_w)

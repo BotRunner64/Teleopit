@@ -85,12 +85,13 @@ class DummyProvider:
 class DummyRetargeter:
     def __init__(self, qpos: np.ndarray) -> None:
         self._qpos = np.asarray(qpos, dtype=np.float64)
+        self.reset_calls = 0
 
     def retarget(self, _frame: object) -> np.ndarray:
         return self._qpos.copy()
 
     def reset(self) -> None:
-        pass
+        self.reset_calls += 1
 
 
 class DummyPolicy:
@@ -159,10 +160,9 @@ class FailingHandRuntime(DummyHandRuntime):
         raise RuntimeError("hand send failed")
 
 
-def _make_cfg(transition_duration: float = 1.0) -> dict[str, object]:
+def _make_cfg() -> dict[str, object]:
     return {
         "policy_hz": 50.0,
-        "transition_duration": transition_duration,
         "real_robot": {},
         "mocap_switch": {"check_frames": 1},
         "robot": {
@@ -376,7 +376,7 @@ def test_mocap_step_episode_reset_on_transition(monkeypatch) -> None:
     target_qpos[0] = 0.3
     _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
 
-    ctrl = Sim2RealController(_make_cfg(transition_duration=2.0))
+    ctrl = Sim2RealController(_make_cfg())
     ctrl._transition_to_mocap()
     monkeypatch.setattr(
         ctrl._ref_proc,
@@ -407,7 +407,7 @@ def test_mocap_step_velcmd_applies_fixed_initial_yaw_alignment(monkeypatch) -> N
     target_qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
     _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
 
-    ctrl = Sim2RealController(_make_cfg(transition_duration=0.0))
+    ctrl = Sim2RealController(_make_cfg())
     ctrl.robot._state.quat = np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32)
     monkeypatch.setattr(
         ctrl._ref_proc,
@@ -436,7 +436,7 @@ def test_mocap_step_velcmd_keeps_fixed_yaw_after_start(monkeypatch) -> None:
     target_qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
     _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
 
-    ctrl = Sim2RealController(_make_cfg(transition_duration=0.0))
+    ctrl = Sim2RealController(_make_cfg())
     monkeypatch.setattr(
         ctrl._ref_proc,
         "compute_anchor_velocities",
@@ -467,7 +467,7 @@ def test_mocap_step_waits_for_realtime_warmup_before_running_policy(monkeypatch)
     target_qpos[3] = 1.0
     _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
 
-    cfg = _make_cfg(transition_duration=0.0)
+    cfg = _make_cfg()
     cfg['realtime_buffer_warmup_steps'] = 2
     ctrl = Sim2RealController(cfg)
     monkeypatch.setattr(
@@ -517,7 +517,7 @@ def test_mocap_step_uses_current_reference_qpos(monkeypatch) -> None:
     target_qpos[3] = 1.0
     _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
 
-    cfg = _make_cfg(transition_duration=0.0)
+    cfg = _make_cfg()
     cfg["retarget_buffer_enabled"] = False
     ctrl = Sim2RealController(cfg)
     monkeypatch.setattr(
@@ -549,7 +549,7 @@ def test_mocap_pause_freezes_reference_and_zeroes_velocities(monkeypatch) -> Non
     target_qpos[3] = 1.0
     _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
 
-    cfg = _make_cfg(transition_duration=0.0)
+    cfg = _make_cfg()
     cfg["retarget_buffer_enabled"] = False
     ctrl = Sim2RealController(cfg)
     monkeypatch.setattr(
@@ -599,7 +599,7 @@ def test_mocap_resume_uses_episode_reset_semantics(monkeypatch) -> None:
     target_qpos[3] = 1.0
     _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
 
-    cfg = _make_cfg(transition_duration=0.0)
+    cfg = _make_cfg()
     cfg["retarget_buffer_enabled"] = False
     ctrl = Sim2RealController(cfg)
     monkeypatch.setattr(
@@ -643,6 +643,7 @@ def test_mocap_resume_uses_episode_reset_semantics(monkeypatch) -> None:
     assert ctrl._mocap_session.state == MocapSessionState.ACTIVE
     # Policy was reset (last_action zeroed, history cleared)
     assert np.allclose(ctrl._last_action, 0.0)
+    assert ctrl.retargeter.reset_calls == 0
     # Retarget reference jumps to the live mocap pose (joint 0), while root XY
     # is reanchored to the paused reference because real-robot XY is unobserved.
     np.testing.assert_allclose(obs_builder.build_calls[-1]["motion_qpos"][0], 0.2, atol=1e-6)

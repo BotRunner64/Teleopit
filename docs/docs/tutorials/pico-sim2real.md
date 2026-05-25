@@ -202,9 +202,6 @@ input.bridge_advertise_ip=192.168.1.20
 # Consecutive valid mocap frames required before MOCAP
 mocap_switch.check_frames=10
 
-# Smooth transition into mocap reference
-transition_duration=2.0
-
 # Change Pico pause button
 input.pause_button=right_axis_click
 

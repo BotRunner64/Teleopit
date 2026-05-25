@@ -122,7 +122,7 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 ### Offline Playback
 - Offline sim2sim and default sim2real both read `input.bvh_file` directly; no UDP relay path remains
 - Offline sim2sim playback can be keyboard-controlled: `Space/P` pause/resume, `R` replay from frame 0, `Q` stop
-- Offline pause holds the commanded pose; resume resets policy/reference state and uses `transition_duration` for the playback blend
+- Offline pause holds the commanded pose; resume resets policy/reference state and reanchors yaw/XY without qpos interpolation
 - sim2sim keyboard playback is optional via `playback.keyboard.enabled=true`
 - sim2real reuses the Unitree remote: `Start` → `STANDING`, `Y` → playback, `X` → back to `STANDING`, `L1+R1` → `DAMPING`
 - `playback.pause_on_end=true` keeps the final pose and waits for manual replay

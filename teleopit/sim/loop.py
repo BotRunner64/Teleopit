@@ -9,7 +9,6 @@ from numpy.typing import NDArray
 
 from teleopit.constants import FULL_QPOS_DIM, ROOT_DIM
 from teleopit.controllers.observation import align_motion_qpos_yaw
-from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.runtime.reference_config import parse_reference_config
 from teleopit.inputs.realtime_packet import RealtimeInputPacket
 from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Recorder, Retargeter, Robot, RobotState
@@ -76,16 +75,12 @@ class SimulationLoop:
 
         self._last_action: Float32Array = np.zeros((self._num_actions,), dtype=np.float32)
         self._last_retarget_qpos: Float64Array | None = None
+        self._standing_qpos: Float64Array | None = None
         self._realtime: bool = bool(self._try_get_cfg("realtime") or False)
         raw_debug_trace_path = self._try_get_cfg("debug_trace_path")
         self._debug_trace_path: str | None = None
         if raw_debug_trace_path not in (None, "", "null"):
             self._debug_trace_path = str(raw_debug_trace_path)
-
-        # Motion command transition smoothing
-        transition_dur = float(self._try_get_cfg("transition_duration") or 0.0)
-        self._mocap_transition_duration = transition_dur
-        self._qpos_interpolator = QposInterpolator(transition_dur, self.policy_hz)
 
         self._init_reference_config()
         self._init_components(viewers)
@@ -126,7 +121,6 @@ class SimulationLoop:
             kds=self._kds,
             torque_limits=self._torque_limits,
             default_dof_pos=self._default_dof_pos,
-            qpos_interpolator=self._qpos_interpolator,
             reference_velocity_smoothing_alpha=self._ref_cfg.reference_velocity_smoothing_alpha,
             reference_anchor_velocity_smoothing_alpha=self._ref_cfg.reference_anchor_velocity_smoothing_alpha,
         )
@@ -171,6 +165,11 @@ class SimulationLoop:
         standing_qpos[3] = 1.0
         align_motion_qpos_yaw(np.asarray(state.quat, dtype=np.float32), standing_qpos)
         standing_qpos[7:7 + self._num_actions] = self._default_dof_pos.astype(np.float64)[: self._num_actions]
+        return standing_qpos
+
+    def _set_standing_reference(self, state: RobotState) -> Float64Array:
+        standing_qpos = self._build_standing_qpos(state)
+        self._standing_qpos = standing_qpos.copy()
         return standing_qpos
 
     @staticmethod
@@ -273,14 +272,12 @@ class SimulationLoop:
         offline_playback: OfflinePlaybackController,
         mocap_session: MocapSessionManager,
         hold_qpos: Float64Array,
-        retargeter: Retargeter,
     ) -> None:
         offline_playback.pause()
         self._step_runner.reset()
         self._last_action = np.zeros((self._num_actions,), dtype=np.float32)
         self.controller.reset()
         self.obs_builder.reset()
-        retargeter.reset()
         mocap_session.pause(hold_qpos)
 
     def _resume_offline_playback(
@@ -288,24 +285,19 @@ class SimulationLoop:
         *,
         offline_playback: OfflinePlaybackController,
         mocap_session: MocapSessionManager,
-        retargeter: Retargeter,
         state: RobotState,
     ) -> None:
         if mocap_session.hold_qpos is None:
             raise RuntimeError("Cannot resume offline playback without a paused hold qpos")
-        resume_qpos = self._build_robot_state_qpos(state)
+        resume_qpos = self._build_resume_alignment_qpos(mocap_session.hold_qpos, state)
         offline_playback.resume()
         mocap_session.reset()
         self._step_runner.reset()
         self._last_action = np.zeros((self._num_actions,), dtype=np.float32)
         self.controller.reset()
         self.obs_builder.reset()
-        retargeter.reset()
+        self._step_runner.reset_reference_alignment(resume_qpos)
         self._step_runner.last_retarget_qpos = resume_qpos.copy()
-        self._step_runner.arm_motion_transition(
-            resume_qpos,
-            duration_s=self._mocap_transition_duration,
-        )
 
     def _build_observation(
         self,

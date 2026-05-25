@@ -191,9 +191,6 @@ input.bridge_advertise_ip=192.168.1.20
 # 进入 MOCAP 前要求的连续有效动捕帧数
 mocap_switch.check_frames=10
 
-# 平滑过渡到 mocap 参考
-transition_duration=2.0
-
 # 更换 Pico 暂停键
 input.pause_button=right_axis_click
 
