@@ -8,6 +8,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from teleopit.constants import FULL_QPOS_DIM, ROOT_DIM
+from teleopit.controllers.observation import align_motion_qpos_yaw
 from teleopit.controllers.qpos_interpolator import QposInterpolator
 from teleopit.runtime.reference_config import parse_reference_config
 from teleopit.inputs.realtime_packet import RealtimeInputPacket
@@ -167,7 +168,8 @@ class SimulationLoop:
         standing_qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
         if state.base_pos is not None:
             standing_qpos[0:3] = np.asarray(state.base_pos, dtype=np.float64)[:3]
-        standing_qpos[3:7] = np.asarray(state.quat, dtype=np.float64)[:4]
+        standing_qpos[3] = 1.0
+        align_motion_qpos_yaw(np.asarray(state.quat, dtype=np.float32), standing_qpos)
         standing_qpos[7:7 + self._num_actions] = self._default_dof_pos.astype(np.float64)[: self._num_actions]
         return standing_qpos
 

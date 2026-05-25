@@ -130,6 +130,56 @@ class _DummyRecorder:
         self.frames.append(data)
 
 
+def _quat_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return np.array(
+        [
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        ],
+        dtype=np.float32,
+    )
+
+
+def test_standing_qpos_keeps_yaw_but_drops_roll() -> None:
+    from teleopit.sim.loop import SimulationLoop
+
+    bus = InProcessBus()
+    robot = _DummyRobot()
+    loop = SimulationLoop(
+        robot=robot,
+        controller=_DummyController(),
+        obs_builder=_DummyObsBuilder(),
+        bus=bus,
+        cfg={"policy_hz": 50.0, "pd_hz": 50.0, "realtime": False, "transition_duration": 0.0},
+        viewers=set(),
+    )
+
+    yaw = np.float32(np.pi / 2.0)
+    roll = np.float32(np.pi / 6.0)
+    yaw_quat = np.array([np.cos(yaw / 2.0), 0.0, 0.0, np.sin(yaw / 2.0)], dtype=np.float32)
+    roll_quat = np.array([np.cos(roll / 2.0), np.sin(roll / 2.0), 0.0, 0.0], dtype=np.float32)
+    tilted_quat = _quat_mul(yaw_quat, roll_quat)
+    state = RobotState(
+        qpos=np.array([0.2, -0.1], dtype=np.float32),
+        qvel=np.zeros(2, dtype=np.float32),
+        quat=tilted_quat,
+        ang_vel=np.zeros(3, dtype=np.float32),
+        timestamp=0.0,
+        base_pos=np.array([1.0, 2.0, 0.9], dtype=np.float32),
+        base_lin_vel=np.zeros(3, dtype=np.float32),
+    )
+
+    standing_qpos = loop._build_standing_qpos(state)
+
+    np.testing.assert_allclose(standing_qpos[0:3], state.base_pos, atol=1e-6)
+    np.testing.assert_allclose(standing_qpos[3:7], yaw_quat, atol=1e-6)
+    np.testing.assert_allclose(standing_qpos[7:9], robot.default_dof_pos, atol=1e-6)
+
+
 @requires_mujoco
 def test_simulation_loop_runs_and_records_without_viewers() -> None:
     from teleopit.sim.loop import SimulationLoop
