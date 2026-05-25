@@ -20,7 +20,7 @@ Module-internal isolation: all modules run in-process and communicate via `InPro
 
 - Training task: `General-Tracking-G1`
 - Inference observation: `velcmd_history` (166D, dual-input ONNX with `obs` + `obs_history`)
-- TemporalCNN actor/critic with scaled dims (1024,512,256,256,128)
+- TemporalCNN actor/critic with scaled dims (2048,1024,512,256,128)
 - Realtime inference uses a retargeted-reference timeline before observation build; `reference_steps=[0]` is the default production path
 
 ## Directory Structure
@@ -179,7 +179,7 @@ Runtime constraints:
 ### Training Task
 The single supported training task is `General-Tracking-G1` (experiment name: `g1_general_tracking`).
 
-- Uses TemporalCNN actor/critic with scaled dims (1024,512,256,256,128)
+- Uses TemporalCNN actor/critic with scaled dims (2048,1024,512,256,128)
 - 166D `velcmd_history` observation, dual-input ONNX export
 - Training env uses `sampling_mode="uniform"`
 - Playback/benchmark use `play=True`, which switches motion sampling to `start`

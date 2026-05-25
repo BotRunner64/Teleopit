@@ -88,7 +88,7 @@ def test_general_tracking_task_is_registered() -> None:
     assert lower_pd_asset.actuator_ids == [1, 2, 4, 5]
     rl_cfg = load_rl_cfg(DEFAULT_TASK)
     assert rl_cfg.experiment_name == GENERAL_TRACKING_EXPERIMENT_NAME
-    assert rl_cfg.actor.hidden_dims == (1024, 512, 256, 256, 128)
+    assert rl_cfg.actor.hidden_dims == (2048, 1024, 512, 256, 128)
     assert load_runner_cls(DEFAULT_TASK) is MotionTrackingOnPolicyRunner
 
 

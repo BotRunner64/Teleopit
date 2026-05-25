@@ -57,7 +57,7 @@ train_mimic/scripts/data
 | Training task | `General-Tracking-G1` |
 | Inference observation | `velcmd_history` (166D) |
 | ONNX signature | Dual-input `obs` (166D) + `obs_history` |
-| Actor/Critic | TemporalCNN (1024, 512, 256, 256, 128) |
+| Actor/Critic | TemporalCNN (2048, 1024, 512, 256, 128) |
 | Training sampling | `uniform`; playback/benchmark use `start` |
 | Training `window_steps` | `[0]` |
 | Data format | Shard directories only (`shard_*.npz`) |
