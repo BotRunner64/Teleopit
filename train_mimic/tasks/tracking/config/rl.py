@@ -10,7 +10,7 @@ _TEMPORAL_CNN_MODEL_CLASS = (
     "train_mimic.tasks.tracking.rl.temporal_cnn_model:TemporalCNNModel"
 )
 _CNN_CFG: dict = {
-    "output_channels": (256, 128, 64),
+    "output_channels": (128, 64, 32),
     "kernel_size": 3,
     "activation": "elu",
     "global_pool": "avg",
@@ -24,7 +24,7 @@ def make_general_tracking_ppo_runner_cfg(
     return RslRlOnPolicyRunnerCfg(
         actor=RslRlModelCfg(
             class_name=_TEMPORAL_CNN_MODEL_CLASS,
-            hidden_dims=(2048, 1024, 512, 256, 128),
+            hidden_dims=(1024, 512, 256, 256, 128),
             activation="elu",
             obs_normalization=True,
             cnn_cfg=_CNN_CFG,
@@ -36,7 +36,7 @@ def make_general_tracking_ppo_runner_cfg(
         ),
         critic=RslRlModelCfg(
             class_name=_TEMPORAL_CNN_MODEL_CLASS,
-            hidden_dims=(2048, 1024, 512, 256, 128),
+            hidden_dims=(1024, 512, 256, 256, 128),
             activation="elu",
             obs_normalization=True,
             cnn_cfg=_CNN_CFG,
@@ -48,7 +48,7 @@ def make_general_tracking_ppo_runner_cfg(
             entropy_coef=0.005,
             num_learning_epochs=5,
             num_mini_batches=4,
-            learning_rate=5.0e-4,
+            learning_rate=1.0e-3,
             schedule="adaptive",
             gamma=0.99,
             lam=0.95,
