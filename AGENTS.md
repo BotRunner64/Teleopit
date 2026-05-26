@@ -108,6 +108,7 @@ python scripts/run/run_sim.py controller.policy_path=policy.onnx viewers=none
 - `viewers=all` opens `mocap`, `retarget`, and `sim2sim`; add `camera` explicitly when needed
 - All viewers run in separate subprocesses because GLFW/GLX only supports one window per process
 - Simulation exits when all active viewer windows are closed
+- sim2real defaults to `viewers=none`; it supports only optional `viewers=retarget`
 - `viewers` is the only supported viewer key; legacy `viewer` alias is removed
 
 ### default_dof_pos Propagation

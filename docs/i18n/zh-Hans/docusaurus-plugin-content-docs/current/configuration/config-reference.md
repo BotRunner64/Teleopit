@@ -109,11 +109,15 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 
 以下字段用于 sim2real 配置（`sim2real.yaml`、`pico4_sim2real.yaml`）。
 
+sim2real 默认使用 `viewers=none`。设置 `viewers=retarget` 可打开一个可选的
+MuJoCo 窗口显示重定向参考；`sim2sim`、`mocap`、`camera` 和 `all`
+仅用于仿真 viewer。
+
 ### 安全相关
 
 | 字段 | 说明 | 默认值 |
 |---|---|---|
-| `startup_ramp_duration` | 从锁定位置平滑过渡到策略控制的时长（秒） | `2.0` |
+| `startup_ramp_duration` | 进入 `STANDING` 后的 Kp ramp 时长；逐步提高 PD 增益，不改变 policy target | `2.0` |
 | `joint_vel_limit` | 关节速度限制（rad/s），超过时触发急停 | `10.0` |
 | `mocap_switch.check_frames` | 切换到 MOCAP 前所需的连续有效帧数 | `10` |
 | `mocap_switch.max_position_value` | 位置合理性阈值（米） | `5.0` |

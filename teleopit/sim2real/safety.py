@@ -30,7 +30,6 @@ class Sim2RealSafetyManager:
     ) -> None:
         self._robot = robot
         self._policy_hz = policy_hz
-
         real_cfg = cfg_get(cfg, "real_robot")
 
         # KP ramp (gradually increase PD gains after episode-reset)

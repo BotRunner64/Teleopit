@@ -122,10 +122,10 @@ Pico body frames -> retarget -> reference buffer -> observation -> policy -> G1 
 
 When entering `STANDING`, Teleopit releases active Unitree modes, enters
 debug/low-level control, locks the current joints briefly, resets policy state,
-and ramps Kp to reduce startup spikes.
+and ramps Kp without changing policy targets.
 
-When entering `MOCAP`, Teleopit resets policy/reference state and blends the
-reference from the current robot state into the live mocap command.
+When entering `MOCAP`, Teleopit resets policy/reference state and starts tracking
+the live mocap command through the realtime reference timeline.
 
 ## Pause / Resume
 

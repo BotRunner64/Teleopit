@@ -5,6 +5,7 @@ defaults:
   - _self_
 
 policy_hz: 50.0
+viewers: "none"  # Optional: set viewers=retarget to show the retargeted reference
 input:
   video:
     source: realsense
@@ -17,7 +18,7 @@ reference_anchor_velocity_smoothing_alpha: 0.25
 reference_steps: [0]
 reference_debug_log: false
 
-# Startup ramp duration (seconds) -- smoothly blend from locked to policy positions
+# Kp ramp duration (seconds) -- gradually increases PD gains after entering STANDING
 startup_ramp_duration: 2.0
 # Joint velocity safety limit (rad/s) -- trigger emergency damping if exceeded
 joint_vel_limit: 10.0

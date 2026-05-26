@@ -168,6 +168,7 @@ def _make_cfg() -> dict[str, object]:
         "robot": {
             "default_angles": [0.0] * 29,
             "num_actions": 29,
+            "xml_path": "robot.xml",
         },
         "controller": {},
         "input": {"provider": "pico4"},
@@ -225,6 +226,82 @@ def test_reset_policy_state_clears_reference_timeline(monkeypatch) -> None:
 
     assert len(ctrl._reference_timeline) == 0
     assert ctrl._last_live_packet_seq == -1
+
+
+def test_sim2real_retarget_viewer_defaults_off(monkeypatch) -> None:
+    import teleopit.sim2real.controller as controller_mod
+    from teleopit.sim2real.controller import Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=np.zeros(36, dtype=np.float64))
+
+    starts: list[tuple[object, ...]] = []
+    monkeypatch.setattr(controller_mod, "start_robot_viewer", lambda *args, **kwargs: starts.append(args))
+
+    Sim2RealController(_make_cfg())
+
+    assert starts == []
+
+
+def test_sim2real_retarget_viewer_writes_reference_qpos(monkeypatch) -> None:
+    import multiprocessing as mp
+
+    import teleopit.sim2real.controller as controller_mod
+    from teleopit.sim2real.controller import Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    target_qpos = np.zeros(36, dtype=np.float64)
+    target_qpos[0] = 0.25
+    target_qpos[3] = 1.0
+    target_qpos[7] = 0.5
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
+
+    arr = mp.Array("d", 36)
+    alive = mp.Value("i", 1)
+    shutdown = mp.Event()
+    proc = SimpleNamespace(join=lambda timeout=None: None, is_alive=lambda: False, terminate=lambda: None)
+    starts: list[tuple[object, ...]] = []
+
+    def fake_start_robot_viewer(*args: object, **_kwargs: object) -> tuple[object, object, object, object]:
+        starts.append(args)
+        return proc, arr, alive, shutdown
+
+    monkeypatch.setattr(controller_mod, "start_robot_viewer", fake_start_robot_viewer)
+    cfg = _make_cfg()
+    cfg["retarget_buffer_enabled"] = False
+    cfg["viewers"] = "retarget"
+    ctrl = Sim2RealController(cfg)
+    monkeypatch.setattr(
+        ctrl._ref_proc,
+        "compute_anchor_velocities",
+        lambda _qpos: (
+            np.zeros(3, dtype=np.float32),
+            np.zeros(3, dtype=np.float32),
+        ),
+    )
+
+    ctrl._mocap_step()
+
+    assert starts
+    with arr.get_lock():
+        written = np.asarray(arr[:], dtype=np.float64)
+    np.testing.assert_allclose(written[[0, 3, 7]], target_qpos[[0, 3, 7]], atol=1e-6)
+
+
+def test_sim2real_retarget_viewer_rejects_sim_viewers(monkeypatch) -> None:
+    from teleopit.sim2real.controller import Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=np.zeros(36, dtype=np.float64))
+
+    cfg = _make_cfg()
+    cfg["viewers"] = ["retarget", "sim2sim"]
+
+    with pytest.raises(ValueError, match="supports only the optional 'retarget' viewer"):
+        Sim2RealController(cfg)
 
 
 def test_sim2real_rejects_nonzero_reference_steps_without_buffer(monkeypatch) -> None:

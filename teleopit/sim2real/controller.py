@@ -31,7 +31,7 @@ from teleopit.inputs.pico4_provider import Pico4InputProvider
 from teleopit.inputs.pico_video import PicoVideoRuntime, parse_pico_video_config
 from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType, RealtimeInputPacket
 from teleopit.retargeting.core import RetargetingModule
-from teleopit.runtime.common import cfg_get
+from teleopit.runtime.common import cfg_get, parse_viewers
 from teleopit.runtime.reference_config import parse_reference_config
 from teleopit.runtime.factory import build_sim2real_mocap_components
 from teleopit.runtime.mocap_session import MocapSessionManager, MocapSessionState
@@ -44,6 +44,7 @@ from teleopit.sim.reference_utils import (
     obs_builder_requires_reference_window,
 )
 from teleopit.sim.realtime_utils import RealtimeReferenceManager
+from teleopit.sim.viewer_subprocess import start_robot_viewer
 from teleopit.sim2real.dexterous_hand import build_linkerhand_runtime
 from teleopit.sim2real.reference_processor import Sim2RealReferenceProcessor
 from teleopit.sim2real.remote import UnitreeRemote
@@ -61,6 +62,56 @@ class RobotMode(Enum):
     STANDING = "standing"  # Debug mode, RL policy holds default pose
     MOCAP = "mocap"        # Debug mode, RL policy tracks motion commands
     DAMPING = "damping"    # Emergency stop / recovery
+
+
+def _parse_sim2real_viewers(cfg: Any) -> set[str]:
+    viewers = parse_viewers(cfg)
+    unsupported = viewers.difference({"retarget"})
+    if unsupported:
+        raise ValueError(
+            f"Sim2real supports only the optional 'retarget' viewer; got unsupported viewers {sorted(unsupported)}. "
+            "Use viewers=retarget or viewers=none."
+        )
+    return viewers
+
+
+class _Sim2RealRetargetViewer:
+    def __init__(self, *, xml_path: str | None, enabled: bool) -> None:
+        self._entry: tuple[Any, Any, Any, Any] | None = None
+        if not enabled:
+            return
+        if not xml_path:
+            raise ValueError("Sim2real retarget viewer requires robot.xml_path to be set.")
+        self._entry = start_robot_viewer(
+            xml_path,
+            FULL_QPOS_DIM,
+            True,
+            "Retarget",
+            900,
+            50,
+        )
+
+    def write(self, qpos: Float64Array) -> None:
+        if self._entry is None:
+            return
+        _, arr, alive, _ = self._entry
+        if not alive.value:
+            return
+        qpos = np.asarray(qpos, dtype=np.float64).reshape(-1)
+        if qpos.shape[0] < FULL_QPOS_DIM:
+            return
+        with arr.get_lock():
+            arr[:FULL_QPOS_DIM] = qpos[:FULL_QPOS_DIM].tolist()
+
+    def shutdown(self) -> None:
+        if self._entry is None:
+            return
+        proc, _, _, shutdown = self._entry
+        shutdown.set()
+        proc.join(timeout=3)
+        if proc.is_alive():
+            proc.terminate()
+        self._entry = None
 
 
 class Sim2RealController:
@@ -145,6 +196,11 @@ class Sim2RealController:
         self._mocap_reentry_armed: bool = False
         self._mocap_session = MocapSessionManager()
         self._last_commanded_motion_qpos: Float64Array | None = None
+        self._viewers = _parse_sim2real_viewers(cfg)
+        self._retarget_viewer = _Sim2RealRetargetViewer(
+            xml_path=str(cfg_get(robot_cfg, "xml_path", "")) if "retarget" in self._viewers else None,
+            enabled="retarget" in self._viewers,
+        )
 
     def _init_reference_config(self, cfg: Any) -> None:
         """Parse reference-window / realtime-buffer configuration."""
@@ -282,6 +338,7 @@ class Sim2RealController:
         self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
         self._last_retarget_qpos = qpos.copy()
         self._last_commanded_motion_qpos = qpos.copy()
+        self._write_retarget_viewer(qpos)
 
     def _mocap_step(self) -> None:
         """Mocap mode: input provider -> retarget -> policy -> update LowCmd targets."""
@@ -430,6 +487,7 @@ class Sim2RealController:
         self._last_retarget_qpos = qpos.copy()
         self._ref_proc.last_reference_qpos = reference_qpos.copy()
         self._last_commanded_motion_qpos = qpos.copy()
+        self._write_retarget_viewer(qpos)
 
     # ------------------------------------------------------------------
     # State machine transitions
@@ -527,7 +585,7 @@ class Sim2RealController:
         self._reset_policy_state()
 
         # Kp ramp: gradually increase PD gains to avoid torque spike.
-        # Unlike the old position ramp, this does NOT break action-state causality.
+        # Unlike position ramping, this does not alter policy targets.
         self._safety.start_kp_ramp()
 
         self._mocap_reentry_armed = prev_mode == RobotMode.MOCAP
@@ -843,6 +901,7 @@ class Sim2RealController:
         self._last_retarget_qpos = qpos.copy()
         self._ref_proc.last_reference_qpos = qpos.copy()
         self._last_commanded_motion_qpos = qpos.copy()
+        self._write_retarget_viewer(qpos)
 
     def _tick_dexterous_hand(self) -> None:
         active = self.mode == RobotMode.MOCAP and self._mocap_session.state == MocapSessionState.ACTIVE
@@ -856,6 +915,12 @@ class Sim2RealController:
             self._hand_runtime.tick(active=False)
         except Exception:
             logger.exception("Failed to deactivate dexterous hand runtime")
+
+    def _write_retarget_viewer(self, qpos: Float64Array) -> None:
+        try:
+            self._retarget_viewer.write(qpos)
+        except Exception:
+            logger.exception("Sim2real retarget viewer update failed; control continues")
 
     @staticmethod
     def _sleep_until(t0: float, dt: float) -> None:
@@ -888,6 +953,10 @@ class Sim2RealController:
             pass
         try:
             self._hand_runtime.close()
+        except Exception:
+            pass
+        try:
+            self._retarget_viewer.shutdown()
         except Exception:
             pass
         try:

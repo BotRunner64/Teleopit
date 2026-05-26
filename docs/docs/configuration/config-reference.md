@@ -90,11 +90,15 @@ Complete reference for all configurable fields.
 
 Fields used by sim2real configs (`sim2real.yaml`, `pico4_sim2real.yaml`).
 
+Sim2real defaults to `viewers=none`. Set `viewers=retarget` to open an optional
+MuJoCo window showing the retargeted reference; `sim2sim`, `mocap`, `camera`,
+and `all` are simulation-only viewer modes.
+
 ### Safety
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `startup_ramp_duration` | Seconds to smoothly blend from locked to policy positions | `2.0` |
+| `startup_ramp_duration` | Kp ramp duration after entering `STANDING`; gradually increases PD gains without changing policy targets | `2.0` |
 | `joint_vel_limit` | Joint velocity limit (rad/s); triggers emergency damping if exceeded | `10.0` |
 | `mocap_switch.check_frames` | Consecutive valid frames required before switching to MOCAP | `10` |
 | `mocap_switch.max_position_value` | Position sanity threshold in meters | `5.0` |

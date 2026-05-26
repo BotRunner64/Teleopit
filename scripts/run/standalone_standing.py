@@ -17,7 +17,7 @@ Flow:
     1. Init DDS, subscribe to rt/lowstate
     2. Load ONNX policy + MuJoCo model for observation building
     3. Enter debug mode (release MotionSwitcher modes)
-    4. Lock joints, then run RL policy standing loop with startup ramp
+    4. Lock joints, then run RL policy standing loop
     5. Hold standing until Ctrl-C or L1+R1
     6. On exit: set damping, restore ai mode
 """
@@ -54,7 +54,6 @@ POLICY_HZ = 50.0
 POS_STOP_F = 2146000000.0
 VEL_STOP_F = 16000.0
 KD_DAMPING = 8.0
-RAMP_DURATION = 2.0
 JOINT_VEL_LIMIT = 10.0
 
 # Default standing pose (from g1_constants.py HOME_KEYFRAME)
@@ -357,11 +356,9 @@ class StandingController:
     """RL-policy-based standing controller matching Sim2RealController.STANDING."""
 
     def __init__(self, network_interface: str, policy_path: str,
-                 ramp_duration: float = RAMP_DURATION,
                  no_policy: bool = False,
                  publish_hz: int = 250) -> None:
         self._network_interface = network_interface
-        self._ramp_duration = ramp_duration
         self._shutdown = False
 
         # ---- Load policy and observation builder ----
@@ -390,12 +387,6 @@ class StandingController:
         self._standing_qpos = np.zeros(36, dtype=np.float64)
         self._standing_qpos[3] = 1.0  # identity quaternion w=1
         self._standing_qpos[7:36] = DEFAULT_ANGLES.astype(np.float64)
-
-        # Startup ramp state
-        self._ramp_duration_steps = max(1, int(ramp_duration * POLICY_HZ))
-        self._ramp_step = 0
-        self._ramp_start_positions: np.ndarray | None = None
-        self._ramp_active = False
 
         # ---- Pipeline state ----
         self._inference_thread: threading.Thread | None = None
@@ -507,22 +498,6 @@ class StandingController:
             return True
         return False
 
-    # ---- Startup ramp ----
-
-    def _apply_startup_ramp(self, target_dof_pos: np.ndarray) -> np.ndarray:
-        if not self._ramp_active or self._ramp_start_positions is None:
-            return target_dof_pos
-
-        ramp_factor = min(1.0, self._ramp_step / self._ramp_duration_steps)
-        ramped = self._ramp_start_positions + ramp_factor * (target_dof_pos - self._ramp_start_positions)
-
-        self._ramp_step += 1
-        if self._ramp_step >= self._ramp_duration_steps:
-            self._ramp_active = False
-            logger.info("Startup ramp complete (%d steps)", self._ramp_duration_steps)
-
-        return np.asarray(ramped, dtype=np.float32)
-
     # ---- Standing step (matches Sim2RealController._standing_step) ----
 
     def _standing_step(self) -> np.ndarray:
@@ -574,9 +549,6 @@ class StandingController:
                 np.array2string(target_dof_pos[:6], precision=4, separator=','),
                 np.array2string(qpos[:6], precision=4, separator=','),
             )
-
-        # Startup ramp
-        target_dof_pos = self._apply_startup_ramp(target_dof_pos)
 
         # Joint limits
         target_dof_pos = np.clip(target_dof_pos, JOINT_POS_LOWER, JOINT_POS_UPPER)
@@ -633,8 +605,7 @@ class StandingController:
 
             # Policy step
             if self._no_policy:
-                target = self._apply_startup_ramp(DEFAULT_ANGLES.copy())
-                target = np.clip(target, JOINT_POS_LOWER, JOINT_POS_UPPER)
+                target = np.clip(DEFAULT_ANGLES.copy(), JOINT_POS_LOWER, JOINT_POS_UPPER)
             else:
                 target = self._standing_step()
 
@@ -667,7 +638,6 @@ class StandingController:
         logger.info("=== DRY-RUN MODE: no motor commands will be sent ===")
         self._last_action = np.zeros(NUM_JOINTS, dtype=np.float32)
         self._policy.reset()
-        self._ramp_active = False
 
         dt = 1.0 / POLICY_HZ
         loop_count = 0
@@ -774,17 +744,10 @@ class StandingController:
             self._policy.reset()
             logger.info("ONNX warmup complete")
 
-            # 5. Initialize policy state and startup ramp
-            qpos, _, quat, _ = self._get_robot_state()
+            # 5. Initialize policy state
             self._last_action = np.zeros(NUM_JOINTS, dtype=np.float32)
-            self._ramp_start_positions = qpos.copy()
-            self._ramp_step = 0
-            self._ramp_active = True
 
-            logger.info(
-                "Starting RL policy standing (pipelined) | ramp=%d steps (%.1fs)",
-                self._ramp_duration_steps, self._ramp_duration_steps / POLICY_HZ,
-            )
+            logger.info("Starting RL policy standing (pipelined)")
 
             # 6. Start inference thread (~50Hz, soft deadline)
             self._start_inference()
@@ -826,10 +789,6 @@ def main():
         help="Network interface for DDS (e.g. eth0, enp130s0)",
     )
     parser.add_argument(
-        "--ramp-duration", type=float, default=RAMP_DURATION,
-        help="Seconds for startup ramp (default: 2.0)",
-    )
-    parser.add_argument(
         "--no-policy", action="store_true",
         help="Skip RL policy, just send fixed DEFAULT_ANGLES (diagnostic mode)",
     )
@@ -850,7 +809,6 @@ def main():
     controller = StandingController(
         network_interface=args.network_interface,
         policy_path=args.policy,
-        ramp_duration=args.ramp_duration,
         no_policy=args.no_policy,
         publish_hz=args.publish_hz,
     )

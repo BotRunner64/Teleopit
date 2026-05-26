@@ -54,6 +54,9 @@ python scripts/run/run_sim.py \
     'viewers=[sim2sim,camera]'
 ```
 
+For sim2real, viewers are disabled by default. Add `viewers=retarget` to show
+the retargeted reference in an optional MuJoCo window.
+
 ## Documentation
 
 Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Teleopit/)**, covering installation profiles, all tutorials, configuration reference, and architecture.

@@ -115,9 +115,9 @@ Pico body frames -> retarget -> reference buffer -> observation -> policy -> G1 
 ```
 
 进入 `STANDING` 时，Teleopit 会释放当前 Unitree 模式，进入 debug/low-level 控制，
-短暂锁住当前关节，重置 policy 状态，并通过 Kp ramp 减少启动冲击。
+短暂锁住当前关节，重置 policy 状态，并在不改变 policy target 的情况下执行 Kp ramp。
 
-进入 `MOCAP` 时，Teleopit 会重置 policy/reference 状态，并将参考从当前机器人状态平滑过渡到
+进入 `MOCAP` 时，Teleopit 会重置 policy/reference 状态，并通过实时参考时间线开始跟踪
 实时 mocap 命令。
 
 ## 暂停 / 恢复
