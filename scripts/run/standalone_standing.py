@@ -55,6 +55,8 @@ POS_STOP_F = 2146000000.0
 VEL_STOP_F = 16000.0
 KD_DAMPING = 8.0
 JOINT_VEL_LIMIT = 10.0
+DEFAULT_KP_RAMP_DURATION = 2.0
+DEFAULT_KP_RAMP_FLOOR_RATIO = 0.1
 
 # Default standing pose (from g1_constants.py HOME_KEYFRAME)
 DEFAULT_ANGLES = np.array([
@@ -357,9 +359,15 @@ class StandingController:
 
     def __init__(self, network_interface: str, policy_path: str,
                  no_policy: bool = False,
-                 publish_hz: int = 250) -> None:
+                 publish_hz: int = 250,
+                 kp_ramp_duration: float = DEFAULT_KP_RAMP_DURATION,
+                 kp_ramp_floor_ratio: float = DEFAULT_KP_RAMP_FLOOR_RATIO) -> None:
         self._network_interface = network_interface
         self._shutdown = False
+        if kp_ramp_duration < 0.0:
+            raise ValueError("kp_ramp_duration must be >= 0")
+        if not 0.0 <= kp_ramp_floor_ratio <= 1.0:
+            raise ValueError("kp_ramp_floor_ratio must be in [0, 1]")
 
         # ---- Load policy and observation builder ----
         self._policy = PolicyInference(policy_path)
@@ -393,6 +401,10 @@ class StandingController:
         self._inference_running = False
 
         self._publish_hz = publish_hz
+        self._kp_ramp_duration_steps = max(1, int(kp_ramp_duration * POLICY_HZ))
+        self._kp_ramp_floor_ratio = float(kp_ramp_floor_ratio)
+        self._kp_ramp_step = 0
+        self._kp_ramp_active = False
 
         self._init_cpp_backend()
 
@@ -476,6 +488,38 @@ class StandingController:
         qpos, _, _, _ = self._get_robot_state()
         self._bridge.set_target(qpos, KP, KD)
         self._bridge.lock_joints()
+
+    def _start_kp_ramp(self) -> None:
+        self._kp_ramp_step = 0
+        self._kp_ramp_active = True
+        logger.info(
+            "Kp ramp armed: %d steps (%.1fs), floor_ratio=%.2f",
+            self._kp_ramp_duration_steps,
+            self._kp_ramp_duration_steps / POLICY_HZ,
+            self._kp_ramp_floor_ratio,
+        )
+
+    def _compute_kp_ramp_gains(self) -> tuple[np.ndarray, np.ndarray] | None:
+        if not self._kp_ramp_active:
+            return None
+
+        factor = min(1.0, self._kp_ramp_step / self._kp_ramp_duration_steps)
+        kp = KP * (self._kp_ramp_floor_ratio + (1.0 - self._kp_ramp_floor_ratio) * factor)
+
+        self._kp_ramp_step += 1
+        if self._kp_ramp_step >= self._kp_ramp_duration_steps:
+            self._kp_ramp_active = False
+            logger.info("Kp ramp complete (%d steps)", self._kp_ramp_duration_steps)
+
+        return np.asarray(kp, dtype=np.float32), KD.copy()
+
+    def _send_target(self, target: np.ndarray) -> None:
+        gains = self._compute_kp_ramp_gains()
+        if gains is None:
+            self._bridge.set_target(target, KP, KD)
+            return
+        kp, kd = gains
+        self._bridge.set_target(target, kp, kd)
 
     # ==================================================================
     # Safety checks
@@ -609,8 +653,9 @@ class StandingController:
             else:
                 target = self._standing_step()
 
-            # Write target to publish thread
-            self._bridge.set_target(target, KP, KD)
+            # Write target to publish thread. Kp ramps after standing entry;
+            # policy targets stay unchanged, matching sim2real STANDING.
+            self._send_target(target)
 
             # Timing diagnostics (informational only — not a control failure)
             elapsed = time.monotonic() - t0
@@ -746,6 +791,7 @@ class StandingController:
 
             # 5. Initialize policy state
             self._last_action = np.zeros(NUM_JOINTS, dtype=np.float32)
+            self._start_kp_ramp()
 
             logger.info("Starting RL policy standing (pipelined)")
 
@@ -804,6 +850,14 @@ def main():
         "--publish-hz", type=int, default=200,
         help="C++ publish frequency in Hz (default: 200, matching training pd_hz)",
     )
+    parser.add_argument(
+        "--kp-ramp-duration", type=float, default=DEFAULT_KP_RAMP_DURATION,
+        help="Seconds to ramp Kp after entering standing (default: 2.0, matches sim2real)",
+    )
+    parser.add_argument(
+        "--kp-ramp-floor-ratio", type=float, default=DEFAULT_KP_RAMP_FLOOR_RATIO,
+        help="Initial Kp ratio for the standing ramp (default: 0.1, matches sim2real)",
+    )
     args = parser.parse_args()
 
     controller = StandingController(
@@ -811,6 +865,8 @@ def main():
         policy_path=args.policy,
         no_policy=args.no_policy,
         publish_hz=args.publish_hz,
+        kp_ramp_duration=args.kp_ramp_duration,
+        kp_ramp_floor_ratio=args.kp_ramp_floor_ratio,
     )
     controller._state_delay = args.state_delay
     controller._dry_run = args.dry_run

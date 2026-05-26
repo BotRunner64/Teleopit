@@ -58,6 +58,18 @@ python scripts/run/standalone_standing.py \
     --network-interface eth0
 ```
 
+Standalone standing uses the same Kp ramp semantics as sim2real: after locking
+the current joints, policy targets are sent immediately while Kp ramps from 10%
+to the configured gains over 2 seconds. To tune this startup behavior:
+
+```bash
+python scripts/run/standalone_standing.py \
+    --policy track.onnx \
+    --network-interface eth0 \
+    --kp-ramp-duration 2.0 \
+    --kp-ramp-floor-ratio 0.1
+```
+
 ## What It Checks
 
 - `g1_bridge_sdk` imports correctly.

@@ -57,6 +57,17 @@ python scripts/run/standalone_standing.py \
     --network-interface eth0
 ```
 
+standalone standing 使用与 sim2real 相同的 Kp ramp 语义：锁住当前关节后立即发送
+policy target，同时在 2 秒内把 Kp 从 10% 逐步升到配置的增益。可以这样调整启动行为：
+
+```bash
+python scripts/run/standalone_standing.py \
+    --policy track.onnx \
+    --network-interface eth0 \
+    --kp-ramp-duration 2.0 \
+    --kp-ramp-floor-ratio 0.1
+```
+
 ## 它会检查什么
 
 - `g1_bridge_sdk` 能正确导入。
