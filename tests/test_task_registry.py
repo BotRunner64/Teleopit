@@ -74,18 +74,6 @@ def test_general_tracking_task_is_registered() -> None:
     assert feet_acc.params["asset_cfg"].name == "robot"
     assert feet_acc.params["asset_cfg"].joint_names == r".*ankle.*"
     assert "anti_shake_ang_vel" not in env_cfg.rewards
-    upper_pd_asset = env_cfg.events["motor_params_implicit_upper_body_pd"].params[
-        "asset_cfg"
-    ]
-    lower_pd_asset = env_cfg.events["motor_params_implicit_lower_body_pd"].params[
-        "asset_cfg"
-    ]
-    assert upper_pd_asset.name == "robot"
-    assert upper_pd_asset.actuator_names is None
-    assert upper_pd_asset.actuator_ids == [0, 3]
-    assert lower_pd_asset.name == "robot"
-    assert lower_pd_asset.actuator_names is None
-    assert lower_pd_asset.actuator_ids == [1, 2, 4, 5]
     rl_cfg = load_rl_cfg(DEFAULT_TASK)
     assert rl_cfg.experiment_name == GENERAL_TRACKING_EXPERIMENT_NAME
     assert rl_cfg.actor.hidden_dims == (2048, 1024, 512, 256, 128)

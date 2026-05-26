@@ -16,11 +16,7 @@ def test_general_tracking_domain_randomization_matches_gr00t_active_set() -> Non
     assert set(events) == {
         "push_robot",
         "base_com",
-        "encoder_bias",
         "add_joint_default_pos",
-        "motor_params_implicit_upper_body_pd",
-        "motor_params_implicit_lower_body_pd",
-        "motor_params_implicit_armature",
         "physics_material",
         "randomize_rigid_body_mass",
         "randomize_dexhand_payload_mass",
@@ -53,45 +49,12 @@ def test_general_tracking_domain_randomization_matches_gr00t_active_set() -> Non
         2: (-0.05, 0.05),
     }
 
-    encoder_bias = events["encoder_bias"]
-    assert encoder_bias.func is dr.encoder_bias
-    assert encoder_bias.mode == "startup"
-    assert encoder_bias.params["bias_range"] == (-0.01, 0.01)
-
     add_joint_default_pos = events["add_joint_default_pos"]
     assert add_joint_default_pos.func is dr.joint_default_pos
     assert add_joint_default_pos.mode == "startup"
     assert add_joint_default_pos.params["asset_cfg"].joint_names == ".*"
     assert add_joint_default_pos.params["operation"] == "add"
     assert add_joint_default_pos.params["ranges"] == (-0.01, 0.01)
-
-    upper_motor_pd = events["motor_params_implicit_upper_body_pd"]
-    assert upper_motor_pd.func is dr.pd_gains
-    assert upper_motor_pd.mode == "reset"
-    assert upper_motor_pd.params["asset_cfg"].actuator_names is None
-    assert upper_motor_pd.params["asset_cfg"].actuator_ids == [0, 3]
-    assert upper_motor_pd.params["kp_range"] == (0.9, 1.1)
-    assert upper_motor_pd.params["kd_range"] == (0.9, 1.1)
-    assert upper_motor_pd.params["distribution"] == "log_uniform"
-    assert upper_motor_pd.params["operation"] == "scale"
-
-    lower_motor_pd = events["motor_params_implicit_lower_body_pd"]
-    assert lower_motor_pd.func is dr.pd_gains
-    assert lower_motor_pd.mode == "reset"
-    assert lower_motor_pd.params["asset_cfg"].actuator_names is None
-    assert lower_motor_pd.params["asset_cfg"].actuator_ids == [1, 2, 4, 5]
-    assert lower_motor_pd.params["kp_range"] == (0.5, 2.0)
-    assert lower_motor_pd.params["kd_range"] == (0.5, 2.0)
-    assert lower_motor_pd.params["distribution"] == "log_uniform"
-    assert lower_motor_pd.params["operation"] == "scale"
-
-    motor_armature = events["motor_params_implicit_armature"]
-    assert motor_armature.func is dr.joint_armature
-    assert motor_armature.mode == "startup"
-    assert motor_armature.params["asset_cfg"].joint_names == ".*"
-    assert motor_armature.params["ranges"] == (0.75, 1.25)
-    assert motor_armature.params["distribution"] == "log_uniform"
-    assert motor_armature.params["operation"] == "scale"
 
     physics_material = events["physics_material"]
     assert physics_material.func is dr.geom_friction
@@ -113,13 +76,13 @@ def test_general_tracking_domain_randomization_matches_gr00t_active_set() -> Non
         "left_dexhand_payload",
         "right_dexhand_payload",
     )
-    assert dexhand_mass.params["alpha_range"] == (-8.0, 0.34657359027997264)
+    assert dexhand_mass.params["alpha_range"] == (-1, 0)
 
     gimbal_mass = events["randomize_gimbal_payload_mass"]
     assert gimbal_mass.func is dr.pseudo_inertia
     assert gimbal_mass.mode == "startup"
     assert gimbal_mass.params["asset_cfg"].body_names == ("head_gimbal_payload",)
-    assert gimbal_mass.params["alpha_range"] == (-8.0, 0.34657359027997264)
+    assert gimbal_mass.params["alpha_range"] == (-1, 0)
 
     dexhand_pos = events["randomize_dexhand_payload_pos"]
     assert dexhand_pos.func is dr.body_pos
@@ -130,9 +93,9 @@ def test_general_tracking_domain_randomization_matches_gr00t_active_set() -> Non
     )
     assert dexhand_pos.params["operation"] == "abs"
     assert dexhand_pos.params["ranges"] == {
-        0: (0.04, 0.12),
-        1: (-0.03, 0.03),
-        2: (-0.03, 0.03),
+        0: (0.055, 0.095),
+        1: (-0.02, 0.02),
+        2: (-0.02, 0.02),
     }
 
     gimbal_pos = events["randomize_gimbal_payload_pos"]
@@ -141,9 +104,9 @@ def test_general_tracking_domain_randomization_matches_gr00t_active_set() -> Non
     assert gimbal_pos.params["asset_cfg"].body_names == ("head_gimbal_payload",)
     assert gimbal_pos.params["operation"] == "abs"
     assert gimbal_pos.params["ranges"] == {
-        0: (0.03, 0.12),
-        1: (-0.03, 0.03),
-        2: (0.40, 0.50),
+        0: (0.05, 0.09),
+        1: (-0.02, 0.02),
+        2: (0.43, 0.47),
     }
 
 
@@ -156,11 +119,7 @@ def test_play_env_disables_training_only_domain_randomization() -> None:
 
     assert "push_robot" not in play_cfg.events
     assert "base_com" not in play_cfg.events
-    assert "encoder_bias" not in play_cfg.events
     assert "add_joint_default_pos" not in play_cfg.events
-    assert "motor_params_implicit_upper_body_pd" not in play_cfg.events
-    assert "motor_params_implicit_lower_body_pd" not in play_cfg.events
-    assert "motor_params_implicit_armature" not in play_cfg.events
     assert "physics_material" not in play_cfg.events
     assert "randomize_rigid_body_mass" not in play_cfg.events
     assert "randomize_dexhand_payload_mass" not in play_cfg.events

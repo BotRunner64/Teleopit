@@ -33,11 +33,22 @@ VELOCITY_RANGE = {
     "yaw": (-0.78, 0.78),
 }
 
-# G1 uses six mjlab actuator groups. dr.pd_gains indexes asset.actuators
-# by group id, not the expanded XML per-joint actuator ids.
-G1_UPPER_BODY_ACTUATOR_GROUP_IDS = (0, 3)
-G1_LOWER_BODY_ACTUATOR_GROUP_IDS = (1, 2, 4, 5)
+_DEXHAND_PAYLOAD_MASS_ALPHA_RANGE = (-1, 0)
+_GIMBAL_PAYLOAD_MASS_ALPHA_RANGE = (-1, 0)
+_DEXHAND_PAYLOAD_POS_RANGES_MM = {
+    0: (55, 95),
+    1: (-20, 20),
+    2: (-20, 20),
+}
+_GIMBAL_PAYLOAD_POS_RANGES_MM = {
+    0: (50, 90),
+    1: (-20, 20),
+    2: (430, 470),
+}
 
+
+def _mm_ranges_to_m(ranges_mm: dict[int, tuple[int, int]]) -> dict[int, tuple[float, float]]:
+    return {axis: (lower / 1000.0, upper / 1000.0) for axis, (lower, upper) in ranges_mm.items()}
 
 def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
     """Create base tracking task configuration."""
@@ -184,14 +195,6 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
                 },
             },
         ),
-        "encoder_bias": EventTermCfg(
-            mode="startup",
-            func=dr.encoder_bias,
-            params={
-                "asset_cfg": SceneEntityCfg("robot"),
-                "bias_range": (-0.01, 0.01),
-            },
-        ),
         "add_joint_default_pos": EventTermCfg(
             mode="startup",
             func=dr.joint_default_pos,
@@ -199,42 +202,6 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
                 "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
                 "operation": "add",
                 "ranges": (-0.01, 0.01),
-            },
-        ),
-        "motor_params_implicit_upper_body_pd": EventTermCfg(
-            mode="reset",
-            func=dr.pd_gains,
-            params={
-                "asset_cfg": SceneEntityCfg(
-                    "robot", actuator_ids=list(G1_UPPER_BODY_ACTUATOR_GROUP_IDS)
-                ),
-                "kp_range": (0.9, 1.1),
-                "kd_range": (0.9, 1.1),
-                "distribution": "log_uniform",
-                "operation": "scale",
-            },
-        ),
-        "motor_params_implicit_lower_body_pd": EventTermCfg(
-            mode="reset",
-            func=dr.pd_gains,
-            params={
-                "asset_cfg": SceneEntityCfg(
-                    "robot", actuator_ids=list(G1_LOWER_BODY_ACTUATOR_GROUP_IDS)
-                ),
-                "kp_range": (0.5, 2.0),
-                "kd_range": (0.5, 2.0),
-                "distribution": "log_uniform",
-                "operation": "scale",
-            },
-        ),
-        "motor_params_implicit_armature": EventTermCfg(
-            mode="startup",
-            func=dr.joint_armature,
-            params={
-                "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
-                "ranges": (0.75, 1.25),
-                "distribution": "log_uniform",
-                "operation": "scale",
             },
         ),
         "physics_material": EventTermCfg(
@@ -259,8 +226,8 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
             func=dr.pseudo_inertia,
             params={
                 "asset_cfg": SceneEntityCfg("robot", body_names=()),  # Set per-robot.
-                # Nominal is 0.5 kg per hand. Scale covers 0-1.0 kg.
-                "alpha_range": (-8.0, 0.34657359027997264),
+                # Nominal is 0.5 kg per hand. Keep a tighter ~0.37-1.0x band.
+                "alpha_range": _DEXHAND_PAYLOAD_MASS_ALPHA_RANGE,
             },
         ),
         "randomize_gimbal_payload_mass": EventTermCfg(
@@ -268,8 +235,8 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
             func=dr.pseudo_inertia,
             params={
                 "asset_cfg": SceneEntityCfg("robot", body_names=()),  # Set per-robot.
-                # Nominal is 0.25 kg. Scale covers 0-0.5 kg.
-                "alpha_range": (-8.0, 0.34657359027997264),
+                # Nominal is 0.25 kg. Keep a tighter ~0.37-1.0x band.
+                "alpha_range": _GIMBAL_PAYLOAD_MASS_ALPHA_RANGE,
             },
         ),
         "randomize_dexhand_payload_pos": EventTermCfg(
@@ -278,11 +245,7 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
             params={
                 "asset_cfg": SceneEntityCfg("robot", body_names=()),  # Set per-robot.
                 "operation": "abs",
-                "ranges": {
-                    0: (0.04, 0.12),
-                    1: (-0.03, 0.03),
-                    2: (-0.03, 0.03),
-                },
+                "ranges": _mm_ranges_to_m(_DEXHAND_PAYLOAD_POS_RANGES_MM),
             },
         ),
         "randomize_gimbal_payload_pos": EventTermCfg(
@@ -291,11 +254,7 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
             params={
                 "asset_cfg": SceneEntityCfg("robot", body_names=()),  # Set per-robot.
                 "operation": "abs",
-                "ranges": {
-                    0: (0.03, 0.12),
-                    1: (-0.03, 0.03),
-                    2: (0.40, 0.50),
-                },
+                "ranges": _mm_ranges_to_m(_GIMBAL_PAYLOAD_POS_RANGES_MM),
             },
         ),
     }
