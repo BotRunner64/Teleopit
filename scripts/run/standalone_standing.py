@@ -360,10 +360,16 @@ class StandingController:
     def __init__(self, network_interface: str, policy_path: str,
                  no_policy: bool = False,
                  publish_hz: int = 250,
+                 obs_delay: float = 0.0,
+                 command_delay: float = 0.0,
                  kp_ramp_duration: float = DEFAULT_KP_RAMP_DURATION,
                  kp_ramp_floor_ratio: float = DEFAULT_KP_RAMP_FLOOR_RATIO) -> None:
         self._network_interface = network_interface
         self._shutdown = False
+        if obs_delay < 0.0:
+            raise ValueError("obs_delay must be >= 0")
+        if command_delay < 0.0:
+            raise ValueError("command_delay must be >= 0")
         if kp_ramp_duration < 0.0:
             raise ValueError("kp_ramp_duration must be >= 0")
         if not 0.0 <= kp_ramp_floor_ratio <= 1.0:
@@ -387,6 +393,18 @@ class StandingController:
         self._no_policy = no_policy
         self._dry_run = False
         self._state_delay = 0.0
+        self._obs_delay = float(obs_delay)
+        self._command_delay = float(command_delay)
+        self._state_history: deque[tuple[float, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]] = deque(maxlen=512)
+        self._state_history_lock = threading.Lock()
+        self._state_sampler_thread: threading.Thread | None = None
+        self._state_sampler_running = False
+        self._pending_targets: deque[tuple[float, np.ndarray]] = deque()
+        self._pending_targets_cv = threading.Condition()
+        self._command_sender_thread: threading.Thread | None = None
+        self._command_sender_running = False
+        self._last_obs_age_s = 0.0
+        self._last_command_queue_len = 0
 
         # ---- Policy state ----
         self._step_count = 0
@@ -427,7 +445,59 @@ class StandingController:
     # ==================================================================
 
     def _get_robot_state(self):
-        return self._bridge.get_state()
+        return self._read_robot_state()
+
+    def _read_robot_state(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        qpos, qvel, quat, ang_vel = self._bridge.get_state()
+        return (
+            np.asarray(qpos, dtype=np.float32).copy(),
+            np.asarray(qvel, dtype=np.float32).copy(),
+            np.asarray(quat, dtype=np.float32).copy(),
+            np.asarray(ang_vel, dtype=np.float32).copy(),
+        )
+
+    def _record_robot_state(self) -> tuple[float, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+        now = time.monotonic()
+        state = self._read_robot_state()
+        with self._state_history_lock:
+            self._state_history.append((now, state))
+        return now, state
+
+    def _get_observation_state(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        now, current = self._record_robot_state()
+        if self._obs_delay <= 0.0:
+            self._last_obs_age_s = 0.0
+            return current
+
+        target_time = now - self._obs_delay
+        with self._state_history_lock:
+            history = list(self._state_history)
+        selected_time, selected_state = history[0]
+        for sample_time, sample_state in reversed(history):
+            if sample_time <= target_time:
+                selected_time, selected_state = sample_time, sample_state
+                break
+        self._last_obs_age_s = max(0.0, now - selected_time)
+        return selected_state
+
+    def _start_state_sampler(self) -> None:
+        if self._obs_delay <= 0.0 or self._state_sampler_thread is not None:
+            return
+        self._state_sampler_running = True
+        self._state_sampler_thread = threading.Thread(target=self._state_sampler_loop, daemon=True)
+        self._state_sampler_thread.start()
+
+    def _stop_state_sampler(self) -> None:
+        self._state_sampler_running = False
+        if self._state_sampler_thread is not None:
+            self._state_sampler_thread.join(timeout=1.0)
+            self._state_sampler_thread = None
+
+    def _state_sampler_loop(self) -> None:
+        sample_dt = 1.0 / max(float(self._publish_hz), POLICY_HZ)
+        while self._state_sampler_running and not self._shutdown:
+            self._record_robot_state()
+            time.sleep(sample_dt)
 
     # ==================================================================
     # Publish thread
@@ -513,13 +583,76 @@ class StandingController:
 
         return np.asarray(kp, dtype=np.float32), KD.copy()
 
-    def _send_target(self, target: np.ndarray) -> None:
+    def _write_target_now(self, target: np.ndarray) -> None:
         gains = self._compute_kp_ramp_gains()
         if gains is None:
             self._bridge.set_target(target, KP, KD)
             return
         kp, kd = gains
         self._bridge.set_target(target, kp, kd)
+
+    def _pop_due_targets(self, now: float) -> list[np.ndarray]:
+        due: list[np.ndarray] = []
+        with self._pending_targets_cv:
+            while self._pending_targets and self._pending_targets[0][0] <= now:
+                _, target = self._pending_targets.popleft()
+                due.append(target)
+            self._last_command_queue_len = len(self._pending_targets)
+        return due
+
+    def _flush_pending_targets(self, now: float | None = None) -> None:
+        if now is None:
+            now = time.monotonic()
+        due = self._pop_due_targets(now)
+        for target in due:
+            self._write_target_now(target)
+        if len(due) > 1:
+            logger.warning("Flushed %d delayed targets in one control tick", len(due))
+
+    def _send_target(self, target: np.ndarray) -> None:
+        if self._command_delay <= 0.0:
+            self._write_target_now(target)
+            self._last_command_queue_len = len(self._pending_targets)
+            return
+        with self._pending_targets_cv:
+            self._pending_targets.append((time.monotonic() + self._command_delay, np.asarray(target, dtype=np.float32).copy()))
+            self._last_command_queue_len = len(self._pending_targets)
+            self._pending_targets_cv.notify()
+
+    def _start_command_sender(self) -> None:
+        if self._command_delay <= 0.0 or self._command_sender_thread is not None:
+            return
+        self._command_sender_running = True
+        self._command_sender_thread = threading.Thread(target=self._command_sender_loop, daemon=True)
+        self._command_sender_thread.start()
+
+    def _stop_command_sender(self) -> None:
+        self._command_sender_running = False
+        with self._pending_targets_cv:
+            self._pending_targets_cv.notify_all()
+        if self._command_sender_thread is not None:
+            self._command_sender_thread.join(timeout=1.0)
+            self._command_sender_thread = None
+        with self._pending_targets_cv:
+            self._pending_targets.clear()
+            self._last_command_queue_len = 0
+
+    def _command_sender_loop(self) -> None:
+        while self._command_sender_running and not self._shutdown:
+            now = time.monotonic()
+            due = self._pop_due_targets(now)
+            if due:
+                self._write_target_now(due[-1])
+                if len(due) > 1:
+                    logger.warning("Dropped %d stale delayed targets", len(due) - 1)
+                continue
+
+            with self._pending_targets_cv:
+                if not self._pending_targets:
+                    self._pending_targets_cv.wait(timeout=0.02)
+                    continue
+                wait_s = max(0.0, self._pending_targets[0][0] - time.monotonic())
+                self._pending_targets_cv.wait(timeout=min(wait_s, 0.02))
 
     # ==================================================================
     # Safety checks
@@ -547,7 +680,7 @@ class StandingController:
     def _standing_step(self) -> np.ndarray:
         """One step of RL policy standing inference. Returns target joint positions."""
         _t0 = time.monotonic()
-        qpos, qvel, quat, ang_vel = self._get_robot_state()
+        qpos, qvel, quat, ang_vel = self._get_observation_state()
 
         # Build standing reference aligned to robot's current yaw
         ref_qpos = self._standing_qpos.copy()
@@ -583,11 +716,13 @@ class StandingController:
             tag = "OVERRUN" if step_ms > (1000.0 / POLICY_HZ) else "DIAG"
             logger.info(
                 "%s step=%d | state=%.2fms obs=%.2fms infer=%.2fms total=%.1fms | "
-                "qvel_norm=%.4f | action_norm=%.4f | "
+                "obs_age=%.1fms cmd_q=%d | qvel_norm=%.4f | action_norm=%.4f | "
                 "target[:6]=%s | qpos[:6]=%s",
                 tag, self._step_count,
                 (_t1 - _t0) * 1000, (_t2 - _t1) * 1000, (_t3 - _t2) * 1000,
                 step_ms,
+                self._last_obs_age_s * 1000,
+                self._last_command_queue_len,
                 float(np.linalg.norm(qvel)),
                 float(np.linalg.norm(action)),
                 np.array2string(target_dof_pos[:6], precision=4, separator=','),
@@ -631,6 +766,8 @@ class StandingController:
 
         while self._inference_running and not self._shutdown:
             t0 = time.monotonic()
+            if self._command_delay <= 0.0:
+                self._flush_pending_targets(t0)
 
             # Emergency stop check
             if self._check_emergency_stop():
@@ -676,6 +813,9 @@ class StandingController:
             if remain > 0:
                 time.sleep(remain)
 
+        if self._command_delay <= 0.0:
+            self._flush_pending_targets()
+
     # ---- Main loop ----
 
     def _run_dry(self) -> None:
@@ -693,11 +833,12 @@ class StandingController:
         obs_sum = 0.0
         infer_sum = 0.0
 
+        self._start_state_sampler()
         while not self._shutdown:
             t0 = time.monotonic()
 
             # 1. Read state
-            qpos, qvel, quat, ang_vel = self._get_robot_state()
+            qpos, qvel, quat, ang_vel = self._get_observation_state()
             t1 = time.monotonic()
 
             # 2. Build reference
@@ -734,11 +875,12 @@ class StandingController:
                 n = loop_count
                 logger.info(
                     "DRY step=%d | state=%.2fms obs=%.2fms infer=%.2fms total=%.2fms | "
-                    "max=%.2fms overruns=%d/%d | target[:6]=%s",
+                    "max=%.2fms overruns=%d/%d | obs_age=%.1fms | target[:6]=%s",
                     n,
                     (state_sum / n) * 1000, (obs_sum / n) * 1000,
                     (infer_sum / n) * 1000, (elapsed_sum / n) * 1000,
                     max_elapsed * 1000, overrun_count, n,
+                    self._last_obs_age_s * 1000,
                     np.array2string(target[:6], precision=4, separator=','),
                 )
 
@@ -746,6 +888,7 @@ class StandingController:
             if remain > 0:
                 time.sleep(remain)
 
+        self._stop_state_sampler()
         logger.info(
             "DRY-RUN finished: %d steps, avg total=%.2fms "
             "(state=%.2f obs=%.2f infer=%.2f) max=%.2fms overruns=%d",
@@ -792,6 +935,8 @@ class StandingController:
             # 5. Initialize policy state
             self._last_action = np.zeros(NUM_JOINTS, dtype=np.float32)
             self._start_kp_ramp()
+            self._start_state_sampler()
+            self._start_command_sender()
 
             logger.info("Starting RL policy standing (pipelined)")
 
@@ -816,6 +961,8 @@ class StandingController:
 
     def _cleanup(self) -> None:
         self._inference_running = False
+        self._stop_state_sampler()
+        self._stop_command_sender()
         logger.info("Shutting down: setting damping ...")
         self._set_damping()
         time.sleep(0.5)
@@ -840,7 +987,18 @@ def main():
     )
     parser.add_argument(
         "--state-delay", type=float, default=0.0,
-        help="Artificial delay (seconds) before reading state, simulates network latency (e.g. 0.005)",
+        help=(
+            "Legacy loop delay before the policy step. This consumes timing budget but does not make "
+            "the observation stale; prefer --obs-delay or --command-delay for latency tests."
+        ),
+    )
+    parser.add_argument(
+        "--obs-delay", type=float, default=0.0,
+        help="Use LowState sampled this many seconds in the past when building the policy observation.",
+    )
+    parser.add_argument(
+        "--command-delay", type=float, default=0.0,
+        help="Delay writing each computed target to the C++ publish thread by this many seconds.",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -865,6 +1023,8 @@ def main():
         policy_path=args.policy,
         no_policy=args.no_policy,
         publish_hz=args.publish_hz,
+        obs_delay=args.obs_delay,
+        command_delay=args.command_delay,
         kp_ramp_duration=args.kp_ramp_duration,
         kp_ramp_floor_ratio=args.kp_ramp_floor_ratio,
     )
