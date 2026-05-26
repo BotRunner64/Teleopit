@@ -53,8 +53,26 @@ python train_mimic/scripts/train.py \
     --motion_file data/datasets/seed/train
 ```
 
+### Multi-Node Multi-GPU
+
+Use `torchrun` directly when training across multiple machines:
+
+```bash
+torchrun \
+    --nnodes=$PET_NNODES \
+    --nproc_per_node=$PET_NPROC_PER_NODE \
+    --node_rank=$PET_NODE_RANK \
+    --master_addr=$PET_MASTER_ADDR \
+    --master_port=$PET_MASTER_PORT \
+    train_mimic/scripts/train.py \
+    --num_envs 1024 \
+    --max_iterations 1000 \
+    --motion_file data/datasets/seed/train
+```
+
 **Notes:**
 - `--num_envs` is per-GPU in multi-GPU mode
+- `--num_envs` is also per-process in multi-node mode, so total environments scale with `world_size`
 - Default logger is TensorBoard; pass `--wandb_project <name>` to enable W&B
 - `--motion_file` accepts only shard directories (containing `shard_*.npz` files)
 - `--max_iterations` means additional iterations; resuming from `model_12000.pt` with `--max_iterations 18000` trains to `model_30000.pt`

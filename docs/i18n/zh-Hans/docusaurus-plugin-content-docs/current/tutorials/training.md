@@ -53,8 +53,26 @@ python train_mimic/scripts/train.py \
     --motion_file data/datasets/seed/train
 ```
 
+### 多机多卡训练
+
+跨多台机器训练时，直接使用 `torchrun`：
+
+```bash
+torchrun \
+    --nnodes=$PET_NNODES \
+    --nproc_per_node=$PET_NPROC_PER_NODE \
+    --node_rank=$PET_NODE_RANK \
+    --master_addr=$PET_MASTER_ADDR \
+    --master_port=$PET_MASTER_PORT \
+    train_mimic/scripts/train.py \
+    --num_envs 1024 \
+    --max_iterations 1000 \
+    --motion_file data/datasets/seed/train
+```
+
 **注意事项：**
 - 多卡模式下 `--num_envs` 为每张 GPU 的环境数量
+- 多机模式下 `--num_envs` 也按每个进程计算，因此总环境数会随 `world_size` 线性增长
 - 默认日志工具为 TensorBoard；传入 `--wandb_project <name>` 可启用 W&B
 - `--motion_file` 仅接受分片目录（包含 `shard_*.npz` 文件的目录）
 - `--max_iterations` 表示追加迭代次数；例如从 `model_12000.pt` 恢复训练并设置 `--max_iterations 18000`，最终将训练到 `model_30000.pt`
