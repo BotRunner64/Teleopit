@@ -132,6 +132,10 @@ class Sim2RealController:
         self._init_components(cfg)
         self._init_reference_config(cfg)
         self._safety = Sim2RealSafetyManager(cfg, self.robot, self.policy_hz, self.num_actions)
+        self._standing_return_ramp_duration = float(cfg_get(cfg, "standing_return_ramp_duration", 0.5))
+        self._standing_return_kp_ramp_floor_ratio = float(
+            cfg_get(cfg, "standing_return_kp_ramp_floor_ratio", 0.5)
+        )
 
         logger.info(
             "Sim2RealController ready | mode=IDLE | policy_hz=%.0f",
@@ -557,28 +561,22 @@ class Sim2RealController:
                 return
             time.sleep(0.5)
 
-        # Lock joints to current position (prevent collapse during init)
-        logger.info("Locking joints to current position...")
-        self.robot.lock_all_joints()
-        time.sleep(0.3)
+        state = self.robot.get_state()
+        if prev_mode != RobotMode.MOCAP:
+            # Lock joints to current position during initial low-level takeover.
+            logger.info("Locking joints to current position...")
+            self.robot.lock_all_joints()
+            time.sleep(0.3)
 
         # Episode-reset semantics: reference = current robot state, full policy reset.
         # This matches training where robot is teleported to reference position at
         # episode start, so policy sees reference ≈ robot state with clean history.
-        state = self.robot.get_state()
-        init_qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
-        init_qpos[3:7] = state.quat.astype(np.float64)
-        init_qpos[ROOT_DIM:FULL_QPOS_DIM] = state.qpos.astype(np.float64)
+        init_qpos = self._build_robot_state_qpos(state)
         self._last_retarget_qpos = init_qpos
         self._ref_proc.last_reference_qpos = None
         self._mocap_session.reset()
         self._last_commanded_motion_qpos = None
-        self._standing_qpos[0:3] = 0.0
-        if getattr(state, "base_pos", None) is not None:
-            self._standing_qpos[0:3] = np.asarray(state.base_pos, dtype=np.float64)[:3]
-        self._standing_qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-        align_motion_qpos_yaw(np.asarray(state.quat, dtype=np.float32), self._standing_qpos)
-        self._standing_qpos[ROOT_DIM:FULL_QPOS_DIM] = self.default_angles.astype(np.float64)
+        self._set_default_standing_reference(state)
 
         # Always do a full policy reset (episode-reset semantics) to ensure
         # the TemporalCNN history is clean and action-state causality holds.
@@ -586,7 +584,13 @@ class Sim2RealController:
 
         # Kp ramp: gradually increase PD gains to avoid torque spike.
         # Unlike position ramping, this does not alter policy targets.
-        self._safety.start_kp_ramp()
+        if prev_mode == RobotMode.MOCAP:
+            self._safety.start_kp_ramp(
+                duration_s=self._standing_return_ramp_duration,
+                floor_ratio=self._standing_return_kp_ramp_floor_ratio,
+            )
+        else:
+            self._safety.start_kp_ramp()
 
         self._mocap_reentry_armed = prev_mode == RobotMode.MOCAP
 
@@ -654,22 +658,22 @@ class Sim2RealController:
     def _transition_to_mocap(self) -> None:
         """Switch from STANDING -> MOCAP.
 
-        Episode-reset + reference realignment.  The policy state is fully
-        reset (clean history, zero last_action) so the TemporalCNN starts
-        fresh. Incoming mocap is aligned by fixed yaw/XY offsets and then
-        consumed directly; switching does not interpolate reference qpos.
+        Episode-reset + reference realignment. The policy/reference state is
+        reset like pause/resume so the first mocap frame is anchored to the
+        current robot pose and starts with zero inferred reference velocity.
         """
         state = self.robot.get_state()
-        init_qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
-        init_qpos[3:7] = state.quat.astype(np.float64)
-        init_qpos[ROOT_DIM:FULL_QPOS_DIM] = state.qpos.astype(np.float64)
-        self._last_retarget_qpos = init_qpos
-        self._last_commanded_motion_qpos = init_qpos.copy()
+        resume_qpos = self._build_resume_alignment_qpos(self._standing_qpos, state)
+        self._last_commanded_motion_qpos = resume_qpos.copy()
         self._mocap_reentry_armed = False
 
         # Full episode reset: clean policy state, alignment, timeline.
         self._reset_policy_state()
+        self._last_retarget_qpos = None
+        self._last_commanded_motion_qpos = resume_qpos.copy()
+        self._ref_proc.reset_alignment(target_qpos=resume_qpos)
         if self._offline_playback is not None:
+            self._last_retarget_qpos = resume_qpos.copy()
             self._offline_playback.replay()
 
         self.mode = RobotMode.MOCAP
@@ -739,15 +743,33 @@ class Sim2RealController:
         self._ref_proc.reset_smoothers()
         self._last_live_packet_seq = -1
 
-    def _build_resume_alignment_qpos(self, hold_qpos: Float64Array | None, state: object) -> Float64Array:
+    def _build_robot_state_qpos(self, state: object) -> Float64Array:
         qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
+        base_pos = getattr(state, "base_pos", None)
+        if base_pos is not None:
+            qpos[0:3] = np.asarray(base_pos, dtype=np.float64).reshape(-1)[:3]
+        qpos[3:7] = np.asarray(getattr(state, "quat"), dtype=np.float64).reshape(-1)[:4]
+        qpos[ROOT_DIM:FULL_QPOS_DIM] = np.asarray(getattr(state, "qpos"), dtype=np.float64).reshape(-1)[
+            : self.num_actions
+        ]
+        return qpos
+
+    def _set_default_standing_reference(self, state: object) -> None:
+        self._standing_qpos[:] = 0.0
+        base_pos = getattr(state, "base_pos", None)
+        if base_pos is not None:
+            self._standing_qpos[0:3] = np.asarray(base_pos, dtype=np.float64).reshape(-1)[:3]
+        self._standing_qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        align_motion_qpos_yaw(np.asarray(getattr(state, "quat"), dtype=np.float32), self._standing_qpos)
+        self._standing_qpos[ROOT_DIM:FULL_QPOS_DIM] = self.default_angles.astype(np.float64)
+
+    def _build_resume_alignment_qpos(self, hold_qpos: Float64Array | None, state: object) -> Float64Array:
+        qpos = self._build_robot_state_qpos(state)
         if hold_qpos is not None:
             qpos[0:2] = np.asarray(hold_qpos, dtype=np.float64).reshape(-1)[0:2]
         base_pos = getattr(state, "base_pos", None)
         if base_pos is not None:
             qpos[0:2] = np.asarray(base_pos, dtype=np.float64).reshape(-1)[0:2]
-        qpos[3:7] = np.asarray(getattr(state, "quat"), dtype=np.float64)
-        qpos[ROOT_DIM:FULL_QPOS_DIM] = np.asarray(getattr(state, "qpos"), dtype=np.float64)
         return qpos
 
     def _restart_offline_playback(self) -> None:

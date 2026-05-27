@@ -17,18 +17,24 @@ class DummyRobot:
             ang_vel=np.zeros(3, dtype=np.float32),
         )
         self.sent_positions: list[np.ndarray] = []
+        self.sent_gains: list[tuple[np.ndarray | None, np.ndarray | None]] = []
+        self.lock_calls = 0
 
     def enter_debug_mode(self) -> bool:
         return True
 
     def lock_all_joints(self) -> None:
-        pass
+        self.lock_calls += 1
 
     def get_state(self) -> SimpleNamespace:
         return self._state
 
     def send_positions(self, target_dof_pos: np.ndarray, kp: np.ndarray | None = None, kd: np.ndarray | None = None) -> None:
         self.sent_positions.append(np.asarray(target_dof_pos, dtype=np.float32))
+        self.sent_gains.append((
+            None if kp is None else np.asarray(kp, dtype=np.float32),
+            None if kd is None else np.asarray(kd, dtype=np.float32),
+        ))
 
     def set_damping(self) -> None:
         pass
@@ -163,7 +169,12 @@ class FailingHandRuntime(DummyHandRuntime):
 def _make_cfg() -> dict[str, object]:
     return {
         "policy_hz": 50.0,
-        "real_robot": {},
+        "real_robot": {
+            "kp_real": [100.0] * 29,
+            "kd_real": [2.0] * 29,
+        },
+        "standing_return_ramp_duration": 0.5,
+        "standing_return_kp_ramp_floor_ratio": 0.5,
         "mocap_switch": {"check_frames": 1},
         "robot": {
             "default_angles": [0.0] * 29,
@@ -369,6 +380,37 @@ def test_state_machine_allows_mocap_reentry_after_returning_to_standing(monkeypa
     assert ctrl.mode == RobotMode.MOCAP
 
 
+def test_return_to_standing_uses_default_pose_and_stronger_ramp_without_relock(monkeypatch) -> None:
+    from teleopit.sim2real.controller import RobotMode, Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    _install_controller_mocks(
+        monkeypatch,
+        policy=policy,
+        obs_builder=obs_builder,
+        qpos=np.zeros(36, dtype=np.float64),
+    )
+
+    cfg = _make_cfg()
+    cfg["robot"]["default_angles"] = [0.2] * 29
+    ctrl = Sim2RealController(cfg)
+    ctrl.mode = RobotMode.MOCAP
+    ctrl.robot._state.qpos = np.ones(29, dtype=np.float32)
+    ctrl._last_commanded_motion_qpos = np.ones(36, dtype=np.float64)
+
+    ctrl._enter_standing()
+    ctrl._standing_step()
+
+    assert ctrl.mode == RobotMode.STANDING
+    assert ctrl.robot.lock_calls == 0
+    np.testing.assert_allclose(ctrl._standing_qpos[7:36], np.full(29, 0.2, dtype=np.float64))
+    kp, kd = ctrl.robot.sent_gains[-1]
+    assert kp is not None
+    assert kd is not None
+    np.testing.assert_allclose(kp, np.full(29, 50.0, dtype=np.float32))
+
+
 def test_dexterous_hand_ticks_only_during_active_mocap(monkeypatch) -> None:
     import teleopit.sim2real.controller as controller_mod
     from teleopit.runtime.mocap_session import MocapSessionState
@@ -444,17 +486,19 @@ def test_can_switch_to_mocap_returns_false_without_blocking_when_realtime_has_no
 
 
 def test_mocap_step_episode_reset_on_transition(monkeypatch) -> None:
-    """After _transition_to_mocap (episode-reset), the first mocap step should
-    produce zero anchor velocities because _last_reference_qpos is None."""
+    """After _transition_to_mocap, the first mocap step starts with zero joint velocity."""
     from teleopit.sim2real.controller import Sim2RealController
 
     policy = DummyPolicy()
     obs_builder = DummyVelCmdObservationBuilder()
     target_qpos = np.zeros(36, dtype=np.float64)
     target_qpos[0] = 0.3
+    target_qpos[7] = 1.0
     _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
 
-    ctrl = Sim2RealController(_make_cfg())
+    cfg = _make_cfg()
+    cfg["retarget_buffer_enabled"] = False
+    ctrl = Sim2RealController(cfg)
     ctrl._transition_to_mocap()
     monkeypatch.setattr(
         ctrl._ref_proc,
@@ -468,12 +512,8 @@ def test_mocap_step_episode_reset_on_transition(monkeypatch) -> None:
     ctrl._mocap_step()
 
     assert len(obs_builder.build_calls) == 1
-    # First step after episode-reset: _last_reference_qpos was None on entry,
-    # so _compute_anchor_velocities returns zeros for the initial call.
-    # The mock overrides this, but the first call computes joint vel from
-    # finite diff with _last_retarget_qpos which IS set, so vel ≠ 0.
-    # Just verify the observation was built.
-    assert obs_builder.build_calls[0]["motion_qpos"] is not None
+    np.testing.assert_allclose(obs_builder.build_calls[0]["motion_joint_vel"], np.zeros(29, dtype=np.float32))
+    np.testing.assert_allclose(obs_builder.build_calls[0]["motion_qpos"][7], 1.0, atol=1e-6)
 
 
 def test_mocap_step_velcmd_applies_fixed_initial_yaw_alignment(monkeypatch) -> None:
@@ -534,6 +574,39 @@ def test_mocap_step_velcmd_keeps_fixed_yaw_after_start(monkeypatch) -> None:
         np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32),
         atol=1e-6,
     )
+
+
+def test_transition_to_mocap_uses_resume_style_alignment_and_zero_velocity(monkeypatch) -> None:
+    from teleopit.sim2real.controller import Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    target_qpos = np.zeros(36, dtype=np.float64)
+    target_qpos[0] = 0.25
+    target_qpos[7] = 0.75
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=target_qpos)
+
+    cfg = _make_cfg()
+    cfg["retarget_buffer_enabled"] = False
+    ctrl = Sim2RealController(cfg)
+    ctrl.robot._state.base_pos = np.array([1.0, 2.0, 0.0], dtype=np.float32)
+    ctrl.robot._state.quat = np.array([0.9238795, 0.0, 0.0, 0.38268343], dtype=np.float32)
+    ctrl._transition_to_mocap()
+
+    assert ctrl._last_retarget_qpos is None
+
+    monkeypatch.setattr(
+        ctrl._ref_proc,
+        "compute_anchor_velocities",
+        lambda _qpos: (
+            np.zeros(3, dtype=np.float32),
+            np.zeros(3, dtype=np.float32),
+        ),
+    )
+    ctrl._mocap_step()
+
+    np.testing.assert_allclose(obs_builder.build_calls[0]["motion_joint_vel"], np.zeros(29, dtype=np.float32))
+    np.testing.assert_allclose(obs_builder.build_calls[0]["motion_qpos"][0:2], np.array([1.0, 2.0], dtype=np.float32), atol=1e-6)
 
 
 def test_mocap_step_waits_for_realtime_warmup_before_running_policy(monkeypatch) -> None:

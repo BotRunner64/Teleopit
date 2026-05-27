@@ -154,6 +154,13 @@ profile:
 pip install -e '.[dexhand]'
 ```
 
+Bring up the CAN interfaces before testing or running hand control:
+
+```bash
+sudo /usr/sbin/ip link set can0 up type can bitrate 1000000
+sudo /usr/sbin/ip link set can1 up type can bitrate 1000000
+```
+
 Before enabling full sim2real, verify the hand connection with a standalone
 open/close test:
 

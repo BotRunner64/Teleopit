@@ -19,6 +19,10 @@ playback:
 
 # Kp ramp duration (seconds) -- gradually increases PD gains after entering STANDING
 startup_ramp_duration: 2.0
+kp_ramp_floor_ratio: 0.1
+# Faster Kp ramp used when returning from MOCAP to default STANDING with X
+standing_return_ramp_duration: 0.5
+standing_return_kp_ramp_floor_ratio: 0.5
 # Joint velocity safety limit (rad/s) -- trigger emergency damping if exceeded
 joint_vel_limit: 10.0
 

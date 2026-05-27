@@ -144,6 +144,13 @@ mocap 暂停、帧超时和退出时都会发送张开姿态。
 pip install -e '.[dexhand]'
 ```
 
+测试或运行手控前，先开启 CAN 接口：
+
+```bash
+sudo /usr/sbin/ip link set can0 up type can bitrate 1000000
+sudo /usr/sbin/ip link set can1 up type can bitrate 1000000
+```
+
 启用完整 sim2real 前，先用独立开合测试验证灵巧手连接：
 
 ```bash
