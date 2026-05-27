@@ -143,7 +143,7 @@ def place_direct_assets() -> bool:
 
 def safe_extract_l6_from_archive(archive_path: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
-    wanted_prefixes = {f"assets/mjcf/{hand}/" for hand in hands}
+    wanted_prefixes = {f"mjcf/{hand}/" for hand in hands}
     with tarfile.open(archive_path, "r:*") as tar:
         members = []
         for member in tar.getmembers():
@@ -160,9 +160,9 @@ def safe_extract_l6_from_archive(archive_path: Path) -> None:
         tmp.mkdir(parents=True, exist_ok=True)
         tar.extractall(tmp, members=members)
         for hand in hands:
-            src = tmp / "assets" / "mjcf" / hand
+            src = tmp / "mjcf" / hand
             if not src.exists():
-                raise FileNotFoundError(f"Archive missing assets/mjcf/{hand}")
+                raise FileNotFoundError(f"Archive missing mjcf/{hand}")
             copy_dir(src, dest / hand)
             print(f"  archive:{hand} -> {dest / hand}")
         remove_path(tmp)
