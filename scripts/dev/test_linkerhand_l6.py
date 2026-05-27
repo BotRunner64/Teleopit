@@ -10,8 +10,6 @@ import sys
 import time
 from typing import Sequence
 
-import numpy as np
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
@@ -23,16 +21,12 @@ if SOMEHAND_SRC_PATH.exists():
     sys.path.insert(0, str(SOMEHAND_SRC_PATH))
 
 from teleopit.inputs.pico4_provider import (  # noqa: E402
-    PicoControllerSnapshot,
-    PicoControllerState,
-    PicoHandSnapshot,
-    PicoHandState,
+    Pico4InputProvider,
 )
 from teleopit.sim2real.dexterous_hand import (  # noqa: E402
     LinkerHandConfig,
     LinkerHandRuntime,
     SomeHandPoseRuntime,
-    trigger_to_pose,
 )
 
 
@@ -42,30 +36,6 @@ CLOSE_POSE = [79, THUMB_YAW_DEFAULT, 0, 0, 0, 0]
 DEFAULT_SPEED = [50, 50, 50, 50, 50, 50]
 DEFAULT_SOMEHAND_CONFIG_PATH = "third_party/somehand/configs/retargeting/bihand/linkerhand_l6_bihand.yaml"
 DEFAULT_LINKERHAND_SDK_ROOT = "third_party/linkerhand-python-sdk"
-
-PICO_BRIDGE_TO_MEDIAPIPE = [
-    1, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13, 14, 15, 17, 18, 19, 20, 22, 23, 24, 25
-]
-PICO_NATIVE_TO_RH = np.array(
-    [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]],
-    dtype=np.float64,
-)
-
-
-class ScriptControllerProvider:
-    def __init__(self) -> None:
-        self.snapshot: PicoControllerSnapshot | None = None
-
-    def get_controller_snapshot(self) -> PicoControllerSnapshot | None:
-        return self.snapshot
-
-
-class ScriptHandProvider:
-    def __init__(self) -> None:
-        self.snapshot: PicoHandSnapshot | None = None
-
-    def get_hand_snapshot(self) -> PicoHandSnapshot | None:
-        return self.snapshot
 
 
 def uint8(value: str) -> int:
@@ -102,9 +72,8 @@ def parse_args() -> argparse.Namespace:
         choices=["open_close", "gripper", "vr_hand_pose"],
         default="open_close",
         help=(
-            "open_close sends fixed poses directly; gripper exercises the sim2real Pico "
-            "grip/trigger mapping; vr_hand_pose exercises the somehand Pico hand-pose path "
-            "with synthetic hand landmarks."
+            "open_close sends fixed poses directly; gripper reads real Pico controller "
+            "grip/trigger input; vr_hand_pose reads real Pico hand pose input through somehand."
         ),
     )
     parser.add_argument("--hand-type", choices=["left", "right", "both"], default="both")
@@ -117,6 +86,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--cycles", type=positive_int, default=3)
     parser.add_argument("--hold-s", type=positive_float, default=1.0)
+    parser.add_argument(
+        "--duration-s",
+        type=positive_float,
+        default=30.0,
+        help="Live Pico test duration for gripper/vr_hand_pose modes.",
+    )
     parser.add_argument("--rate", type=positive_float, default=30.0)
     parser.add_argument("--frame-timeout", type=positive_float, default=0.3)
     parser.add_argument("--trigger-deadzone", type=float, default=0.05)
@@ -146,6 +121,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--somehand-config-path", default=DEFAULT_SOMEHAND_CONFIG_PATH)
     parser.add_argument("--somehand-sdk-root", default=DEFAULT_LINKERHAND_SDK_ROOT)
+    parser.add_argument("--bridge-host", default="0.0.0.0")
+    parser.add_argument("--bridge-port", type=positive_int, default=63901)
+    parser.add_argument("--bridge-advertise-ip", default=None)
+    parser.add_argument("--bridge-start-timeout", type=positive_float, default=10.0)
+    parser.add_argument("--no-bridge-discovery", action="store_true")
     args = parser.parse_args()
     args.open_pose[1] = args.thumb_yaw_center
     args.close_pose[1] = args.thumb_yaw_center
@@ -197,6 +177,46 @@ def assert_runtime_started(runtime: object) -> None:
     sender = getattr(runtime, "_sender", None)
     if not bool(getattr(sender, "started", False)):
         raise RuntimeError("LinkerHand sender failed to start; check the log above for SDK/CAN errors")
+
+
+def make_pico_provider(args: argparse.Namespace) -> Pico4InputProvider:
+    return Pico4InputProvider(
+        timeout=args.duration_s,
+        pause_button=None,
+        bridge_host=args.bridge_host,
+        bridge_port=args.bridge_port,
+        bridge_discovery=not args.no_bridge_discovery,
+        bridge_advertise_ip=args.bridge_advertise_ip,
+        bridge_start_timeout=args.bridge_start_timeout,
+        bridge_video=None,
+        bridge_video_enabled=False,
+    )
+
+
+def run_live_until_done(
+    runtime: LinkerHandRuntime | SomeHandPoseRuntime,
+    *,
+    provider: Pico4InputProvider,
+    duration_s: float,
+    mode_label: str,
+) -> None:
+    deadline = time.monotonic() + duration_s
+    last_seq: int | None = None
+    print(f"Running {mode_label} for {duration_s:.1f}s; press Ctrl-C to stop early.", flush=True)
+    while time.monotonic() < deadline:
+        now_s = time.monotonic()
+        runtime.tick(active=True, now_s=now_s)
+        snapshot = (
+            provider.get_controller_snapshot()
+            if isinstance(runtime, LinkerHandRuntime)
+            else provider.get_hand_snapshot()
+        )
+        if snapshot is not None and snapshot.seq != last_seq:
+            last_seq = snapshot.seq
+            age_ms = max((now_s - snapshot.timestamp_s) * 1000.0, 0.0)
+            print(f"  pico seq={snapshot.seq} age={age_ms:.1f}ms", flush=True)
+        wait_runtime_idle(runtime)
+        time.sleep(max(1.0 / runtime.config.rate, 0.001))
 
 
 def run_open_close(args: argparse.Namespace) -> None:
@@ -251,127 +271,28 @@ def run_open_close(args: argparse.Namespace) -> None:
             )
 
 
-def controller_snapshot(
-    *,
-    timestamp_s: float,
-    seq: int,
-    trigger: float,
-    grip: float,
-    config: LinkerHandConfig,
-) -> PicoControllerSnapshot:
-    missing = PicoControllerState(raw=False, grip=0.0, trigger=0.0, present=False)
-    active = PicoControllerState(raw=True, grip=grip, trigger=trigger, present=True)
-    left = active if "left" in config.selected_hand_types else missing
-    right = active if "right" in config.selected_hand_types else missing
-    return PicoControllerSnapshot(left=left, right=right, timestamp_s=timestamp_s, seq=seq)
-
-
 def run_gripper(args: argparse.Namespace) -> None:
     config = make_config(args, mode="gripper")
-    provider = ScriptControllerProvider()
+    provider = make_pico_provider(args)
     runtime = LinkerHandRuntime(config, provider)
 
-    print("Testing dexterous_hand.mode=gripper with synthetic Pico grip/trigger snapshots", flush=True)
+    print(
+        "Testing dexterous_hand.mode=gripper with real Pico controller input. "
+        "Hold grip above the deadman threshold, then use trigger to close/open.",
+        flush=True,
+    )
     try:
         runtime.start()
         wait_runtime_idle(runtime)
         assert_runtime_started(runtime)
-
-        now_s = time.monotonic()
-        print("inactive safety open", flush=True)
-        runtime.tick(active=False, now_s=now_s)
-        wait_runtime_idle(runtime)
-        time.sleep(args.hold_s)
-
-        seq = 1
-        print("deadman released -> open", flush=True)
-        now_s = time.monotonic()
-        provider.snapshot = controller_snapshot(
-            timestamp_s=now_s,
-            seq=seq,
-            trigger=1.0,
-            grip=0.0,
-            config=config,
-        )
-        runtime.tick(active=True, now_s=now_s)
-        wait_runtime_idle(runtime)
-        time.sleep(args.hold_s)
-
-        sweep = [0.0, 0.25, 0.5, 0.75, 1.0, 0.75, 0.5, 0.25, 0.0]
-        for cycle in range(args.cycles):
-            print(f"gripper cycle {cycle + 1}/{args.cycles}", flush=True)
-            for trigger in sweep:
-                seq += 1
-                now_s = time.monotonic()
-                pose = trigger_to_pose(
-                    trigger,
-                    open_pose=config.open_pose,
-                    close_pose=config.close_pose,
-                    deadzone=config.trigger_deadzone,
-                    thumb_yaw_default=config.thumb_yaw_center,
-                )
-                print(f"  grip=1.00 trigger={trigger:.2f} -> {pose}", flush=True)
-                provider.snapshot = controller_snapshot(
-                    timestamp_s=now_s,
-                    seq=seq,
-                    trigger=trigger,
-                    grip=1.0,
-                    config=config,
-                )
-                runtime.tick(active=True, now_s=now_s)
-                wait_runtime_idle(runtime)
-                time.sleep(args.hold_s)
+        run_live_until_done(runtime, provider=provider, duration_s=args.duration_s, mode_label="gripper")
     except KeyboardInterrupt:
         print("Interrupted; opening hands before exit", flush=True)
     finally:
         runtime.tick(active=False)
         wait_runtime_idle(runtime)
         runtime.close()
-
-
-def rh_to_pico_native(position: Sequence[float]) -> np.ndarray:
-    return np.asarray(position, dtype=np.float64) @ PICO_NATIVE_TO_RH
-
-
-def synthetic_pico_hand_joints(hand_type: str, *, curl: float) -> np.ndarray:
-    curl = max(0.0, min(1.0, float(curl)))
-    side_sign = -1.0 if hand_type == "left" else 1.0
-    joints = np.zeros((26, 7), dtype=np.float64)
-
-    mp_landmarks = np.zeros((21, 3), dtype=np.float64)
-    mp_landmarks[0] = [0.0, 0.0, 0.0]
-    finger_bases = [
-        (1, side_sign * 0.035, 0.035, [0.018, 0.033, 0.046, 0.058]),
-        (5, side_sign * 0.020, 0.060, [0.040, 0.070, 0.095, 0.120]),
-        (9, 0.0, 0.065, [0.045, 0.080, 0.110, 0.140]),
-        (13, -side_sign * 0.020, 0.060, [0.040, 0.070, 0.095, 0.120]),
-        (17, -side_sign * 0.040, 0.052, [0.035, 0.060, 0.082, 0.102]),
-    ]
-    for base_idx, x, base_y, lengths in finger_bases:
-        for offset, length in enumerate(lengths):
-            bend = curl * (offset + 1) / len(lengths)
-            y = base_y + length * (1.0 - 0.65 * bend)
-            z = -0.055 * bend
-            if base_idx == 1:
-                x_pos = x + side_sign * length * 0.65
-                y = 0.015 + length * (1.0 - 0.35 * bend)
-            else:
-                x_pos = x
-            mp_landmarks[base_idx + offset] = [x_pos, y, z]
-
-    for mp_idx, pico_idx in enumerate(PICO_BRIDGE_TO_MEDIAPIPE):
-        joints[pico_idx, :3] = rh_to_pico_native(mp_landmarks[mp_idx])
-    joints[0, :3] = rh_to_pico_native([0.0, 0.025, 0.0])
-    return joints
-
-
-def hand_snapshot(*, timestamp_s: float, seq: int, curl: float) -> PicoHandSnapshot:
-    return PicoHandSnapshot(
-        left=PicoHandState(active=True, joints=synthetic_pico_hand_joints("left", curl=curl), present=True),
-        right=PicoHandState(active=True, joints=synthetic_pico_hand_joints("right", curl=curl), present=True),
-        timestamp_s=timestamp_s,
-        seq=seq,
-    )
+        provider.close()
 
 
 def run_vr_hand_pose(args: argparse.Namespace) -> None:
@@ -379,41 +300,26 @@ def run_vr_hand_pose(args: argparse.Namespace) -> None:
         raise SystemExit("dexterous_hand.mode=vr_hand_pose currently requires --hand-type both")
 
     config = make_config(args, mode="vr_hand_pose")
-    provider = ScriptHandProvider()
+    provider = make_pico_provider(args)
     runtime = SomeHandPoseRuntime(config, provider)
 
     print(
-        "Testing dexterous_hand.mode=vr_hand_pose with synthetic Pico hand-pose snapshots. "
-        "This drives poses produced by somehand; start with the robot clear of contacts.",
+        "Testing dexterous_hand.mode=vr_hand_pose with real Pico hand-pose input. "
+        "Enable Pico hand tracking and move both hands; start with the robot clear of contacts.",
         flush=True,
     )
     try:
         runtime.start()
         wait_runtime_idle(runtime)
         assert_runtime_started(runtime)
-
-        seq = 0
-        curl_sweep = [0.0, 0.35, 0.7, 1.0, 0.7, 0.35, 0.0]
-        for cycle in range(args.cycles):
-            print(f"vr_hand_pose cycle {cycle + 1}/{args.cycles}", flush=True)
-            for curl in curl_sweep:
-                seq += 1
-                now_s = time.monotonic()
-                print(f"  synthetic curl={curl:.2f}", flush=True)
-                provider.snapshot = hand_snapshot(timestamp_s=now_s, seq=seq, curl=curl)
-                runtime.tick(active=True, now_s=now_s)
-                wait_runtime_idle(runtime)
-                time.sleep(args.hold_s)
-
-        print("inactive mode -> configured open pose", flush=True)
-        runtime.tick(active=False)
-        wait_runtime_idle(runtime)
+        run_live_until_done(runtime, provider=provider, duration_s=args.duration_s, mode_label="vr_hand_pose")
     except KeyboardInterrupt:
         print("Interrupted; opening hands before exit", flush=True)
     finally:
         runtime.tick(active=False)
         wait_runtime_idle(runtime)
         runtime.close()
+        provider.close()
 
 
 def main() -> None:
