@@ -205,9 +205,10 @@ def test_mode_transitions_reset_stateful_policy(monkeypatch) -> None:
     ctrl._enter_standing()
     ctrl._transition_to_mocap()
 
-    # Both _enter_standing and _transition_to_mocap now do full episode-reset
+    # Both transitions now do soft episode-reset and preserve retargeter warm-start.
     assert policy.reset_calls == 2
     assert obs_builder.reset_calls == 2
+    assert ctrl.retargeter.reset_calls == 0
 
 
 def test_reset_policy_state_clears_reference_timeline(monkeypatch) -> None:

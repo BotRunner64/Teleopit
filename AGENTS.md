@@ -123,7 +123,7 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 ### Offline Playback
 - Offline sim2sim and default sim2real both read `input.bvh_file` directly; no UDP relay path remains
 - Offline sim2sim playback can be keyboard-controlled: `Space/P` pause/resume, `R` replay from frame 0, `Q` stop
-- Offline pause holds the commanded pose; resume resets policy/reference state and reanchors yaw/XY without qpos interpolation
+- Offline pause holds the commanded pose; resume resets policy/reference state and reanchors yaw/XY without qpos interpolation or retargeter IK reset
 - sim2sim keyboard playback is optional via `playback.keyboard.enabled=true`
 - sim2real reuses the Unitree remote: `Start` → `STANDING`, `Y` → playback, `X` → back to `STANDING`, `L1+R1` → `DAMPING`
 - `playback.pause_on_end=true` keeps the final pose and waits for manual replay
@@ -141,6 +141,7 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - Default Pico sim2sim keyboard mappings are `Y` → `MOCAP`, `A` → pause/resume mocap, `X` → back to `STANDING`, `Q` → quit
 - Pico4 sim2real pause/resume is handled as a mocap-session control event (`toggle_pause`), not as a mode switch to `STANDING`
 - Default Pico pause button is `A`; resume rebuilds the realtime buffer and yaw/XY root-offset alignment, then waits for the configured realtime warmup before tracking continues
+- Realtime mode switches and pause/resume use a retargeter-preserving soft reset: policy/reference history, smoothers, realtime buffers, and reference alignment are reset, while the GMR IK warm-start is retained
 - Optional LinkerHand L6 control uses `third_party/linkerhand-python-sdk` and `dexterous_hand.enabled=true`
 - LinkerHand control reuses `Pico4InputProvider.get_controller_snapshot()`; do not start a second `PicoBridge` for hand control
 - LinkerHand L6 control is active only in sim2real `MOCAP`; `STANDING`, `DAMPING`, mocap pause, frame timeout, and shutdown must send the configured open pose
@@ -154,6 +155,7 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - Realtime inferred `motion_joint_vel`, anchor linear velocity, and anchor angular velocity can be EMA-smoothed via `reference_velocity_smoothing_alpha` and `reference_anchor_velocity_smoothing_alpha`
 - Sim2real Pico pause/resume uses mocap-session states `ACTIVE ↔ PAUSED`; resume clears policy/reference state, rebuilds yaw/XY root alignment, warms the realtime buffer, and does not interpolate retarget qpos from the paused pose
 - Realtime sim2sim with Pico control events uses the same mocap-session pause/resume semantics and rebuilds the realtime reference path on resume, including the configured warmup
+- Realtime sim2sim/sim2real `STANDING ↔ MOCAP` transitions use the same retargeter-preserving soft reset, rather than cold-starting the retargeter from its default qpos
 - Realtime Pico sim2sim can start directly in `STANDING` with keyboard mode control enabled via top-level `keyboard.enabled`
 
 ### Inference Observation

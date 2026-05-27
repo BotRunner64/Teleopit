@@ -67,6 +67,7 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 
 - Bumped Pico input support to pico-bridge 0.2.1 and its corrected tracking pose semantics.
 - Added optional Pico controller control for LinkerHand L6 in sim2real, backed by the LinkerHand SDK submodule.
+- Realtime mode switches and pause/resume now preserve GMR IK warm-starts instead of cold-starting the retargeter on each transition.
 
 ### v0.3.0 (2026-05-12)
 

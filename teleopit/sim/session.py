@@ -239,13 +239,9 @@ class SimLoopSession:
         self.last_commanded_motion_qpos = None
         self.reset_runtime_tracking()
 
-    def full_policy_reset(self) -> None:
-        self.reset_policy_reference_state()
-        self._retargeter.reset()
-
     def enter_standing_mode(self) -> None:
         from teleopit.sim.loop import SimulationMode
-        self.full_policy_reset()
+        self.reset_policy_reference_state()
         self._loop._set_standing_reference(self._loop.robot.get_state())
         self.simulation_mode = SimulationMode.STANDING
 
@@ -257,7 +253,7 @@ class SimLoopSession:
             return
         state = loop.robot.get_state()
         start_qpos = loop._resolve_hold_qpos(None, None, None, state)
-        self.full_policy_reset()
+        self.reset_policy_reference_state()
         self._step_runner.last_retarget_qpos = start_qpos.copy()
         self.last_commanded_motion_qpos = start_qpos.copy()
         self.simulation_mode = SimulationMode.MOCAP
@@ -321,7 +317,6 @@ class SimLoopSession:
                 loop._restart_offline_playback(
                     offline_playback=self.offline_playback,
                     mocap_session=self.mocap_session,
-                    retargeter=self._retargeter,
                 )
                 self.cached_human_frame = None
                 self.cached_retargeted = None

@@ -713,7 +713,6 @@ class Sim2RealController:
         self._last_commanded_motion_qpos = None
         self.policy.reset()
         self.obs_builder.reset()
-        self.retargeter.reset()
 
     def _reset_policy_reference_state(self) -> None:
         """Reset policy/reference state without resetting the retargeter."""

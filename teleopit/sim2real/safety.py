@@ -32,10 +32,9 @@ class Sim2RealSafetyManager:
         self._policy_hz = policy_hz
         real_cfg = cfg_get(cfg, "real_robot")
 
-        # KP ramp (gradually increase PD gains after episode-reset)
-        _legacy_ramp_dur = cfg_get(cfg, "startup_ramp_duration", cfg_get(real_cfg, "startup_ramp_duration", 2.0))
-        kp_ramp_dur = float(cfg_get(cfg, "kp_ramp_duration", _legacy_ramp_dur))
-        self._kp_ramp_duration_steps: int = max(1, int(kp_ramp_dur * policy_hz))
+        # Kp ramp gradually increases PD gains after episode-reset.
+        startup_ramp_duration = float(cfg_get(cfg, "startup_ramp_duration", 2.0))
+        self._kp_ramp_duration_steps: int = max(1, int(startup_ramp_duration * policy_hz))
         self._kp_ramp_step: int = 0
         self._kp_ramp_active: bool = False
         self._kp_nominal = np.asarray(cfg_get(real_cfg, "kp_real", [100] * num_actions), dtype=np.float32)

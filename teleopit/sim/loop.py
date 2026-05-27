@@ -255,7 +255,6 @@ class SimulationLoop:
         *,
         offline_playback: OfflinePlaybackController,
         mocap_session: MocapSessionManager,
-        retargeter: Retargeter,
     ) -> None:
         offline_playback.replay()
         mocap_session.reset()
@@ -263,7 +262,6 @@ class SimulationLoop:
         self._last_action = np.zeros((self._num_actions,), dtype=np.float32)
         self.controller.reset()
         self.obs_builder.reset()
-        retargeter.reset()
         self.robot.reset()
 
     def _pause_offline_playback(
