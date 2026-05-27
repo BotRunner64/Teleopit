@@ -9,6 +9,8 @@ import threading
 import time
 from typing import Any, Protocol, Sequence
 
+import numpy as np
+
 from teleopit.inputs.pico4_provider import (
     PicoControllerSnapshot,
     PicoControllerState,
@@ -28,6 +30,16 @@ HAND_TYPES = ("left", "right")
 HAND_MODES = ("off", "gripper", "vr_hand_pose")
 DEFAULT_SOMEHAND_CONFIG_PATH = "third_party/somehand/configs/retargeting/bihand/linkerhand_l6_bihand.yaml"
 DEFAULT_LINKERHAND_SDK_ROOT = "third_party/linkerhand-python-sdk"
+L6_QPOS_CHANNELS = (
+    "thumb_cmc_pitch",
+    "thumb_cmc_yaw",
+    "index_mcp_pitch",
+    "middle_mcp_pitch",
+    "ring_mcp_pitch",
+    "pinky_mcp_pitch",
+)
+L6_QPOS_MIN = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+L6_QPOS_MAX = np.array([0.99, 1.39, 1.26, 1.26, 1.26, 1.26], dtype=np.float64)
 
 
 class ControllerSnapshotProvider(Protocol):
@@ -102,6 +114,55 @@ def trigger_to_pose(
     ]
     pose[1] = int(thumb_yaw_default)
     return pose
+
+
+class L6RetargetPoseMapper:
+    """Map somehand-retargeted L6 qpos into Teleopit's six-channel L6 SDK pose."""
+
+    def __init__(self, hand_model: Any | None, config: LinkerHandConfig, *, hand_type: str):
+        self._config = config
+        self._hand_type = hand_type
+        self._indices = self._resolve_indices(hand_model, hand_type=hand_type)
+
+    def qpos_to_pose(self, qpos: Any) -> list[int]:
+        values = np.asarray(qpos, dtype=np.float64).reshape(-1)
+        if self._indices is None:
+            if values.shape[0] < len(L6_QPOS_CHANNELS):
+                raise ValueError(
+                    "somehand L6 retarget qpos is too short: "
+                    f"got {values.shape[0]}, need at least {len(L6_QPOS_CHANNELS)}"
+                )
+            channel_values = values[:len(L6_QPOS_CHANNELS)]
+        else:
+            channel_values = values[self._indices]
+
+        normalized = np.clip((channel_values - L6_QPOS_MIN) / (L6_QPOS_MAX - L6_QPOS_MIN), 0.0, 1.0)
+        pose = [
+            int(round(float(open_value) + float(alpha) * (float(close_value) - float(open_value))))
+            for open_value, close_value, alpha in zip(
+                self._config.open_pose,
+                self._config.close_pose,
+                normalized,
+            )
+        ]
+        pose[1] = int(self._config.thumb_yaw_center)
+        return [_uint8(value, f"somehand.{self._hand_type}.pose") for value in pose]
+
+    @staticmethod
+    def _resolve_indices(hand_model: Any | None, *, hand_type: str) -> np.ndarray | None:
+        if hand_model is None:
+            return None
+        get_index = getattr(hand_model, "get_joint_name_to_qpos_index", None)
+        if not callable(get_index):
+            return None
+        joint_index = get_index()
+        indices: list[int] = []
+        for channel in L6_QPOS_CHANNELS:
+            resolved = _resolve_l6_joint_name(joint_index, channel, hand_type=hand_type)
+            if resolved is None:
+                return None
+            indices.append(int(joint_index[resolved]))
+        return np.asarray(indices, dtype=np.int64)
 
 
 def parse_linkerhand_config(cfg: Any) -> LinkerHandConfig:
@@ -472,7 +533,7 @@ class SomeHandPoseRuntime:
         self._hand_frame_cls: Any | None = None
         self._bihand_frame_cls: Any | None = None
         self._pico_hand_to_landmarks: Any | None = None
-        self._adapters: dict[str, Any] = {}
+        self._pose_mappers: dict[str, L6RetargetPoseMapper] = {}
 
     @property
     def enabled(self) -> bool:
@@ -526,7 +587,7 @@ class SomeHandPoseRuntime:
         ):
             if hand_type not in self.config.selected_hand_types or not detected:
                 continue
-            pose = self._adapters[hand_type].qpos_to_sdk_range(step.qpos)
+            pose = self._pose_mappers[hand_type].qpos_to_pose(step.qpos)
             self._sender.send(hand_type, pose, reason="vr-hand-pose")
 
     def _make_hand_frame(self, hand_type: str, state: PicoHandState) -> Any | None:
@@ -548,7 +609,6 @@ class SomeHandPoseRuntime:
     def _load_somehand(self) -> None:
         try:
             from somehand.api import BiHandFrame, BiHandRetargetingEngine, HandFrame
-            from somehand.infrastructure import HandModel, LinkerHandModelAdapter, infer_linkerhand_model_family
             from somehand.pico_input import pico_hand_to_landmarks
         except ImportError as exc:
             raise ImportError(
@@ -563,22 +623,20 @@ class SomeHandPoseRuntime:
                 f"{config_path}. Initialize the submodule and download assets with "
                 "scripts/setup/download_somehand_l6_assets.sh"
             )
-        sdk_root = _resolve_project_path(self.config.somehand_sdk_root)
         self._engine = BiHandRetargetingEngine.from_config_path(str(config_path))
         self._hand_frame_cls = HandFrame
         self._bihand_frame_cls = BiHandFrame
         self._pico_hand_to_landmarks = pico_hand_to_landmarks
 
-        self._adapters = {}
+        # somehand owns hand-pose retargeting; Teleopit owns the LinkerHand L6 command mapping.
+        self._pose_mappers = {}
         for hand_type, engine in (("left", self._engine.left_engine), ("right", self._engine.right_engine)):
             if hand_type not in self.config.selected_hand_types:
                 continue
-            family = infer_linkerhand_model_family(engine.config.hand.name)
-            self._adapters[hand_type] = LinkerHandModelAdapter(
-                HandModel(engine.config.hand.mjcf_path),
-                family=family,
-                hand_side=hand_type,
-                sdk_root=str(sdk_root),
+            self._pose_mappers[hand_type] = L6RetargetPoseMapper(
+                getattr(engine, "hand_model", None),
+                self.config,
+                hand_type=hand_type,
             )
         logger.info("somehand LinkerHand L6 runtime started | hands=%s", ",".join(self.config.selected_hand_types))
 
@@ -630,6 +688,23 @@ def _resolve_project_path(path_value: str) -> Path:
     if path.is_absolute():
         return path
     return (PROJECT_ROOT / path).resolve()
+
+
+def _resolve_l6_joint_name(joint_index: dict[str, int], semantic_name: str, *, hand_type: str) -> str | None:
+    candidates = (
+        semantic_name,
+        f"{hand_type}_{semantic_name}",
+        f"{hand_type[0]}_{semantic_name}",
+        f"{'lh' if hand_type == 'left' else 'rh'}_{semantic_name}",
+    )
+    for candidate in candidates:
+        if candidate in joint_index:
+            return candidate
+    suffix = f"_{semantic_name}"
+    for name in joint_index:
+        if name.endswith(suffix):
+            return name
+    return None
 
 
 def _positive_float(value: object, field_name: str) -> float:

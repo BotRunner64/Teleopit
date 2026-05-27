@@ -276,7 +276,7 @@ def test_pose_sender_cleans_up_partial_start_failure(monkeypatch) -> None:
     assert created_hands[0].hand.close_calls == 1
 
 
-def _install_fake_somehand(monkeypatch, *, left_pose: list[int], right_pose: list[int]) -> None:
+def _install_fake_somehand(monkeypatch, *, left_qpos: list[float], right_qpos: list[float]) -> None:
     class FakeHandFrame:
         def __init__(self, *, landmarks_3d, landmarks_2d, hand_side):
             self.landmarks_3d = landmarks_3d
@@ -288,13 +288,26 @@ def _install_fake_somehand(monkeypatch, *, left_pose: list[int], right_pose: lis
             self.left = left
             self.right = right
 
+    class FakeHandModel:
+        def get_joint_name_to_qpos_index(self):
+            return {
+                "thumb_cmc_pitch": 0,
+                "thumb_cmc_yaw": 1,
+                "index_mcp_pitch": 2,
+                "middle_mcp_pitch": 3,
+                "ring_mcp_pitch": 4,
+                "pinky_mcp_pitch": 5,
+            }
+
     class FakeEngine:
         def __init__(self):
             self.left_engine = SimpleNamespace(
-                config=SimpleNamespace(hand=SimpleNamespace(name="linkerhand_l6_left", mjcf_path="left.xml"))
+                config=SimpleNamespace(hand=SimpleNamespace(name="linkerhand_l6_left", mjcf_path="left.xml")),
+                hand_model=FakeHandModel(),
             )
             self.right_engine = SimpleNamespace(
-                config=SimpleNamespace(hand=SimpleNamespace(name="linkerhand_l6_right", mjcf_path="right.xml"))
+                config=SimpleNamespace(hand=SimpleNamespace(name="linkerhand_l6_right", mjcf_path="right.xml")),
+                hand_model=FakeHandModel(),
             )
 
         @classmethod
@@ -305,40 +318,26 @@ def _install_fake_somehand(monkeypatch, *, left_pose: list[int], right_pose: lis
             return SimpleNamespace(
                 left_detected=frame.left is not None,
                 right_detected=frame.right is not None,
-                left=SimpleNamespace(qpos=np.array([1.0], dtype=np.float64)),
-                right=SimpleNamespace(qpos=np.array([2.0], dtype=np.float64)),
+                left=SimpleNamespace(qpos=np.asarray(left_qpos, dtype=np.float64)),
+                right=SimpleNamespace(qpos=np.asarray(right_qpos, dtype=np.float64)),
             )
-
-    class FakeHandModel:
-        def __init__(self, mjcf_path: str):
-            self.mjcf_path = mjcf_path
-
-    class FakeAdapter:
-        def __init__(self, _hand_model, *, family: str, hand_side: str, sdk_root: str):
-            del family, sdk_root
-            self.hand_side = hand_side
-
-        def qpos_to_sdk_range(self, _qpos):
-            return left_pose if self.hand_side == "left" else right_pose
 
     fake_api = SimpleNamespace(
         BiHandFrame=FakeBiHandFrame,
         BiHandRetargetingEngine=FakeEngine,
         HandFrame=FakeHandFrame,
     )
-    fake_infra = SimpleNamespace(
-        HandModel=FakeHandModel,
-        LinkerHandModelAdapter=FakeAdapter,
-        infer_linkerhand_model_family=lambda _name: "L6",
-    )
     fake_pico = SimpleNamespace(pico_hand_to_landmarks=lambda joints: np.asarray(joints, dtype=np.float64)[:21, :3])
     monkeypatch.setitem(sys.modules, "somehand.api", fake_api)
-    monkeypatch.setitem(sys.modules, "somehand.infrastructure", fake_infra)
     monkeypatch.setitem(sys.modules, "somehand.pico_input", fake_pico)
 
 
 def test_vr_hand_pose_runtime_holds_last_pose_when_hand_pose_disappears(monkeypatch, tmp_path) -> None:
-    _install_fake_somehand(monkeypatch, left_pose=[1, 2, 3, 4, 5, 6], right_pose=[6, 5, 4, 3, 2, 1])
+    _install_fake_somehand(
+        monkeypatch,
+        left_qpos=[0.99, 0.0, 1.26, 1.26, 1.26, 1.26],
+        right_qpos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    )
     config_path = tmp_path / "linkerhand_l6_bihand.yaml"
     config_path.write_text("left: {}\nright: {}\n", encoding="utf-8")
     provider = HandSnapshotProvider()
@@ -363,8 +362,8 @@ def test_vr_hand_pose_runtime_holds_last_pose_when_hand_pose_disappears(monkeypa
     runtime.tick(active=True, now_s=10.0)
     assert runtime._sender.wait_idle(timeout_s=1.0)
 
-    assert runtime._sender._last_pose["left"] == [1, 2, 3, 4, 5, 6]
-    assert runtime._sender._last_pose["right"] == [6, 5, 4, 3, 2, 1]
+    assert runtime._sender._last_pose["left"] == list(runtime.config.close_pose)
+    assert runtime._sender._last_pose["right"] == list(runtime.config.open_pose)
 
     provider.snapshot = _hand_snapshot(
         left=_hand_state(active=False, value=9.0),
@@ -375,8 +374,8 @@ def test_vr_hand_pose_runtime_holds_last_pose_when_hand_pose_disappears(monkeypa
     runtime.tick(active=True, now_s=10.1)
     assert runtime._sender.wait_idle(timeout_s=1.0)
 
-    assert runtime._sender._last_pose["left"] == [1, 2, 3, 4, 5, 6]
-    assert runtime._sender._last_pose["right"] == [6, 5, 4, 3, 2, 1]
+    assert runtime._sender._last_pose["left"] == list(runtime.config.close_pose)
+    assert runtime._sender._last_pose["right"] == list(runtime.config.open_pose)
 
     runtime.tick(active=False, now_s=10.2)
     assert runtime._sender.wait_idle(timeout_s=1.0)
