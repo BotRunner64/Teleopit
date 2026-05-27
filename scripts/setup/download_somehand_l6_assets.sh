@@ -82,7 +82,6 @@ if not cache_dir.is_absolute():
     cache_dir = (project_root / cache_dir).resolve()
 
 hands = ("linkerhand_l6_left", "linkerhand_l6_right")
-direct_patterns = [f"assets/mjcf/{hand}/**" for hand in hands]
 archive_pattern = "archives/mjcf_assets.tar.gz"
 repo_cache = cache_dir / source / repo_id.split("/")[-1]
 
@@ -129,18 +128,6 @@ def download(patterns: list[str]) -> None:
     )
 
 
-def place_direct_assets() -> bool:
-    placed = False
-    for hand in hands:
-        src = repo_cache / "assets" / "mjcf" / hand
-        if not src.exists():
-            return False
-        copy_dir(src, dest / hand)
-        print(f"  {src.relative_to(repo_cache)} -> {dest / hand}")
-        placed = True
-    return placed
-
-
 def safe_extract_l6_from_archive(archive_path: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     wanted_prefixes = {f"mjcf/{hand}/" for hand in hands}
@@ -171,14 +158,11 @@ def safe_extract_l6_from_archive(archive_path: Path) -> None:
 print(f"Downloading somehand L6 assets from {source}:{repo_id}")
 print(f"Destination: {dest}")
 
-download(direct_patterns)
-if not place_direct_assets():
-    print("Direct L6 asset paths not found; downloading mjcf archive fallback.")
-    download([archive_pattern])
-    archive = repo_cache / archive_pattern
-    if not archive.exists():
-        raise FileNotFoundError(f"Downloaded repo is missing {archive_pattern}")
-    safe_extract_l6_from_archive(archive)
+download([archive_pattern])
+archive = repo_cache / archive_pattern
+if not archive.exists():
+    raise FileNotFoundError(f"Downloaded repo is missing {archive_pattern}")
+safe_extract_l6_from_archive(archive)
 
 for hand in hands:
     model = dest / hand / "model.xml"
