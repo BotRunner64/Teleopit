@@ -134,14 +134,20 @@ Pico 暂停/恢复是 mocap-session control event。
 
 ## 可选 LinkerHand L6 控制
 
-Pico sim2real 可以用 Pico 手柄控制 LinkerHand L6。按住同侧 grip 作为 deadman，
-同侧 trigger 控制对应手闭合。手控只在 `MOCAP` 中生效；在 `STANDING`、`DAMPING`、
-mocap 暂停、帧超时和退出时都会发送张开姿态。
+Pico sim2real 可以用两种模式控制 LinkerHand L6：
+
+- `gripper`：按住同侧 grip 作为 deadman，同侧 trigger 控制对应手闭合。
+- `vr_hand_pose`：通过 somehand 重定向 Pico 手部 pose，并下发连续 L6 手部目标。
+  如果某侧手部 pose 消失，该侧会保持上一条手势命令。这个模式当前使用
+  `hand_type=both`。
+
+手控只在 `MOCAP` 中生效；在 `STANDING`、`DAMPING`、mocap 暂停和退出时都会发送张开姿态。
 
 如果主 Pico profile 没有包含手控支持，先安装 dexhand extra：
 
 ```bash
 pip install -e '.[dexhand]'
+scripts/setup/download_somehand_l6_assets.sh
 ```
 
 测试或运行手控前，先开启 CAN 接口：
@@ -163,7 +169,16 @@ python scripts/dev/test_linkerhand_l6.py \
 然后在 Pico sim2real 中启用 L6 控制：
 
 ```bash
-dexterous_hand.enabled=true
+dexterous_hand.mode=gripper
+dexterous_hand.left_can=can0
+dexterous_hand.right_can=can1
+```
+
+连续 VR 手部 pose 控制使用：
+
+```bash
+dexterous_hand.mode=vr_hand_pose
+dexterous_hand.hand_type=both
 dexterous_hand.left_can=can0
 dexterous_hand.right_can=can1
 ```
@@ -202,7 +217,7 @@ mocap_switch.check_frames=10
 input.pause_button=right_axis_click
 
 # 开启 LinkerHand L6 控制
-dexterous_hand.enabled=true
+dexterous_hand.mode=gripper
 
 # 开启头显视频预览
 input.video.enabled=true
@@ -217,5 +232,5 @@ input.video.enabled=true
 | 无法进入 debug mode | Unitree mode 释放失败 | 停止其他机器人模式后再次按 `Start` |
 | 机器人进入 `STANDING` 但不进入 `MOCAP` | 动捕验证失败 | 保持追踪稳定，查看 `mocap_switch.check_frames` 日志 |
 | Pico 暂停没有返回 `STANDING` | 这是预期行为 | Pico 暂停只冻结 mocap；按遥控器 `X` 返回 `STANDING` |
-| LinkerHand 不动 | 不在 `MOCAP`、deadman grip 未按住、SDK 未安装，或 CAN 通道错误 | 进入 `MOCAP`，按住同侧 grip，运行 `scripts/dev/test_linkerhand_l6.py`，并检查 `dexterous_hand.left_can` / `right_can` |
+| LinkerHand 不动 | 模式为 `off`、不在 `MOCAP`、gripper deadman 未按住、SDK/资产未安装，或 CAN 通道错误 | 设置 `dexterous_hand.mode`，进入 `MOCAP`，运行 `scripts/dev/test_linkerhand_l6.py`，并检查 `dexterous_hand.left_can` / `right_can` |
 | 视频预览不可用 | RealSense 或视频源失败 | 检查相机权限、`input.video.source` 和日志 |

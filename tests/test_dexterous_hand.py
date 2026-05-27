@@ -3,12 +3,14 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
-from teleopit.inputs.pico4_provider import PicoControllerSnapshot, PicoControllerState
+from teleopit.inputs.pico4_provider import PicoControllerSnapshot, PicoControllerState, PicoHandSnapshot, PicoHandState
 from teleopit.sim2real.dexterous_hand import (
     L6PoseSender,
     LinkerHandRuntime,
+    SomeHandPoseRuntime,
     parse_linkerhand_config,
     trigger_to_pose,
 )
@@ -62,6 +64,14 @@ class SnapshotProvider:
         return self.snapshot
 
 
+class HandSnapshotProvider:
+    def __init__(self) -> None:
+        self.snapshot: PicoHandSnapshot | None = None
+
+    def get_hand_snapshot(self) -> PicoHandSnapshot | None:
+        return self.snapshot
+
+
 def _snapshot(
     *,
     left: PicoControllerState | None = None,
@@ -76,6 +86,28 @@ def _snapshot(
         timestamp_s=timestamp_s,
         seq=seq,
     )
+
+
+def _hand_snapshot(
+    *,
+    left: PicoHandState | None = None,
+    right: PicoHandState | None = None,
+    timestamp_s: float = 10.0,
+    seq: int = 1,
+) -> PicoHandSnapshot:
+    missing = PicoHandState(active=False, joints=np.zeros((26, 7), dtype=np.float64), present=False)
+    return PicoHandSnapshot(
+        left=left or missing,
+        right=right or missing,
+        timestamp_s=timestamp_s,
+        seq=seq,
+    )
+
+
+def _hand_state(*, active: bool = True, value: float = 1.0, present: bool = True) -> PicoHandState:
+    joints = np.zeros((26, 7), dtype=np.float64)
+    joints[:, 0] = value
+    return PicoHandState(active=active, joints=joints, present=present)
 
 
 def _runtime(provider: SnapshotProvider) -> LinkerHandRuntime:
@@ -242,6 +274,115 @@ def test_pose_sender_cleans_up_partial_start_failure(monkeypatch) -> None:
     assert len(created_hands) == 1
     assert created_hands[0].close_can_calls == 0
     assert created_hands[0].hand.close_calls == 1
+
+
+def _install_fake_somehand(monkeypatch, *, left_pose: list[int], right_pose: list[int]) -> None:
+    class FakeHandFrame:
+        def __init__(self, *, landmarks_3d, landmarks_2d, hand_side):
+            self.landmarks_3d = landmarks_3d
+            self.landmarks_2d = landmarks_2d
+            self.hand_side = hand_side
+
+    class FakeBiHandFrame:
+        def __init__(self, *, left=None, right=None):
+            self.left = left
+            self.right = right
+
+    class FakeEngine:
+        def __init__(self):
+            self.left_engine = SimpleNamespace(
+                config=SimpleNamespace(hand=SimpleNamespace(name="linkerhand_l6_left", mjcf_path="left.xml"))
+            )
+            self.right_engine = SimpleNamespace(
+                config=SimpleNamespace(hand=SimpleNamespace(name="linkerhand_l6_right", mjcf_path="right.xml"))
+            )
+
+        @classmethod
+        def from_config_path(cls, _path: str):
+            return cls()
+
+        def process(self, frame):
+            return SimpleNamespace(
+                left_detected=frame.left is not None,
+                right_detected=frame.right is not None,
+                left=SimpleNamespace(qpos=np.array([1.0], dtype=np.float64)),
+                right=SimpleNamespace(qpos=np.array([2.0], dtype=np.float64)),
+            )
+
+    class FakeHandModel:
+        def __init__(self, mjcf_path: str):
+            self.mjcf_path = mjcf_path
+
+    class FakeAdapter:
+        def __init__(self, _hand_model, *, family: str, hand_side: str, sdk_root: str):
+            del family, sdk_root
+            self.hand_side = hand_side
+
+        def qpos_to_sdk_range(self, _qpos):
+            return left_pose if self.hand_side == "left" else right_pose
+
+    fake_api = SimpleNamespace(
+        BiHandFrame=FakeBiHandFrame,
+        BiHandRetargetingEngine=FakeEngine,
+        HandFrame=FakeHandFrame,
+    )
+    fake_infra = SimpleNamespace(
+        HandModel=FakeHandModel,
+        LinkerHandModelAdapter=FakeAdapter,
+        infer_linkerhand_model_family=lambda _name: "L6",
+    )
+    fake_pico = SimpleNamespace(pico_hand_to_landmarks=lambda joints: np.asarray(joints, dtype=np.float64)[:21, :3])
+    monkeypatch.setitem(sys.modules, "somehand.api", fake_api)
+    monkeypatch.setitem(sys.modules, "somehand.infrastructure", fake_infra)
+    monkeypatch.setitem(sys.modules, "somehand.pico_input", fake_pico)
+
+
+def test_vr_hand_pose_runtime_holds_last_pose_when_hand_pose_disappears(monkeypatch, tmp_path) -> None:
+    _install_fake_somehand(monkeypatch, left_pose=[1, 2, 3, 4, 5, 6], right_pose=[6, 5, 4, 3, 2, 1])
+    config_path = tmp_path / "linkerhand_l6_bihand.yaml"
+    config_path.write_text("left: {}\nright: {}\n", encoding="utf-8")
+    provider = HandSnapshotProvider()
+    cfg = parse_linkerhand_config(
+        {
+            "input": {"provider": "pico4"},
+            "dexterous_hand": {
+                "mode": "vr_hand_pose",
+                "hand_type": "both",
+                "somehand": {"config_path": str(config_path), "sdk_root": "third_party/linkerhand-python-sdk"},
+            },
+        }
+    )
+    runtime = SomeHandPoseRuntime(cfg, provider)
+    runtime.start()
+
+    provider.snapshot = _hand_snapshot(
+        left=_hand_state(active=True, value=1.0),
+        right=_hand_state(active=True, value=2.0),
+        timestamp_s=10.0,
+    )
+    runtime.tick(active=True, now_s=10.0)
+    assert runtime._sender.wait_idle(timeout_s=1.0)
+
+    assert runtime._sender._last_pose["left"] == [1, 2, 3, 4, 5, 6]
+    assert runtime._sender._last_pose["right"] == [6, 5, 4, 3, 2, 1]
+
+    provider.snapshot = _hand_snapshot(
+        left=_hand_state(active=False, value=9.0),
+        right=_hand_state(active=False, value=9.0, present=False),
+        timestamp_s=10.1,
+        seq=2,
+    )
+    runtime.tick(active=True, now_s=10.1)
+    assert runtime._sender.wait_idle(timeout_s=1.0)
+
+    assert runtime._sender._last_pose["left"] == [1, 2, 3, 4, 5, 6]
+    assert runtime._sender._last_pose["right"] == [6, 5, 4, 3, 2, 1]
+
+    runtime.tick(active=False, now_s=10.2)
+    assert runtime._sender.wait_idle(timeout_s=1.0)
+    assert runtime._sender._last_pose["left"] == list(runtime.config.open_pose)
+    assert runtime._sender._last_pose["right"] == list(runtime.config.open_pose)
+    runtime.close()
 
 
 def test_pose_sender_wraps_sdk_system_exit_and_cleans_up(monkeypatch) -> None:

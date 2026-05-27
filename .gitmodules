@@ -4,3 +4,6 @@
 [submodule "third_party/linkerhand-python-sdk"]
 	path = third_party/linkerhand-python-sdk
 	url = https://github.com/BotRunner64/linkerhand-python-sdk.git
+[submodule "third_party/somehand"]
+	path = third_party/somehand
+	url = https://github.com/BotRunner64/somehand.git

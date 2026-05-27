@@ -62,15 +62,17 @@ See [Pico Sim2Sim](../tutorials/pico-sim2sim) and
 [Pico Sim2Real](../tutorials/pico-sim2real) for the full setup guides.
 
 Optional LinkerHand L6 control for Pico sim2real is installed through the
-`dexhand` extra. The SDK itself is provided by the repository submodule, so make
-sure submodules are initialized first:
+`dexhand` extra. It includes the LinkerHand SDK submodule and the remote
+somehand package used by VR hand-pose mode:
 
 ```bash
 git submodule update --init --recursive
 pip install -e '.[dexhand]'
+scripts/setup/download_somehand_l6_assets.sh
 ```
 
-This extra is only required when `dexterous_hand.enabled=true`.
+This extra is only required when `dexterous_hand.mode=gripper` or
+`dexterous_hand.mode=vr_hand_pose`.
 
 ## Verify Installation
 

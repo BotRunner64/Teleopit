@@ -53,6 +53,7 @@ pico4 = [
 ]
 dexhand = [
     "linkerhand-python-sdk @ file:third_party/linkerhand-python-sdk",
+    "somehand @ file:third_party/somehand",
 ]
 
 [tool.setuptools.packages.find]

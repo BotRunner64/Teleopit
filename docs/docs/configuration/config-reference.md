@@ -121,20 +121,22 @@ Realtime Pico resume re-centers heading and ground-plane position before trackin
 
 ### Dexterous Hand (Pico sim2real)
 
-`dexterous_hand.enabled=true` requires `input.provider=pico4` and the optional
-`dexhand` extra. Control is active only in `MOCAP`; inactive modes and timeouts
-send the open pose.
+`dexterous_hand.mode=gripper` or `dexterous_hand.mode=vr_hand_pose` requires
+`input.provider=pico4` and the optional `dexhand` extra. Control is active only
+in `MOCAP`; inactive modes send the open pose. In `vr_hand_pose`, missing hand
+pose holds the last command for that side.
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `dexterous_hand.enabled` | Enable Pico controller control for LinkerHand L6 | `false` |
-| `dexterous_hand.hand_type` | Controlled side: `left`, `right`, or `both` | `both` |
+| `dexterous_hand.mode` | `off`, `gripper`, or `vr_hand_pose` | `off` |
+| `dexterous_hand.hand_type` | Controlled side: `left`, `right`, or `both`; `vr_hand_pose` requires `both` | `both` |
 | `dexterous_hand.left_can` / `right_can` | CAN channels for each hand | `can0` / `can1` |
 | `dexterous_hand.rate` | Maximum command rate in Hz | `30.0` |
-| `dexterous_hand.frame_timeout` | Missing-controller timeout before opening hands | `0.3` |
+| `dexterous_hand.frame_timeout` | Gripper controller timeout, or VR hand-pose staleness threshold | `0.3` |
 | `dexterous_hand.deadman_threshold` | Minimum grip value required to enable a side | `0.5` |
 | `dexterous_hand.trigger_deadzone` | Trigger deadzone at both ends | `0.05` |
 | `dexterous_hand.open_pose` / `close_pose` | Six-value L6 open/closed poses | see config |
+| `dexterous_hand.somehand.config_path` | somehand bi-hand L6 config used by `vr_hand_pose` | see config |
 
 ## Critical: `default_dof_pos`
 

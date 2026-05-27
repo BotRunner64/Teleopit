@@ -56,7 +56,7 @@ teleopit/                 # Core inference package
 │   └── loop.py           # SimulationLoop — PD control at 1000Hz, policy at 50Hz
 ├── sim2real/
 │   ├── controller.py     # G1 state machine and hardware control loop
-│   └── dexterous_hand.py # Optional Pico controller → LinkerHand L6 runtime
+│   └── dexterous_hand.py # Optional Pico gripper / VR hand pose → LinkerHand L6 runtime
 └── recording/            # HDF5Recorder
 scripts/
 ├── run_sim.py            # Offline sim2sim pipeline
@@ -142,9 +142,11 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - Pico4 sim2real pause/resume is handled as a mocap-session control event (`toggle_pause`), not as a mode switch to `STANDING`
 - Default Pico pause button is `A`; resume rebuilds the realtime buffer and yaw/XY root-offset alignment, then waits for the configured realtime warmup before tracking continues
 - Realtime mode switches and pause/resume use a retargeter-preserving soft reset: policy/reference history, smoothers, realtime buffers, and reference alignment are reset, while the GMR IK warm-start is retained
-- Optional LinkerHand L6 control uses `third_party/linkerhand-python-sdk` and `dexterous_hand.enabled=true`
-- LinkerHand control reuses `Pico4InputProvider.get_controller_snapshot()`; do not start a second `PicoBridge` for hand control
-- LinkerHand L6 control is active only in sim2real `MOCAP`; `STANDING`, `DAMPING`, mocap pause, frame timeout, and shutdown must send the configured open pose
+- Optional LinkerHand L6 control uses `dexterous_hand.mode=off|gripper|vr_hand_pose`; default is `off`
+- `gripper` mode reuses `Pico4InputProvider.get_controller_snapshot()` for Pico grip/trigger open-close control
+- `vr_hand_pose` mode reuses `Pico4InputProvider.get_hand_snapshot()` and `somehand` for continuous Pico hand-pose retargeting; do not start a second `PicoBridge` for hand control
+- LinkerHand L6 control is active only in sim2real `MOCAP`; `STANDING`, `DAMPING`, mocap pause, and shutdown must send the configured open pose
+- In `vr_hand_pose` mode, missing/inactive hand pose holds the last commanded pose for that side instead of opening the hand
 
 ### SimulationLoop Runtime Behavior
 - `realtime=true` enforces wall-clock pacing even without a viewer
@@ -213,7 +215,7 @@ python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_general_trac
 - Do not commit robot meshes, datasets, checkpoints, or demo media to Git; use `scripts/setup/download_assets.py`
 - `teleopit/retargeting/gmr/assets/` is gitignored; downloaded at runtime
 - `train_mimic/assets/` is no longer tracked; FK tooling reuses `teleopit/retargeting/gmr/assets/unitree_g1/g1_mjlab.xml`
-- `third_party/linkerhand-python-sdk` is a git submodule for optional LinkerHand L6 sim2real control
+- `third_party/linkerhand-python-sdk` and `third_party/somehand` support optional LinkerHand L6 sim2real control
 - Run `python scripts/check_large_tracked_files.py` before pushing
 
 Assets are split across two ModelScope repos by type:

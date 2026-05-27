@@ -74,6 +74,26 @@ class PicoControllerSnapshot:
     timestamp_s: float
     seq: int
 
+
+@dataclass(frozen=True)
+class PicoHandState:
+    """Latest per-hand pose state exposed by pico_bridge."""
+
+    active: bool
+    joints: NDArray[np.float64]
+    present: bool = True
+
+
+@dataclass(frozen=True)
+class PicoHandSnapshot:
+    """Immutable snapshot of Pico hand poses for auxiliary runtimes."""
+
+    left: PicoHandState
+    right: PicoHandState
+    timestamp_s: float
+    seq: int
+
+
 _PAUSE_BUTTON_MAP: dict[str, tuple[str, str]] = {
     "A": ("right", "primaryButton"),
     "B": ("right", "secondaryButton"),
@@ -212,6 +232,7 @@ class Pico4InputProvider(RealtimeInputProvider):
         self._last_frame_timestamp: float | None = None
         self._last_source_seq: int | None = None
         self._controller_snapshot: PicoControllerSnapshot | None = None
+        self._hand_snapshot: PicoHandSnapshot | None = None
         self._ground_lift_offset: float | None = None
         self._bridge = bridge_cls(
             host=bridge_host,
@@ -298,6 +319,11 @@ class Pico4InputProvider(RealtimeInputProvider):
         with self._lock:
             return self._controller_snapshot
 
+    def get_hand_snapshot(self) -> PicoHandSnapshot | None:
+        """Return the latest Pico hand-pose snapshot, if one has arrived."""
+        with self._lock:
+            return self._hand_snapshot
+
     def push_video_frame(self, frame: NDArray[np.uint8]) -> int:
         """Push one RGB camera frame to pico-bridge 0.2.1 video output."""
         push_video_frame = getattr(self._bridge, "push_video_frame", None)
@@ -363,6 +389,7 @@ class Pico4InputProvider(RealtimeInputProvider):
     def _accept_pico_frame(self, frame: Any) -> bool:
         timestamp = float(getattr(frame, "receive_time_s", time.monotonic()))
         self._accept_controller_snapshot(frame, timestamp=timestamp)
+        self._accept_hand_snapshot(frame, timestamp=timestamp)
         self._poll_control_events(frame, timestamp=timestamp)
 
         body = getattr(frame, "body", None)
@@ -417,6 +444,17 @@ class Pico4InputProvider(RealtimeInputProvider):
         with self._lock:
             self._controller_snapshot = snapshot
 
+    def _accept_hand_snapshot(self, frame: Any, *, timestamp: float) -> None:
+        seq = int(getattr(frame, "seq", self._last_source_seq or -1))
+        snapshot = PicoHandSnapshot(
+            left=self._read_hand_state(getattr(frame, "left_hand", None)),
+            right=self._read_hand_state(getattr(frame, "right_hand", None)),
+            timestamp_s=float(timestamp),
+            seq=seq,
+        )
+        with self._lock:
+            self._hand_snapshot = snapshot
+
     def _poll_control_events(self, frame: Any, *, timestamp: float) -> bool:
         if self._pause_button_path is None:
             return False
@@ -459,6 +497,25 @@ class Pico4InputProvider(RealtimeInputProvider):
             grip=float(axis.get("grip", 0.0)),
             trigger=float(axis.get("trigger", 0.0)),
             present=controller is not None,
+        )
+
+    @staticmethod
+    def _read_hand_state(hand: Any) -> PicoHandState:
+        joints = np.zeros((26, 7), dtype=np.float64)
+        valid_shape = False
+        if hand is None:
+            return PicoHandState(active=False, joints=joints, present=False)
+        try:
+            raw_joints = np.asarray(getattr(hand, "joints"), dtype=np.float64)
+            if raw_joints.shape == (26, 7):
+                joints = raw_joints.copy()
+                valid_shape = True
+        except (TypeError, ValueError):
+            pass
+        return PicoHandState(
+            active=bool(getattr(hand, "active", False)) and valid_shape,
+            joints=joints,
+            present=True,
         )
 
     @staticmethod

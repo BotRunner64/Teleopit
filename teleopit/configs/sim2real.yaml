@@ -26,9 +26,9 @@ standing_return_kp_ramp_floor_ratio: 0.5
 # Joint velocity safety limit (rad/s) -- trigger emergency damping if exceeded
 joint_vel_limit: 10.0
 
-# Optional LinkerHand L6 control. Enable only with input.provider=pico4.
+# Optional LinkerHand L6 control. Use only with input.provider=pico4.
 dexterous_hand:
-  enabled: false
+  mode: off  # off | gripper | vr_hand_pose
   hand_joint: L6
   hand_type: both
   left_can: can0
@@ -43,6 +43,9 @@ dexterous_hand:
   open_pose: [250, 10, 250, 250, 250, 250]
   close_pose: [79, 10, 0, 0, 0, 0]
   print_input: false
+  somehand:
+    config_path: third_party/somehand/configs/retargeting/bihand/linkerhand_l6_bihand.yaml
+    sdk_root: third_party/linkerhand-python-sdk
 
 # Physical robot SDK configuration
 real_robot:

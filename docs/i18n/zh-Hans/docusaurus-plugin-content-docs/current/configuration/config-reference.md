@@ -140,16 +140,19 @@ MuJoCo 窗口显示重定向参考；`sim2sim`、`mocap`、`camera` 和 `all`
 
 ### 灵巧手（Pico sim2real）
 
-`dexterous_hand.enabled=true` 要求 `input.provider=pico4`，并安装可选的
-`dexhand` extra。控制只在 `MOCAP` 中生效；非活动模式和超时会发送张开姿态。
+`dexterous_hand.mode=gripper` 或 `dexterous_hand.mode=vr_hand_pose` 要求
+`input.provider=pico4`，并安装可选的 `dexhand` extra。控制只在 `MOCAP`
+中生效；非活动模式会发送张开姿态。在 `vr_hand_pose` 中，手部 pose 消失时，
+对应侧会保持上一条命令。
 
 | 字段 | 说明 | 默认值 |
 |---|---|---|
-| `dexterous_hand.enabled` | 启用 Pico 手柄控制 LinkerHand L6 | `false` |
-| `dexterous_hand.hand_type` | 控制侧：`left`、`right` 或 `both` | `both` |
+| `dexterous_hand.mode` | `off`、`gripper` 或 `vr_hand_pose` | `off` |
+| `dexterous_hand.hand_type` | 控制侧：`left`、`right` 或 `both`；`vr_hand_pose` 要求 `both` | `both` |
 | `dexterous_hand.left_can` / `right_can` | 左右手 CAN 通道 | `can0` / `can1` |
 | `dexterous_hand.rate` | 最大命令频率（Hz） | `30.0` |
-| `dexterous_hand.frame_timeout` | 手柄超时后张开手的时间 | `0.3` |
+| `dexterous_hand.frame_timeout` | gripper 手柄超时或 VR 手部 pose 过期阈值 | `0.3` |
 | `dexterous_hand.deadman_threshold` | 启用单侧控制所需的最小 grip 值 | `0.5` |
 | `dexterous_hand.trigger_deadzone` | trigger 两端死区 | `0.05` |
 | `dexterous_hand.open_pose` / `close_pose` | L6 的 6 维张开/闭合姿态 | 见配置 |
+| `dexterous_hand.somehand.config_path` | `vr_hand_pose` 使用的 somehand 双手 L6 配置 | 见配置 |

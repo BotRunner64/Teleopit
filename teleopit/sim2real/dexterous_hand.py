@@ -4,20 +4,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+from pathlib import Path
 import threading
 import time
 from typing import Any, Protocol, Sequence
 
-from teleopit.inputs.pico4_provider import PicoControllerSnapshot, PicoControllerState
+from teleopit.inputs.pico4_provider import (
+    PicoControllerSnapshot,
+    PicoControllerState,
+    PicoHandSnapshot,
+    PicoHandState,
+)
 from teleopit.runtime.common import cfg_get
 
 logger = logging.getLogger(__name__)
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 THUMB_YAW_DEFAULT = 10
 OPEN_POSE = [250, THUMB_YAW_DEFAULT, 250, 250, 250, 250]
 CLOSE_POSE = [79, THUMB_YAW_DEFAULT, 0, 0, 0, 0]
 DEFAULT_SPEED = [50, 50, 50, 50, 50, 50]
 HAND_TYPES = ("left", "right")
+HAND_MODES = ("off", "gripper", "vr_hand_pose")
+DEFAULT_SOMEHAND_CONFIG_PATH = "third_party/somehand/configs/retargeting/bihand/linkerhand_l6_bihand.yaml"
+DEFAULT_LINKERHAND_SDK_ROOT = "third_party/linkerhand-python-sdk"
 
 
 class ControllerSnapshotProvider(Protocol):
@@ -25,8 +35,14 @@ class ControllerSnapshotProvider(Protocol):
         ...
 
 
+class HandSnapshotProvider(Protocol):
+    def get_hand_snapshot(self) -> PicoHandSnapshot | None:
+        ...
+
+
 @dataclass(frozen=True)
 class LinkerHandConfig:
+    mode: str = "off"
     enabled: bool = False
     hand_joint: str = "L6"
     hand_type: str = "both"
@@ -42,6 +58,8 @@ class LinkerHandConfig:
     open_pose: tuple[int, ...] = tuple(OPEN_POSE)
     close_pose: tuple[int, ...] = tuple(CLOSE_POSE)
     print_input: bool = False
+    somehand_config_path: str = DEFAULT_SOMEHAND_CONFIG_PATH
+    somehand_sdk_root: str = DEFAULT_LINKERHAND_SDK_ROOT
 
     @property
     def selected_hand_types(self) -> tuple[str, ...]:
@@ -88,6 +106,10 @@ def trigger_to_pose(
 
 def parse_linkerhand_config(cfg: Any) -> LinkerHandConfig:
     hand_cfg = cfg_get(cfg, "dexterous_hand", {}) or {}
+    raw_mode = cfg_get(hand_cfg, "mode", None)
+    legacy_enabled = bool(cfg_get(hand_cfg, "enabled", False))
+    mode = str(raw_mode if raw_mode is not None else ("gripper" if legacy_enabled else "off")).lower()
+    somehand_cfg = cfg_get(hand_cfg, "somehand", {}) or {}
     thumb_yaw = _uint8(cfg_get(hand_cfg, "thumb_yaw_center", THUMB_YAW_DEFAULT), "thumb_yaw_center")
     open_pose = _pose_values(cfg_get(hand_cfg, "open_pose", OPEN_POSE), "open_pose")
     close_pose = _pose_values(cfg_get(hand_cfg, "close_pose", CLOSE_POSE), "close_pose")
@@ -95,7 +117,8 @@ def parse_linkerhand_config(cfg: Any) -> LinkerHandConfig:
     close_pose[1] = thumb_yaw
 
     config = LinkerHandConfig(
-        enabled=bool(cfg_get(hand_cfg, "enabled", False)),
+        mode=mode,
+        enabled=mode != "off",
         hand_joint=str(cfg_get(hand_cfg, "hand_joint", "L6")).upper(),
         hand_type=str(cfg_get(hand_cfg, "hand_type", "both")).lower(),
         left_can=str(cfg_get(hand_cfg, "left_can", "can0")),
@@ -110,7 +133,11 @@ def parse_linkerhand_config(cfg: Any) -> LinkerHandConfig:
         open_pose=tuple(open_pose),
         close_pose=tuple(close_pose),
         print_input=bool(cfg_get(hand_cfg, "print_input", False)),
+        somehand_config_path=str(cfg_get(somehand_cfg, "config_path", DEFAULT_SOMEHAND_CONFIG_PATH)),
+        somehand_sdk_root=str(cfg_get(somehand_cfg, "sdk_root", DEFAULT_LINKERHAND_SDK_ROOT)),
     )
+    if config.mode not in HAND_MODES:
+        raise ValueError(f"dexterous_hand.mode must be one of {', '.join(HAND_MODES)}, got {config.mode!r}")
     if config.hand_joint != "L6":
         raise ValueError(f"dexterous_hand.hand_joint must be 'L6', got {config.hand_joint!r}")
     if config.hand_type not in ("left", "right", "both"):
@@ -142,7 +169,7 @@ class L6PoseSender:
             from LinkerHand.linker_hand_api import LinkerHandApi
         except ImportError as exc:
             raise ImportError(
-                "LinkerHand SDK is required when dexterous_hand.enabled=true. "
+                "LinkerHand SDK is required when dexterous_hand.mode is gripper or vr_hand_pose. "
                 "Run: pip install -e third_party/linkerhand-python-sdk"
             ) from exc
 
@@ -430,6 +457,139 @@ class LinkerHandRuntime:
         logger.info("LinkerHand L6: %s", message)
 
 
+class SomeHandPoseRuntime:
+    """Drive LinkerHand L6 from Pico hand-pose snapshots through somehand."""
+
+    def __init__(self, config: LinkerHandConfig, provider: HandSnapshotProvider):
+        self.config = config
+        self._provider = provider
+        self._sender = AsyncL6PoseSender(config)
+        self._interval_s = 1.0 / config.rate
+        self._next_tick_s = 0.0
+        self._active = False
+        self._last_status: dict[str, str] = {hand_type: "" for hand_type in config.selected_hand_types}
+        self._engine: Any | None = None
+        self._hand_frame_cls: Any | None = None
+        self._bihand_frame_cls: Any | None = None
+        self._pico_hand_to_landmarks: Any | None = None
+        self._adapters: dict[str, Any] = {}
+
+    @property
+    def enabled(self) -> bool:
+        return self.config.enabled
+
+    def start(self) -> None:
+        if not self.enabled:
+            return
+        self._load_somehand()
+        self._sender.start()
+        self._sender.send_all(self.config.open_pose, force=True, reason="startup")
+
+    def tick(self, *, active: bool, now_s: float | None = None) -> None:
+        if not self.enabled:
+            return
+        now = time.monotonic() if now_s is None else float(now_s)
+        if not active:
+            self._deactivate(reason="inactive")
+            return
+        if not self._active:
+            self._active = True
+            self._next_tick_s = 0.0
+        if now < self._next_tick_s:
+            return
+        self._next_tick_s = now + self._interval_s
+
+        snapshot = self._provider.get_hand_snapshot()
+        if snapshot is None:
+            self._set_status("both", "missing", "Pico hand pose missing; holding last hand command")
+            return
+        if now - snapshot.timestamp_s > self.config.frame_timeout:
+            self._set_status("both", "timeout", "Pico hand pose timed out; holding last hand command")
+            return
+
+        self._tick_snapshot(snapshot)
+
+    def close(self) -> None:
+        self._deactivate(reason="shutdown")
+        self._sender.close()
+
+    def _tick_snapshot(self, snapshot: PicoHandSnapshot) -> None:
+        left_frame = self._make_hand_frame("left", snapshot.left) if "left" in self.config.selected_hand_types else None
+        right_frame = self._make_hand_frame("right", snapshot.right) if "right" in self.config.selected_hand_types else None
+        if left_frame is None and right_frame is None:
+            return
+
+        result = self._engine.process(self._bihand_frame_cls(left=left_frame, right=right_frame))
+        for hand_type, detected, step in (
+            ("left", result.left_detected, result.left),
+            ("right", result.right_detected, result.right),
+        ):
+            if hand_type not in self.config.selected_hand_types or not detected:
+                continue
+            pose = self._adapters[hand_type].qpos_to_sdk_range(step.qpos)
+            self._sender.send(hand_type, pose, reason="vr-hand-pose")
+
+    def _make_hand_frame(self, hand_type: str, state: PicoHandState) -> Any | None:
+        if not state.present:
+            self._set_status(hand_type, "missing", f"{hand_type} hand pose missing; holding last hand command")
+            return None
+        if not state.active:
+            self._set_status(hand_type, "inactive", f"{hand_type} hand pose inactive; holding last hand command")
+            return None
+        self._set_status(hand_type, "enabled", f"{hand_type} hand pose active")
+        landmarks = self._pico_hand_to_landmarks(state.joints)
+        return self._hand_frame_cls(landmarks_3d=landmarks, landmarks_2d=None, hand_side=hand_type)
+
+    def _deactivate(self, *, reason: str) -> None:
+        if self._active:
+            self._sender.send_all(self.config.open_pose, force=True, reason=reason)
+        self._active = False
+
+    def _load_somehand(self) -> None:
+        try:
+            from somehand.api import BiHandFrame, BiHandRetargetingEngine, HandFrame
+            from somehand.infrastructure import HandModel, LinkerHandModelAdapter, infer_linkerhand_model_family
+            from somehand.pico_input import pico_hand_to_landmarks
+        except ImportError as exc:
+            raise ImportError(
+                "somehand is required when dexterous_hand.mode=vr_hand_pose. "
+                "Install it with: pip install -e '.[dexhand]'"
+            ) from exc
+
+        config_path = _resolve_project_path(self.config.somehand_config_path)
+        if not config_path.exists():
+            raise FileNotFoundError(
+                "somehand bi-hand config not found: "
+                f"{config_path}. Initialize the submodule and download assets with "
+                "scripts/setup/download_somehand_l6_assets.sh"
+            )
+        sdk_root = _resolve_project_path(self.config.somehand_sdk_root)
+        self._engine = BiHandRetargetingEngine.from_config_path(str(config_path))
+        self._hand_frame_cls = HandFrame
+        self._bihand_frame_cls = BiHandFrame
+        self._pico_hand_to_landmarks = pico_hand_to_landmarks
+
+        self._adapters = {}
+        for hand_type, engine in (("left", self._engine.left_engine), ("right", self._engine.right_engine)):
+            if hand_type not in self.config.selected_hand_types:
+                continue
+            family = infer_linkerhand_model_family(engine.config.hand.name)
+            self._adapters[hand_type] = LinkerHandModelAdapter(
+                HandModel(engine.config.hand.mjcf_path),
+                family=family,
+                hand_side=hand_type,
+                sdk_root=str(sdk_root),
+            )
+        logger.info("somehand LinkerHand L6 runtime started | hands=%s", ",".join(self.config.selected_hand_types))
+
+    def _set_status(self, hand_type: str, status: str, message: str) -> None:
+        key = hand_type
+        if self._last_status.get(key) == status:
+            return
+        self._last_status[key] = status
+        logger.info("somehand LinkerHand L6: %s", message)
+
+
 class DisabledLinkerHandRuntime:
     enabled = False
 
@@ -443,7 +603,7 @@ class DisabledLinkerHandRuntime:
         pass
 
 
-def build_linkerhand_runtime(cfg: Any, input_provider: Any) -> LinkerHandRuntime | DisabledLinkerHandRuntime:
+def build_linkerhand_runtime(cfg: Any, input_provider: Any) -> LinkerHandRuntime | SomeHandPoseRuntime | DisabledLinkerHandRuntime:
     config = parse_linkerhand_config(cfg)
     if not config.enabled:
         return DisabledLinkerHandRuntime()
@@ -451,10 +611,25 @@ def build_linkerhand_runtime(cfg: Any, input_provider: Any) -> LinkerHandRuntime
     input_cfg = cfg_get(cfg, "input", {}) or {}
     provider_kind = str(cfg_get(input_cfg, "provider", "")).lower()
     if provider_kind != "pico4":
-        raise ValueError("dexterous_hand.enabled=true requires input.provider=pico4")
-    if not callable(getattr(input_provider, "get_controller_snapshot", None)):
-        raise ValueError("dexterous_hand.enabled=true requires a Pico input provider with controller snapshots")
-    return LinkerHandRuntime(config, input_provider)
+        raise ValueError("dexterous_hand.mode requires input.provider=pico4")
+    if config.mode == "gripper":
+        if not callable(getattr(input_provider, "get_controller_snapshot", None)):
+            raise ValueError("dexterous_hand.mode=gripper requires a Pico input provider with controller snapshots")
+        return LinkerHandRuntime(config, input_provider)
+    if config.mode == "vr_hand_pose":
+        if config.hand_type != "both":
+            raise ValueError("dexterous_hand.mode=vr_hand_pose currently requires dexterous_hand.hand_type=both")
+        if not callable(getattr(input_provider, "get_hand_snapshot", None)):
+            raise ValueError("dexterous_hand.mode=vr_hand_pose requires a Pico input provider with hand snapshots")
+        return SomeHandPoseRuntime(config, input_provider)
+    raise ValueError(f"Unsupported dexterous_hand.mode={config.mode!r}")
+
+
+def _resolve_project_path(path_value: str) -> Path:
+    path = Path(path_value).expanduser()
+    if path.is_absolute():
+        return path
+    return (PROJECT_ROOT / path).resolve()
 
 
 def _positive_float(value: object, field_name: str) -> float:

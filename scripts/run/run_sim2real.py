@@ -18,6 +18,7 @@ def _print_sim2real_controls(cfg: DictConfig) -> None:
     print("  Remote L1+R1: DAMPING / estop.")
     if provider == "pico4":
         print("  Mocap pause/resume: Pico/controller A.")
+        print("  Dexterous hand: dexterous_hand.mode=off|gripper|vr_hand_pose (default off).")
     else:
         print("  Offline playback: A pause/resume, B replay from start.")
     print("  State flow: IDLE -> STANDING -> MOCAP -> STANDING, Any -> DAMPING.")

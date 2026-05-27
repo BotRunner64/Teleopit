@@ -39,6 +39,12 @@ def _pico_frame(
     )
 
 
+def _hand_state(*, active: bool, value: float) -> SimpleNamespace:
+    joints = np.zeros((26, 7), dtype=np.float64)
+    joints[:, 0:3] = value
+    return SimpleNamespace(active=active, joints=joints)
+
+
 def _make_provider() -> Pico4InputProvider:
     provider = object.__new__(Pico4InputProvider)
     provider._lock = threading.Lock()
@@ -56,6 +62,8 @@ def _make_provider() -> Pico4InputProvider:
     provider._last_frame_timestamp = None
     provider._last_source_seq = None
     provider._ground_lift_offset = None
+    provider._controller_snapshot = None
+    provider._hand_snapshot = None
     provider._closed = False
     return provider
 
@@ -273,3 +281,22 @@ def test_pico4_provider_reads_pause_control_events_when_body_inactive() -> None:
     events = provider.pop_control_events()
     assert [event.event_type for event in events] == [ControlEventType.TOGGLE_PAUSE]
     assert provider._last_source_seq == 1
+
+
+def test_pico4_provider_exposes_hand_snapshot_when_body_inactive() -> None:
+    provider = _make_provider()
+    frame = _pico_frame(_body_poses(1.0), seq=4, timestamp=2.0, body_active=False)
+    frame.left_hand = _hand_state(active=True, value=1.5)
+    frame.right_hand = _hand_state(active=False, value=2.5)
+
+    assert provider._accept_pico_frame(frame) is False
+
+    snapshot = provider.get_hand_snapshot()
+    assert snapshot is not None
+    assert snapshot.seq == 4
+    assert snapshot.timestamp_s == pytest.approx(2.0)
+    assert snapshot.left.present is True
+    assert snapshot.left.active is True
+    assert snapshot.right.present is True
+    assert snapshot.right.active is False
+    np.testing.assert_allclose(snapshot.left.joints[:, 0:3], 1.5)
