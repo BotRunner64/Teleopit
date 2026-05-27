@@ -362,8 +362,8 @@ def test_vr_hand_pose_runtime_holds_last_pose_when_hand_pose_disappears(monkeypa
     runtime.tick(active=True, now_s=10.0)
     assert runtime._sender.wait_idle(timeout_s=1.0)
 
-    assert runtime._sender._last_pose["left"] == list(runtime.config.close_pose)
-    assert runtime._sender._last_pose["right"] == list(runtime.config.open_pose)
+    assert runtime._sender._last_pose["left"] == [0, 255, 0, 0, 0, 0]
+    assert runtime._sender._last_pose["right"] == [255, 255, 255, 255, 255, 255]
 
     provider.snapshot = _hand_snapshot(
         left=_hand_state(active=False, value=9.0),
@@ -374,8 +374,8 @@ def test_vr_hand_pose_runtime_holds_last_pose_when_hand_pose_disappears(monkeypa
     runtime.tick(active=True, now_s=10.1)
     assert runtime._sender.wait_idle(timeout_s=1.0)
 
-    assert runtime._sender._last_pose["left"] == list(runtime.config.close_pose)
-    assert runtime._sender._last_pose["right"] == list(runtime.config.open_pose)
+    assert runtime._sender._last_pose["left"] == [0, 255, 0, 0, 0, 0]
+    assert runtime._sender._last_pose["right"] == [255, 255, 255, 255, 255, 255]
 
     runtime.tick(active=False, now_s=10.2)
     assert runtime._sender.wait_idle(timeout_s=1.0)

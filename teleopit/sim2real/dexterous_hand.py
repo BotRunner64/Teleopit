@@ -38,8 +38,9 @@ L6_QPOS_CHANNELS = (
     "ring_mcp_pitch",
     "pinky_mcp_pitch",
 )
-L6_QPOS_MIN = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
-L6_QPOS_MAX = np.array([0.99, 1.39, 1.26, 1.26, 1.26, 1.26], dtype=np.float64)
+L6_ARC_MIN = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+L6_ARC_MAX = np.array([0.99, 1.39, 1.26, 1.26, 1.26, 1.26], dtype=np.float64)
+L6_ARC_DIRECTION = np.array([-1, -1, -1, -1, -1, -1], dtype=np.int8)
 
 
 class ControllerSnapshotProvider(Protocol):
@@ -117,10 +118,9 @@ def trigger_to_pose(
 
 
 class L6RetargetPoseMapper:
-    """Map somehand-retargeted L6 qpos into Teleopit's six-channel L6 SDK pose."""
+    """Map somehand-retargeted L6 qpos into six-channel LinkerHand L6 SDK range."""
 
-    def __init__(self, hand_model: Any | None, config: LinkerHandConfig, *, hand_type: str):
-        self._config = config
+    def __init__(self, hand_model: Any | None, *, hand_type: str):
         self._hand_type = hand_type
         self._indices = self._resolve_indices(hand_model, hand_type=hand_type)
 
@@ -136,17 +136,10 @@ class L6RetargetPoseMapper:
         else:
             channel_values = values[self._indices]
 
-        normalized = np.clip((channel_values - L6_QPOS_MIN) / (L6_QPOS_MAX - L6_QPOS_MIN), 0.0, 1.0)
-        pose = [
-            int(round(float(open_value) + float(alpha) * (float(close_value) - float(open_value))))
-            for open_value, close_value, alpha in zip(
-                self._config.open_pose,
-                self._config.close_pose,
-                normalized,
-            )
-        ]
-        pose[1] = int(self._config.thumb_yaw_center)
-        return [_uint8(value, f"somehand.{self._hand_type}.pose") for value in pose]
+        arc = np.clip(channel_values, L6_ARC_MIN, L6_ARC_MAX)
+        normalized = (arc - L6_ARC_MIN) / (L6_ARC_MAX - L6_ARC_MIN)
+        sdk_range = np.where(L6_ARC_DIRECTION < 0, 255.0 - normalized * 255.0, normalized * 255.0)
+        return [_uint8(round(float(value)), f"somehand.{self._hand_type}.pose") for value in sdk_range]
 
     @staticmethod
     def _resolve_indices(hand_model: Any | None, *, hand_type: str) -> np.ndarray | None:
@@ -635,7 +628,6 @@ class SomeHandPoseRuntime:
                 continue
             self._pose_mappers[hand_type] = L6RetargetPoseMapper(
                 getattr(engine, "hand_model", None),
-                self.config,
                 hand_type=hand_type,
             )
         logger.info("somehand LinkerHand L6 runtime started | hands=%s", ",".join(self.config.selected_hand_types))
