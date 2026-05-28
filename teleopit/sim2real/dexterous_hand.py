@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
+import importlib.util
 import logging
 from pathlib import Path
 import threading
@@ -30,7 +32,7 @@ HAND_TYPES = ("left", "right")
 HAND_MODES = ("off", "gripper", "vr_hand_pose")
 DEFAULT_SOMEHAND_CONFIG_PATH = "third_party/somehand/configs/retargeting/bihand/linkerhand_l6_bihand.yaml"
 DEFAULT_LINKERHAND_SDK_ROOT = "third_party/linkerhand-python-sdk"
-L6_QPOS_CHANNELS = (
+L6_SDK_JOINT_ORDER = (
     "thumb_cmc_pitch",
     "thumb_cmc_yaw",
     "index_mcp_pitch",
@@ -38,9 +40,6 @@ L6_QPOS_CHANNELS = (
     "ring_mcp_pitch",
     "pinky_mcp_pitch",
 )
-L6_ARC_MIN = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
-L6_ARC_MAX = np.array([0.99, 1.39, 1.26, 1.26, 1.26, 1.26], dtype=np.float64)
-L6_ARC_DIRECTION = np.array([-1, -1, -1, -1, -1, -1], dtype=np.int8)
 
 
 class ControllerSnapshotProvider(Protocol):
@@ -120,40 +119,70 @@ def trigger_to_pose(
 class L6RetargetPoseMapper:
     """Map somehand-retargeted L6 qpos into six-channel LinkerHand L6 SDK range."""
 
-    def __init__(self, hand_model: Any | None, *, hand_type: str):
+    def __init__(self, hand_model: Any | None, *, hand_type: str, sdk_root: str):
         self._hand_type = hand_type
         self._indices = self._resolve_indices(hand_model, hand_type=hand_type)
+        self._mapping = _load_linkerhand_mapping_module(sdk_root)
+        self._arc_min, self._arc_max, self._arc_direction = _sdk_l6_range_params(
+            self._mapping,
+            hand_type=hand_type,
+        )
 
     def qpos_to_pose(self, qpos: Any) -> list[int]:
         values = np.asarray(qpos, dtype=np.float64).reshape(-1)
-        if self._indices is None:
-            if values.shape[0] < len(L6_QPOS_CHANNELS):
-                raise ValueError(
-                    "somehand L6 retarget qpos is too short: "
-                    f"got {values.shape[0]}, need at least {len(L6_QPOS_CHANNELS)}"
+        max_index = int(np.max(self._indices))
+        if values.shape[0] <= max_index:
+            raise ValueError(
+                "somehand L6 retarget qpos is too short for resolved SDK joint mapping: "
+                f"got {values.shape[0]}, need index {max_index}"
+            )
+        channel_values = values[self._indices]
+        sdk_range = []
+        for index, value in enumerate(channel_values):
+            arc = self._mapping.is_within_range(
+                float(value),
+                float(self._arc_min[index]),
+                float(self._arc_max[index]),
+            )
+            if int(self._arc_direction[index]) == -1:
+                sdk_range.append(
+                    self._mapping.scale_value(
+                        arc,
+                        float(self._arc_min[index]),
+                        float(self._arc_max[index]),
+                        255.0,
+                        0.0,
+                    )
                 )
-            channel_values = values[:len(L6_QPOS_CHANNELS)]
-        else:
-            channel_values = values[self._indices]
-
-        arc = np.clip(channel_values, L6_ARC_MIN, L6_ARC_MAX)
-        normalized = (arc - L6_ARC_MIN) / (L6_ARC_MAX - L6_ARC_MIN)
-        sdk_range = np.where(L6_ARC_DIRECTION < 0, 255.0 - normalized * 255.0, normalized * 255.0)
+            else:
+                sdk_range.append(
+                    self._mapping.scale_value(
+                        arc,
+                        float(self._arc_min[index]),
+                        float(self._arc_max[index]),
+                        0.0,
+                        255.0,
+                    )
+                )
         return [_uint8(round(float(value)), f"somehand.{self._hand_type}.pose") for value in sdk_range]
 
     @staticmethod
-    def _resolve_indices(hand_model: Any | None, *, hand_type: str) -> np.ndarray | None:
+    def _resolve_indices(hand_model: Any | None, *, hand_type: str) -> np.ndarray:
         if hand_model is None:
-            return None
+            raise ValueError("somehand L6 hand model is missing; cannot map retarget qpos to SDK joints")
         get_index = getattr(hand_model, "get_joint_name_to_qpos_index", None)
         if not callable(get_index):
-            return None
+            raise ValueError("somehand L6 hand model does not expose get_joint_name_to_qpos_index()")
         joint_index = get_index()
         indices: list[int] = []
-        for channel in L6_QPOS_CHANNELS:
+        for channel in L6_SDK_JOINT_ORDER:
             resolved = _resolve_l6_joint_name(joint_index, channel, hand_type=hand_type)
             if resolved is None:
-                return None
+                available = ", ".join(sorted(str(name) for name in joint_index))
+                raise ValueError(
+                    f"Cannot resolve LinkerHand L6 SDK joint {channel!r} in somehand {hand_type} hand model. "
+                    f"Available joints: {available}"
+                )
             indices.append(int(joint_index[resolved]))
         return np.asarray(indices, dtype=np.int64)
 
@@ -629,6 +658,7 @@ class SomeHandPoseRuntime:
             self._pose_mappers[hand_type] = L6RetargetPoseMapper(
                 getattr(engine, "hand_model", None),
                 hand_type=hand_type,
+                sdk_root=self.config.somehand_sdk_root,
             )
         logger.info("somehand LinkerHand L6 runtime started | hands=%s", ",".join(self.config.selected_hand_types))
 
@@ -682,21 +712,68 @@ def _resolve_project_path(path_value: str) -> Path:
     return (PROJECT_ROOT / path).resolve()
 
 
+@lru_cache(maxsize=4)
+def _load_linkerhand_mapping_module(sdk_root: str) -> Any:
+    mapping_path = _resolve_project_path(sdk_root) / "LinkerHand" / "utils" / "mapping.py"
+    if not mapping_path.exists():
+        raise FileNotFoundError(f"LinkerHand SDK mapping module not found: {mapping_path}")
+    spec = importlib.util.spec_from_file_location("teleopit_linkerhand_mapping", mapping_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load LinkerHand SDK mapping module from: {mapping_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _sdk_l6_range_params(mapping: Any, *, hand_type: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    side = "l" if hand_type == "left" else "r"
+    arc_min = np.asarray(getattr(mapping, f"l6_{side}_min"), dtype=np.float64)
+    arc_max = np.asarray(getattr(mapping, f"l6_{side}_max"), dtype=np.float64)
+    direction = np.asarray(getattr(mapping, f"l6_{side}_derict"), dtype=np.int8)
+    expected_shape = (len(L6_SDK_JOINT_ORDER),)
+    if arc_min.shape != expected_shape or arc_max.shape != expected_shape or direction.shape != expected_shape:
+        raise ValueError(
+            "LinkerHand SDK L6 mapping has unexpected shape: "
+            f"min={arc_min.shape}, max={arc_max.shape}, direction={direction.shape}"
+        )
+    return arc_min, arc_max, direction
+
+
 def _resolve_l6_joint_name(joint_index: dict[str, int], semantic_name: str, *, hand_type: str) -> str | None:
-    candidates = (
-        semantic_name,
-        f"{hand_type}_{semantic_name}",
-        f"{hand_type[0]}_{semantic_name}",
-        f"{'lh' if hand_type == 'left' else 'rh'}_{semantic_name}",
+    aliases = _l6_joint_aliases(semantic_name)
+    side_prefixes = (
+        "",
+        f"{hand_type}_",
+        f"{hand_type[0]}_",
+        f"{hand_type[0].upper()}_",
+        f"{'lh' if hand_type == 'left' else 'rh'}_",
     )
+    candidates = tuple(f"{prefix}{alias}" for alias in aliases for prefix in side_prefixes)
     for candidate in candidates:
         if candidate in joint_index:
             return candidate
-    suffix = f"_{semantic_name}"
-    for name in joint_index:
-        if name.endswith(suffix):
-            return name
+    for alias in aliases:
+        suffix = f"_{alias}"
+        for name in joint_index:
+            if name == alias or name.endswith(suffix):
+                return name
     return None
+
+
+def _l6_joint_aliases(semantic_name: str) -> tuple[str, ...]:
+    if semantic_name == "thumb_cmc_pitch":
+        return ("thumb_cmc_pitch", "thumb_pitch")
+    if semantic_name == "thumb_cmc_yaw":
+        return ("thumb_cmc_yaw", "thumb_yaw")
+    aliases = [semantic_name]
+    if semantic_name.endswith("_mcp_pitch"):
+        finger = semantic_name[: -len("_mcp_pitch")]
+        aliases.append(f"{finger}_pitch")
+        if finger == "pinky":
+            aliases.extend(("little_mcp_pitch", "little_pitch"))
+        elif finger == "little":
+            aliases.extend(("pinky_mcp_pitch", "pinky_pitch"))
+    return tuple(dict.fromkeys(aliases))
 
 
 def _positive_float(value: object, field_name: str) -> float:

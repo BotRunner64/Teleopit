@@ -9,6 +9,7 @@ import pytest
 from teleopit.inputs.pico4_provider import PicoControllerSnapshot, PicoControllerState, PicoHandSnapshot, PicoHandState
 from teleopit.sim2real.dexterous_hand import (
     L6PoseSender,
+    L6RetargetPoseMapper,
     LinkerHandRuntime,
     SomeHandPoseRuntime,
     parse_linkerhand_config,
@@ -382,6 +383,54 @@ def test_vr_hand_pose_runtime_holds_last_pose_when_hand_pose_disappears(monkeypa
     assert runtime._sender._last_pose["left"] == list(runtime.config.open_pose)
     assert runtime._sender._last_pose["right"] == list(runtime.config.open_pose)
     runtime.close()
+
+
+def test_l6_retarget_pose_mapper_uses_sdk_order_and_model_joint_names() -> None:
+    class FakeHandModel:
+        def get_joint_name_to_qpos_index(self):
+            return {
+                "thumb_pitch": 2,
+                "thumb_yaw": 0,
+                "index_pitch": 5,
+                "middle_pitch": 1,
+                "ring_pitch": 4,
+                "little_pitch": 3,
+            }
+
+    qpos = np.zeros(6, dtype=np.float64)
+    qpos[2] = 0.99
+    qpos[0] = 0.0
+    qpos[5] = 1.26
+    qpos[1] = 0.0
+    qpos[4] = 1.26
+    qpos[3] = 0.0
+
+    mapper = L6RetargetPoseMapper(
+        FakeHandModel(),
+        hand_type="right",
+        sdk_root="third_party/linkerhand-python-sdk",
+    )
+
+    assert mapper.qpos_to_pose(qpos) == [0, 255, 0, 255, 0, 255]
+
+
+def test_l6_retarget_pose_mapper_fails_when_model_joint_mapping_is_unknown() -> None:
+    class FakeHandModel:
+        def get_joint_name_to_qpos_index(self):
+            return {
+                "thumb_pitch": 0,
+                "thumb_yaw": 1,
+                "index_pitch": 2,
+                "middle_pitch": 3,
+                "ring_pitch": 4,
+            }
+
+    with pytest.raises(ValueError, match="pinky_mcp_pitch"):
+        L6RetargetPoseMapper(
+            FakeHandModel(),
+            hand_type="right",
+            sdk_root="third_party/linkerhand-python-sdk",
+        )
 
 
 def test_pose_sender_wraps_sdk_system_exit_and_cleans_up(monkeypatch) -> None:
