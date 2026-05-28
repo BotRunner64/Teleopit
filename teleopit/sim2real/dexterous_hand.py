@@ -201,7 +201,10 @@ def parse_linkerhand_config(cfg: Any) -> LinkerHandConfig:
     hand_cfg = cfg_get(cfg, "dexterous_hand", {}) or {}
     raw_mode = cfg_get(hand_cfg, "mode", None)
     legacy_enabled = bool(cfg_get(hand_cfg, "enabled", False))
-    mode = str(raw_mode if raw_mode is not None else ("gripper" if legacy_enabled else "off")).lower()
+    if isinstance(raw_mode, bool):
+        mode = "gripper" if raw_mode else "off"
+    else:
+        mode = str(raw_mode if raw_mode is not None else ("gripper" if legacy_enabled else "off")).lower()
     somehand_cfg = cfg_get(hand_cfg, "somehand", {}) or {}
     thumb_yaw = _uint8(cfg_get(hand_cfg, "thumb_yaw_center", THUMB_YAW_DEFAULT), "thumb_yaw_center")
     open_pose = _pose_values(cfg_get(hand_cfg, "open_pose", OPEN_POSE), "open_pose")

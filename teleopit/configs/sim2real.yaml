@@ -28,7 +28,7 @@ joint_vel_limit: 10.0
 
 # Optional LinkerHand L6 control. Use only with input.provider=pico4.
 dexterous_hand:
-  mode: off  # off | gripper | vr_hand_pose
+  mode: "off"  # off | gripper | vr_hand_pose
   hand_joint: L6
   hand_type: both
   left_can: can0
