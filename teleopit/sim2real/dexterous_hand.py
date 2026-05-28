@@ -764,7 +764,7 @@ def _l6_joint_aliases(semantic_name: str) -> tuple[str, ...]:
     if semantic_name == "thumb_cmc_pitch":
         return ("thumb_cmc_pitch", "thumb_pitch")
     if semantic_name == "thumb_cmc_yaw":
-        return ("thumb_cmc_yaw", "thumb_yaw")
+        return ("thumb_cmc_yaw", "thumb_yaw", "thumb_cmc_roll", "thumb_roll")
     aliases = [semantic_name]
     if semantic_name.endswith("_mcp_pitch"):
         finger = semantic_name[: -len("_mcp_pitch")]

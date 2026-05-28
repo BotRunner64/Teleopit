@@ -414,6 +414,40 @@ def test_l6_retarget_pose_mapper_uses_sdk_order_and_model_joint_names() -> None:
     assert mapper.qpos_to_pose(qpos) == [0, 255, 0, 255, 0, 255]
 
 
+def test_l6_retarget_pose_mapper_supports_somehand_l6_prefixed_roll_joint_names() -> None:
+    class FakeHandModel:
+        def get_joint_name_to_qpos_index(self):
+            return {
+                "lh_thumb_cmc_pitch": 8,
+                "lh_thumb_cmc_roll": 9,
+                "lh_thumb_dip": 10,
+                "lh_index_mcp_pitch": 1,
+                "lh_index_dip": 0,
+                "lh_middle_mcp_pitch": 3,
+                "lh_middle_dip": 2,
+                "lh_ring_mcp_pitch": 5,
+                "lh_ring_dip": 4,
+                "lh_pinky_mcp_pitch": 7,
+                "lh_pinky_dip": 6,
+            }
+
+    qpos = np.zeros(11, dtype=np.float64)
+    qpos[8] = 0.99
+    qpos[9] = 0.0
+    qpos[1] = 1.26
+    qpos[3] = 0.0
+    qpos[5] = 1.26
+    qpos[7] = 0.0
+
+    mapper = L6RetargetPoseMapper(
+        FakeHandModel(),
+        hand_type="left",
+        sdk_root="third_party/linkerhand-python-sdk",
+    )
+
+    assert mapper.qpos_to_pose(qpos) == [0, 255, 0, 255, 0, 255]
+
+
 def test_l6_retarget_pose_mapper_fails_when_model_joint_mapping_is_unknown() -> None:
     class FakeHandModel:
         def get_joint_name_to_qpos_index(self):
