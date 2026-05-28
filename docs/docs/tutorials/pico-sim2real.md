@@ -150,7 +150,9 @@ Pico sim2real can drive LinkerHand L6 hands in two modes:
 - `vr_hand_pose`: retarget Pico hand pose through somehand and command the
   continuous L6 hand target. If a hand pose disappears, that side keeps its last
   commanded pose. This mode currently uses `hand_type=both` and always sets L6
-  speed to the maximum.
+  speed to the maximum. The default configuration uses a low-latency somehand
+  path at 60 Hz with reduced smoothing, so it should feel more responsive but
+  can be noisier than the standard somehand settings.
 
 Hand control is active only in `MOCAP`. It sends the open pose in `STANDING`,
 `DAMPING`, paused mocap, and shutdown.

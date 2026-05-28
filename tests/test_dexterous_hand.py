@@ -12,7 +12,9 @@ from teleopit.sim2real.dexterous_hand import (
     L6RetargetPoseMapper,
     LinkerHandRuntime,
     SomeHandPoseRuntime,
+    ThreadedSomeHandPoseRuntime,
     VR_HAND_POSE_SPEED,
+    build_linkerhand_runtime,
     parse_linkerhand_config,
     trigger_to_pose,
 )
@@ -167,6 +169,30 @@ def test_parse_config_sets_vr_hand_pose_speed_to_max() -> None:
     )
 
     assert cfg.speed == (255, 255, 255, 255, 255, 255)
+
+
+def test_parse_config_accepts_somehand_low_latency_overrides() -> None:
+    cfg = parse_linkerhand_config(
+        {
+            "dexterous_hand": {
+                "mode": "vr_hand_pose",
+                "hand_type": "both",
+                "somehand": {
+                    "rate": 60.0,
+                    "threaded": True,
+                    "max_iterations": 12,
+                    "temporal_filter_alpha": 1.0,
+                    "output_alpha": 1.0,
+                },
+            }
+        }
+    )
+
+    assert cfg.vr_hand_pose_rate == 60.0
+    assert cfg.somehand_threaded is True
+    assert cfg.somehand_max_iterations == 12
+    assert cfg.somehand_temporal_filter_alpha == 1.0
+    assert cfg.somehand_output_alpha == 1.0
 
 
 def test_vr_hand_pose_speed_constant_is_max() -> None:
@@ -332,15 +358,27 @@ def _install_fake_somehand(monkeypatch, *, left_qpos: list[float], right_qpos: l
                 "pinky_mcp_pitch": 5,
             }
 
+    class FakeLandmarkFilter:
+        def __init__(self):
+            self.alpha = 0.65
+
+    class FakeRetargeter:
+        def __init__(self):
+            self._max_iterations = 60
+            self._output_alpha = 0.92
+            self.landmark_filter = FakeLandmarkFilter()
+
     class FakeEngine:
         def __init__(self):
             self.left_engine = SimpleNamespace(
                 config=SimpleNamespace(hand=SimpleNamespace(name="linkerhand_l6_left", mjcf_path="left.xml")),
                 hand_model=FakeHandModel(),
+                retargeter=FakeRetargeter(),
             )
             self.right_engine = SimpleNamespace(
                 config=SimpleNamespace(hand=SimpleNamespace(name="linkerhand_l6_right", mjcf_path="right.xml")),
                 hand_model=FakeHandModel(),
+                retargeter=FakeRetargeter(),
             )
 
         @classmethod
@@ -415,6 +453,60 @@ def test_vr_hand_pose_runtime_holds_last_pose_when_hand_pose_disappears(monkeypa
     assert runtime._sender._last_pose["left"] == list(runtime.config.open_pose)
     assert runtime._sender._last_pose["right"] == list(runtime.config.open_pose)
     runtime.close()
+
+
+def test_vr_hand_pose_runtime_applies_low_latency_overrides(monkeypatch, tmp_path) -> None:
+    _install_fake_somehand(
+        monkeypatch,
+        left_qpos=[0.99, 0.0, 1.26, 1.26, 1.26, 1.26],
+        right_qpos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    )
+    config_path = tmp_path / "linkerhand_l6_bihand.yaml"
+    config_path.write_text("left: {}\nright: {}\n", encoding="utf-8")
+    provider = HandSnapshotProvider()
+    cfg = parse_linkerhand_config(
+        {
+            "input": {"provider": "pico4"},
+            "dexterous_hand": {
+                "mode": "vr_hand_pose",
+                "hand_type": "both",
+                "somehand": {
+                    "config_path": str(config_path),
+                    "sdk_root": "third_party/linkerhand-python-sdk",
+                    "rate": 60.0,
+                    "max_iterations": 12,
+                    "temporal_filter_alpha": 1.0,
+                    "output_alpha": 1.0,
+                },
+            },
+        }
+    )
+    runtime = SomeHandPoseRuntime(cfg, provider)
+    runtime.start()
+
+    assert runtime._interval_s == pytest.approx(1.0 / 60.0)
+    assert runtime._engine.left_engine.retargeter._max_iterations == 12
+    assert runtime._engine.left_engine.retargeter._output_alpha == 1.0
+    assert runtime._engine.left_engine.retargeter.landmark_filter.alpha == 1.0
+    assert runtime._engine.right_engine.retargeter._max_iterations == 12
+    runtime.close()
+
+
+def test_build_linkerhand_runtime_returns_threaded_vr_hand_pose_runtime() -> None:
+    provider = HandSnapshotProvider()
+    runtime = build_linkerhand_runtime(
+        {
+            "input": {"provider": "pico4"},
+            "dexterous_hand": {
+                "mode": "vr_hand_pose",
+                "hand_type": "both",
+                "somehand": {"threaded": True},
+            },
+        },
+        provider,
+    )
+
+    assert isinstance(runtime, ThreadedSomeHandPoseRuntime)
 
 
 def test_l6_retarget_pose_mapper_uses_sdk_order_and_model_joint_names() -> None:

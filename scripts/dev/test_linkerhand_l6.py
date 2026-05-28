@@ -140,6 +140,7 @@ def parse_args() -> argparse.Namespace:
 
 def make_config(args: argparse.Namespace, *, mode: str) -> LinkerHandConfig:
     speed = VR_HAND_POSE_SPEED if mode == "vr_hand_pose" else args.speed
+    vr_hand_pose = mode == "vr_hand_pose"
     return LinkerHandConfig(
         mode=mode,
         enabled=True,
@@ -159,6 +160,11 @@ def make_config(args: argparse.Namespace, *, mode: str) -> LinkerHandConfig:
         print_input=args.print_input,
         somehand_config_path=args.somehand_config_path,
         somehand_sdk_root=args.somehand_sdk_root,
+        somehand_rate=args.rate if vr_hand_pose else None,
+        somehand_threaded=False,
+        somehand_max_iterations=12 if vr_hand_pose else None,
+        somehand_temporal_filter_alpha=1.0 if vr_hand_pose else None,
+        somehand_output_alpha=1.0 if vr_hand_pose else None,
     )
 
 

@@ -140,7 +140,8 @@ Pico sim2real 可以用两种模式控制 LinkerHand L6：
   该模式使用配置的 `dexterous_hand.speed`，默认值为 50。
 - `vr_hand_pose`：通过 somehand 重定向 Pico 手部 pose，并下发连续 L6 手部目标。
   如果某侧手部 pose 消失，该侧会保持上一条手势命令。这个模式当前使用
-  `hand_type=both`，并始终将 L6 速度设为最大值。
+  `hand_type=both`，并始终将 L6 速度设为最大值。默认配置使用 60 Hz 的低延时
+  somehand 路径并减少平滑，所以响应会更快，但可能比标准 somehand 设置更抖。
 
 手控只在 `MOCAP` 中生效；在 `STANDING`、`DAMPING`、mocap 暂停和退出时都会发送张开姿态。
 

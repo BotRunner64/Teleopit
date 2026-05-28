@@ -73,12 +73,21 @@ class LinkerHandConfig:
     print_input: bool = False
     somehand_config_path: str = DEFAULT_SOMEHAND_CONFIG_PATH
     somehand_sdk_root: str = DEFAULT_LINKERHAND_SDK_ROOT
+    somehand_rate: float | None = None
+    somehand_threaded: bool = False
+    somehand_max_iterations: int | None = None
+    somehand_temporal_filter_alpha: float | None = None
+    somehand_output_alpha: float | None = None
 
     @property
     def selected_hand_types(self) -> tuple[str, ...]:
         if self.hand_type == "both":
             return HAND_TYPES
         return (self.hand_type,)
+
+    @property
+    def vr_hand_pose_rate(self) -> float:
+        return self.somehand_rate if self.somehand_rate is not None else self.rate
 
 
 def clamp_unit(value: float) -> float:
@@ -221,6 +230,20 @@ def parse_linkerhand_config(cfg: Any) -> LinkerHandConfig:
         print_input=bool(cfg_get(hand_cfg, "print_input", False)),
         somehand_config_path=str(cfg_get(somehand_cfg, "config_path", DEFAULT_SOMEHAND_CONFIG_PATH)),
         somehand_sdk_root=str(cfg_get(somehand_cfg, "sdk_root", DEFAULT_LINKERHAND_SDK_ROOT)),
+        somehand_rate=_optional_positive_float(cfg_get(somehand_cfg, "rate", None), "somehand.rate"),
+        somehand_threaded=bool(cfg_get(somehand_cfg, "threaded", False)),
+        somehand_max_iterations=_optional_positive_int(
+            cfg_get(somehand_cfg, "max_iterations", None),
+            "somehand.max_iterations",
+        ),
+        somehand_temporal_filter_alpha=_optional_unit_interval(
+            cfg_get(somehand_cfg, "temporal_filter_alpha", None),
+            "somehand.temporal_filter_alpha",
+        ),
+        somehand_output_alpha=_optional_unit_interval(
+            cfg_get(somehand_cfg, "output_alpha", None),
+            "somehand.output_alpha",
+        ),
     )
     if config.mode not in HAND_MODES:
         raise ValueError(f"dexterous_hand.mode must be one of {', '.join(HAND_MODES)}, got {config.mode!r}")
@@ -550,7 +573,7 @@ class SomeHandPoseRuntime:
         self.config = config
         self._provider = provider
         self._sender = AsyncL6PoseSender(config)
-        self._interval_s = 1.0 / config.rate
+        self._interval_s = 1.0 / config.vr_hand_pose_rate
         self._next_tick_s = 0.0
         self._active = False
         self._last_status: dict[str, str] = {hand_type: "" for hand_type in config.selected_hand_types}
@@ -649,6 +672,7 @@ class SomeHandPoseRuntime:
                 "scripts/setup/download_somehand_l6_assets.sh"
             )
         self._engine = BiHandRetargetingEngine.from_config_path(str(config_path))
+        self._apply_low_latency_overrides()
         self._hand_frame_cls = HandFrame
         self._bihand_frame_cls = BiHandFrame
         self._pico_hand_to_landmarks = pico_hand_to_landmarks
@@ -665,12 +689,117 @@ class SomeHandPoseRuntime:
             )
         logger.info("somehand LinkerHand L6 runtime started | hands=%s", ",".join(self.config.selected_hand_types))
 
+    def _apply_low_latency_overrides(self) -> None:
+        for hand_type, engine in (("left", self._engine.left_engine), ("right", self._engine.right_engine)):
+            retargeter = getattr(engine, "retargeter", None)
+            if retargeter is None:
+                continue
+            if self.config.somehand_max_iterations is not None:
+                setattr(retargeter, "_max_iterations", int(self.config.somehand_max_iterations))
+            if self.config.somehand_output_alpha is not None:
+                setattr(retargeter, "_output_alpha", float(self.config.somehand_output_alpha))
+            if self.config.somehand_temporal_filter_alpha is not None:
+                landmark_filter = getattr(retargeter, "landmark_filter", None)
+                if landmark_filter is not None:
+                    setattr(landmark_filter, "alpha", float(self.config.somehand_temporal_filter_alpha))
+            logger.info(
+                "somehand low-latency overrides | hand=%s rate=%.1fHz max_iter=%s temporal_alpha=%s output_alpha=%s",
+                hand_type,
+                self.config.vr_hand_pose_rate,
+                self.config.somehand_max_iterations,
+                self.config.somehand_temporal_filter_alpha,
+                self.config.somehand_output_alpha,
+            )
+
     def _set_status(self, hand_type: str, status: str, message: str) -> None:
         key = hand_type
         if self._last_status.get(key) == status:
             return
         self._last_status[key] = status
         logger.info("somehand LinkerHand L6: %s", message)
+
+
+class ThreadedSomeHandPoseRuntime:
+    """Tick the somehand path independently from the robot control loop."""
+
+    def __init__(self, runtime: SomeHandPoseRuntime):
+        self._runtime = runtime
+        self._condition = threading.Condition()
+        self._runtime_lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._running = False
+        self._active = False
+        self._interval_s = 1.0 / runtime.config.vr_hand_pose_rate
+
+    @property
+    def config(self) -> LinkerHandConfig:
+        return self._runtime.config
+
+    @property
+    def enabled(self) -> bool:
+        return self._runtime.enabled
+
+    def start(self) -> None:
+        if not self.enabled:
+            return
+        self._runtime.start()
+        with self._condition:
+            if self._running:
+                return
+            self._running = True
+            self._thread = threading.Thread(
+                target=self._run,
+                name="somehand-pose-runtime",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def tick(self, *, active: bool, now_s: float | None = None) -> None:
+        del now_s
+        if not self.enabled:
+            return
+        should_deactivate = False
+        with self._condition:
+            if self._active != bool(active):
+                should_deactivate = self._active and not bool(active)
+                self._active = bool(active)
+                self._condition.notify_all()
+        if should_deactivate:
+            with self._runtime_lock:
+                self._runtime.tick(active=False)
+
+    def close(self) -> None:
+        thread: threading.Thread | None
+        with self._condition:
+            self._running = False
+            self._active = False
+            self._condition.notify_all()
+            thread = self._thread
+        if thread is not None:
+            thread.join(timeout=2.0)
+            if thread.is_alive():
+                logger.warning("somehand pose runtime worker did not stop within timeout")
+        with self._runtime_lock:
+            self._runtime.close()
+
+    def _run(self) -> None:
+        next_tick_s = 0.0
+        while True:
+            with self._condition:
+                while self._running and not self._active:
+                    self._condition.wait()
+                    next_tick_s = 0.0
+                if not self._running:
+                    return
+                active = self._active
+            now = time.monotonic()
+            if now < next_tick_s:
+                with self._condition:
+                    self._condition.wait(timeout=next_tick_s - now)
+                continue
+            with self._runtime_lock:
+                self._runtime.tick(active=active, now_s=now)
+            next_tick_s = now + self._interval_s
 
 
 class DisabledLinkerHandRuntime:
@@ -686,7 +815,10 @@ class DisabledLinkerHandRuntime:
         pass
 
 
-def build_linkerhand_runtime(cfg: Any, input_provider: Any) -> LinkerHandRuntime | SomeHandPoseRuntime | DisabledLinkerHandRuntime:
+def build_linkerhand_runtime(
+    cfg: Any,
+    input_provider: Any,
+) -> LinkerHandRuntime | SomeHandPoseRuntime | ThreadedSomeHandPoseRuntime | DisabledLinkerHandRuntime:
     config = parse_linkerhand_config(cfg)
     if not config.enabled:
         return DisabledLinkerHandRuntime()
@@ -704,7 +836,10 @@ def build_linkerhand_runtime(cfg: Any, input_provider: Any) -> LinkerHandRuntime
             raise ValueError("dexterous_hand.mode=vr_hand_pose currently requires dexterous_hand.hand_type=both")
         if not callable(getattr(input_provider, "get_hand_snapshot", None)):
             raise ValueError("dexterous_hand.mode=vr_hand_pose requires a Pico input provider with hand snapshots")
-        return SomeHandPoseRuntime(config, input_provider)
+        runtime = SomeHandPoseRuntime(config, input_provider)
+        if config.somehand_threaded:
+            return ThreadedSomeHandPoseRuntime(runtime)
+        return runtime
     raise ValueError(f"Unsupported dexterous_hand.mode={config.mode!r}")
 
 
@@ -783,6 +918,30 @@ def _positive_float(value: object, field_name: str) -> float:
     parsed = float(value)
     if parsed <= 0.0:
         raise ValueError(f"dexterous_hand.{field_name} must be > 0, got {value!r}")
+    return parsed
+
+
+def _optional_positive_float(value: object, field_name: str) -> float | None:
+    if value is None:
+        return None
+    return _positive_float(value, field_name)
+
+
+def _optional_positive_int(value: object, field_name: str) -> int | None:
+    if value is None:
+        return None
+    parsed = int(value)
+    if parsed <= 0:
+        raise ValueError(f"dexterous_hand.{field_name} must be > 0, got {value!r}")
+    return parsed
+
+
+def _optional_unit_interval(value: object, field_name: str) -> float | None:
+    if value is None:
+        return None
+    parsed = float(value)
+    if parsed <= 0.0 or parsed > 1.0:
+        raise ValueError(f"dexterous_hand.{field_name} must be in (0, 1], got {value!r}")
     return parsed
 
 

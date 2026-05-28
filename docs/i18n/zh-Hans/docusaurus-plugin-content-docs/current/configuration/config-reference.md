@@ -144,17 +144,24 @@ MuJoCo 窗口显示重定向参考；`sim2sim`、`mocap`、`camera` 和 `all`
 `input.provider=pico4`，并安装可选的 `dexhand` extra。控制只在 `MOCAP`
 中生效；非活动模式会发送张开姿态。在 `vr_hand_pose` 中，手部 pose 消失时，
 对应侧会保持上一条命令。`gripper` 使用配置的 `dexterous_hand.speed`；
-`vr_hand_pose` 始终将 LinkerHand L6 速度设为最大值。
+`vr_hand_pose` 始终将 LinkerHand L6 速度设为最大值。默认的 `vr_hand_pose`
+路径优先降低延时：它会按 `dexterous_hand.somehand.rate` 在后台线程运行，并关闭
+大部分 somehand 输入/输出平滑，因此手指运动可能更抖。
 
 | 字段 | 说明 | 默认值 |
 |---|---|---|
 | `dexterous_hand.mode` | `off`、`gripper` 或 `vr_hand_pose` | `off` |
 | `dexterous_hand.hand_type` | 控制侧：`left`、`right` 或 `both`；`vr_hand_pose` 要求 `both` | `both` |
 | `dexterous_hand.left_can` / `right_can` | 左右手 CAN 通道 | `can0` / `can1` |
-| `dexterous_hand.rate` | 最大命令频率（Hz） | `30.0` |
+| `dexterous_hand.rate` | gripper 最大命令频率（Hz） | `30.0` |
 | `dexterous_hand.frame_timeout` | gripper 手柄超时或 VR 手部 pose 过期阈值 | `0.3` |
 | `dexterous_hand.speed` | `gripper` 使用的 L6 速度；`vr_hand_pose` 会覆盖为最大速度 | 见配置 |
 | `dexterous_hand.deadman_threshold` | 启用单侧控制所需的最小 grip 值 | `0.5` |
 | `dexterous_hand.trigger_deadzone` | trigger 两端死区 | `0.05` |
 | `dexterous_hand.open_pose` / `close_pose` | L6 的 6 维张开/闭合姿态 | 见配置 |
 | `dexterous_hand.somehand.config_path` | `vr_hand_pose` 使用的 somehand 双手 L6 配置 | 见配置 |
+| `dexterous_hand.somehand.rate` | 低延时 `vr_hand_pose` 命令频率（Hz） | `60.0` |
+| `dexterous_hand.somehand.threaded` | 在机器人控制循环外运行 `vr_hand_pose` 手部重定向 | `true` |
+| `dexterous_hand.somehand.max_iterations` | `vr_hand_pose` 的 somehand solver 迭代上限 | `12` |
+| `dexterous_hand.somehand.temporal_filter_alpha` | somehand 输入 landmarks 平滑 alpha；`1.0` 表示关闭平滑延时 | `1.0` |
+| `dexterous_hand.somehand.output_alpha` | somehand qpos 输出平滑 alpha；`1.0` 表示关闭平滑延时 | `1.0` |

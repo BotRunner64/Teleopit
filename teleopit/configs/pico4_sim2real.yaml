@@ -47,6 +47,12 @@ dexterous_hand:
   somehand:
     config_path: third_party/somehand/configs/retargeting/bihand/linkerhand_l6_bihand.yaml
     sdk_root: third_party/linkerhand-python-sdk
+    # Low-latency vr_hand_pose path. This favors response speed over smoothing.
+    rate: 60.0
+    threaded: true
+    max_iterations: 12
+    temporal_filter_alpha: 1.0
+    output_alpha: 1.0
 
 # Physical robot SDK configuration
 real_robot:
