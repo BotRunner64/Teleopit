@@ -12,6 +12,7 @@ from teleopit.sim2real.dexterous_hand import (
     L6RetargetPoseMapper,
     LinkerHandRuntime,
     SomeHandPoseRuntime,
+    VR_HAND_POSE_SPEED,
     parse_linkerhand_config,
     trigger_to_pose,
 )
@@ -166,6 +167,10 @@ def test_parse_config_sets_vr_hand_pose_speed_to_max() -> None:
     )
 
     assert cfg.speed == (255, 255, 255, 255, 255, 255)
+
+
+def test_vr_hand_pose_speed_constant_is_max() -> None:
+    assert tuple(VR_HAND_POSE_SPEED) == (255, 255, 255, 255, 255, 255)
 
 
 def test_runtime_opens_when_deadman_released() -> None:

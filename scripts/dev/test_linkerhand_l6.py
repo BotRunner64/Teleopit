@@ -27,6 +27,7 @@ from teleopit.sim2real.dexterous_hand import (  # noqa: E402
     LinkerHandConfig,
     LinkerHandRuntime,
     SomeHandPoseRuntime,
+    VR_HAND_POSE_SPEED,
 )
 
 
@@ -103,6 +104,7 @@ def parse_args() -> argparse.Namespace:
         type=uint8,
         nargs=6,
         default=DEFAULT_SPEED,
+        help="L6 speed for open_close and gripper modes. vr_hand_pose always uses max speed.",
         metavar=("THUMB_PITCH", "THUMB_YAW", "INDEX", "MIDDLE", "RING", "LITTLE"),
     )
     parser.add_argument(
@@ -137,6 +139,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def make_config(args: argparse.Namespace, *, mode: str) -> LinkerHandConfig:
+    speed = VR_HAND_POSE_SPEED if mode == "vr_hand_pose" else args.speed
     return LinkerHandConfig(
         mode=mode,
         enabled=True,
@@ -150,7 +153,7 @@ def make_config(args: argparse.Namespace, *, mode: str) -> LinkerHandConfig:
         trigger_deadzone=args.trigger_deadzone,
         deadman_threshold=args.deadman_threshold,
         thumb_yaw_center=args.thumb_yaw_center,
-        speed=tuple(args.speed),
+        speed=tuple(speed),
         open_pose=tuple(args.open_pose),
         close_pose=tuple(args.close_pose),
         print_input=args.print_input,
