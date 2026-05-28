@@ -35,7 +35,7 @@ DEFAULT_SOMEHAND_CONFIG_PATH = "third_party/somehand/configs/retargeting/bihand/
 DEFAULT_LINKERHAND_SDK_ROOT = "third_party/linkerhand-python-sdk"
 L6_SDK_JOINT_ORDER = (
     "thumb_cmc_pitch",
-    "thumb_cmc_yaw",
+    "thumb_cmc_roll",
     "index_mcp_pitch",
     "middle_mcp_pitch",
     "ring_mcp_pitch",
@@ -901,8 +901,8 @@ def _resolve_l6_joint_name(joint_index: dict[str, int], semantic_name: str, *, h
 def _l6_joint_aliases(semantic_name: str) -> tuple[str, ...]:
     if semantic_name == "thumb_cmc_pitch":
         return ("thumb_cmc_pitch", "thumb_pitch")
-    if semantic_name == "thumb_cmc_yaw":
-        return ("thumb_cmc_yaw", "thumb_yaw", "thumb_cmc_roll", "thumb_roll")
+    if semantic_name == "thumb_cmc_roll":
+        return ("thumb_cmc_roll", "thumb_roll")
     aliases = [semantic_name]
     if semantic_name.endswith("_mcp_pitch"):
         finger = semantic_name[: -len("_mcp_pitch")]

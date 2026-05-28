@@ -351,7 +351,7 @@ def _install_fake_somehand(monkeypatch, *, left_qpos: list[float], right_qpos: l
         def get_joint_name_to_qpos_index(self):
             return {
                 "thumb_cmc_pitch": 0,
-                "thumb_cmc_yaw": 1,
+                "thumb_cmc_roll": 1,
                 "index_mcp_pitch": 2,
                 "middle_mcp_pitch": 3,
                 "ring_mcp_pitch": 4,
@@ -406,7 +406,7 @@ def _install_fake_somehand(monkeypatch, *, left_qpos: list[float], right_qpos: l
 def test_vr_hand_pose_runtime_holds_last_pose_when_hand_pose_disappears(monkeypatch, tmp_path) -> None:
     _install_fake_somehand(
         monkeypatch,
-        left_qpos=[0.99, 0.0, 1.26, 1.26, 1.26, 1.26],
+        left_qpos=[0.837758, 0.0, 1.134464, 1.134464, 1.134464, 1.134464],
         right_qpos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     )
     config_path = tmp_path / "linkerhand_l6_bihand.yaml"
@@ -433,8 +433,8 @@ def test_vr_hand_pose_runtime_holds_last_pose_when_hand_pose_disappears(monkeypa
     runtime.tick(active=True, now_s=10.0)
     assert runtime._sender.wait_idle(timeout_s=1.0)
 
-    assert runtime._sender._last_pose["left"] == [0, 255, 0, 0, 0, 0]
-    assert runtime._sender._last_pose["right"] == [255, 255, 255, 255, 255, 255]
+    assert runtime._sender._last_pose["left"] == [0, 238, 0, 0, 0, 0]
+    assert runtime._sender._last_pose["right"] == [255, 238, 255, 255, 255, 255]
 
     provider.snapshot = _hand_snapshot(
         left=_hand_state(active=False, value=9.0),
@@ -445,8 +445,8 @@ def test_vr_hand_pose_runtime_holds_last_pose_when_hand_pose_disappears(monkeypa
     runtime.tick(active=True, now_s=10.1)
     assert runtime._sender.wait_idle(timeout_s=1.0)
 
-    assert runtime._sender._last_pose["left"] == [0, 255, 0, 0, 0, 0]
-    assert runtime._sender._last_pose["right"] == [255, 255, 255, 255, 255, 255]
+    assert runtime._sender._last_pose["left"] == [0, 238, 0, 0, 0, 0]
+    assert runtime._sender._last_pose["right"] == [255, 238, 255, 255, 255, 255]
 
     runtime.tick(active=False, now_s=10.2)
     assert runtime._sender.wait_idle(timeout_s=1.0)
@@ -458,7 +458,7 @@ def test_vr_hand_pose_runtime_holds_last_pose_when_hand_pose_disappears(monkeypa
 def test_vr_hand_pose_runtime_applies_low_latency_overrides(monkeypatch, tmp_path) -> None:
     _install_fake_somehand(
         monkeypatch,
-        left_qpos=[0.99, 0.0, 1.26, 1.26, 1.26, 1.26],
+        left_qpos=[0.837758, -0.087266, 1.134464, 1.134464, 1.134464, 1.134464],
         right_qpos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     )
     config_path = tmp_path / "linkerhand_l6_bihand.yaml"
@@ -514,7 +514,7 @@ def test_l6_retarget_pose_mapper_uses_sdk_order_and_model_joint_names() -> None:
         def get_joint_name_to_qpos_index(self):
             return {
                 "thumb_pitch": 2,
-                "thumb_yaw": 0,
+                "thumb_roll": 0,
                 "index_pitch": 5,
                 "middle_pitch": 1,
                 "ring_pitch": 4,
@@ -522,11 +522,11 @@ def test_l6_retarget_pose_mapper_uses_sdk_order_and_model_joint_names() -> None:
             }
 
     qpos = np.zeros(6, dtype=np.float64)
-    qpos[2] = 0.99
-    qpos[0] = 0.0
-    qpos[5] = 1.26
+    qpos[2] = 0.837758
+    qpos[0] = -0.087266
+    qpos[5] = 1.134464
     qpos[1] = 0.0
-    qpos[4] = 1.26
+    qpos[4] = 1.134464
     qpos[3] = 0.0
 
     mapper = L6RetargetPoseMapper(
@@ -556,11 +556,11 @@ def test_l6_retarget_pose_mapper_supports_somehand_l6_prefixed_roll_joint_names(
             }
 
     qpos = np.zeros(11, dtype=np.float64)
-    qpos[8] = 0.99
-    qpos[9] = 0.0
-    qpos[1] = 1.26
+    qpos[8] = 0.837758
+    qpos[9] = -0.087266
+    qpos[1] = 1.134464
     qpos[3] = 0.0
-    qpos[5] = 1.26
+    qpos[5] = 1.134464
     qpos[7] = 0.0
 
     mapper = L6RetargetPoseMapper(
@@ -577,7 +577,7 @@ def test_l6_retarget_pose_mapper_fails_when_model_joint_mapping_is_unknown() -> 
         def get_joint_name_to_qpos_index(self):
             return {
                 "thumb_pitch": 0,
-                "thumb_yaw": 1,
+                "thumb_roll": 1,
                 "index_pitch": 2,
                 "middle_pitch": 3,
                 "ring_pitch": 4,
