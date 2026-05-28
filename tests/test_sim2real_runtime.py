@@ -316,6 +316,28 @@ def test_sim2real_retarget_viewer_rejects_sim_viewers(monkeypatch) -> None:
         Sim2RealController(cfg)
 
 
+def test_loop_timing_reporter_logs_percentiles_and_overruns(caplog) -> None:
+    import logging
+
+    from teleopit.sim2real.controller import _LoopTimingReporter
+
+    reporter = _LoopTimingReporter(target_period_s=0.02, log_interval_s=1.0)
+    with caplog.at_level(logging.INFO, logger="teleopit.sim2real.controller"):
+        reporter.record(loop_start_s=0.0, work_elapsed_s=0.005, cycle_elapsed_s=0.020, pico_age_s=0.010)
+        reporter.record(loop_start_s=0.5, work_elapsed_s=0.006, cycle_elapsed_s=0.021, pico_age_s=0.012)
+        reporter.record(loop_start_s=1.0, work_elapsed_s=0.007, cycle_elapsed_s=0.050, pico_age_s=0.030)
+
+    text = caplog.text
+    assert "Timing stats" in text
+    assert "loop_ms p50=" in text
+    assert "p95=" in text
+    assert "p99=" in text
+    assert "max=" in text
+    assert "overrun=2/3" in text
+    assert "work_ms p50=" in text
+    assert "pico_age_ms p50=" in text
+
+
 def test_sim2real_rejects_nonzero_reference_steps_without_buffer(monkeypatch) -> None:
     from teleopit.sim2real.controller import Sim2RealController
 

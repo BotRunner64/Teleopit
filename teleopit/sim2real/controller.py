@@ -64,6 +64,89 @@ class RobotMode(Enum):
     DAMPING = "damping"    # Emergency stop / recovery
 
 
+class _LoopTimingReporter:
+    """Aggregate best-effort control-loop timing stats and emit periodic logs."""
+
+    def __init__(self, *, target_period_s: float, log_interval_s: float = 1.0) -> None:
+        self._target_period_s = float(target_period_s)
+        self._log_interval_s = float(log_interval_s)
+        self._window_start_s: float | None = None
+        self._loop_ms: list[float] = []
+        self._work_ms: list[float] = []
+        self._pico_age_ms: list[float] = []
+        self._overrun_count = 0
+
+    def record(
+        self,
+        *,
+        loop_start_s: float,
+        work_elapsed_s: float,
+        cycle_elapsed_s: float,
+        pico_age_s: float | None,
+    ) -> None:
+        if self._window_start_s is None:
+            self._window_start_s = float(loop_start_s)
+
+        self._loop_ms.append(float(cycle_elapsed_s) * 1000.0)
+        self._work_ms.append(float(work_elapsed_s) * 1000.0)
+        if pico_age_s is not None:
+            self._pico_age_ms.append(float(pico_age_s) * 1000.0)
+        if cycle_elapsed_s > self._target_period_s + 1e-9:
+            self._overrun_count += 1
+
+        if loop_start_s - self._window_start_s >= self._log_interval_s:
+            self._emit(loop_start_s)
+
+    def _emit(self, end_s: float) -> None:
+        sample_count = len(self._loop_ms)
+        if sample_count <= 0:
+            self._reset(end_s)
+            return
+
+        loop_summary = self._summarize(self._loop_ms)
+        work_summary = self._summarize(self._work_ms)
+        message = (
+            "Timing stats | samples=%d window=%.1fs | "
+            "loop_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f overrun=%d/%d | "
+            "work_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f"
+        )
+        args: list[object] = [
+            sample_count,
+            end_s - float(self._window_start_s),
+            loop_summary[0],
+            loop_summary[1],
+            loop_summary[2],
+            loop_summary[3],
+            self._overrun_count,
+            sample_count,
+            work_summary[0],
+            work_summary[1],
+            work_summary[2],
+            work_summary[3],
+        ]
+        if self._pico_age_ms:
+            pico_summary = self._summarize(self._pico_age_ms)
+            message += " | pico_age_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f"
+            args.extend([pico_summary[0], pico_summary[1], pico_summary[2], pico_summary[3]])
+        logger.info(message, *args)
+        self._reset(end_s)
+
+    def _reset(self, window_start_s: float) -> None:
+        self._window_start_s = float(window_start_s)
+        self._loop_ms.clear()
+        self._work_ms.clear()
+        self._pico_age_ms.clear()
+        self._overrun_count = 0
+
+    @staticmethod
+    def _summarize(samples: list[float]) -> tuple[float, float, float, float]:
+        values = np.asarray(samples, dtype=np.float64)
+        if values.size <= 0:
+            return 0.0, 0.0, 0.0, 0.0
+        p50, p95, p99 = np.percentile(values, [50.0, 95.0, 99.0])
+        return float(p50), float(p95), float(p99), float(np.max(values))
+
+
 def _parse_sim2real_viewers(cfg: Any) -> set[str]:
     viewers = parse_viewers(cfg)
     unsupported = viewers.difference({"retarget"})
@@ -266,6 +349,7 @@ class Sim2RealController:
             "Control loop started | mode=IDLE | press Start to enter STANDING"
         )
         dt = 1.0 / self.policy_hz
+        timing = _LoopTimingReporter(target_period_s=dt)
 
         try:
             self._video_runtime.start()
@@ -284,22 +368,26 @@ class Sim2RealController:
                         logger.warning("EMERGENCY STOP (L1+R1)")
                         self._enter_damping()
                     self._tick_dexterous_hand()
-                    self._sleep_until(t0, dt)
-                    continue
+                else:
+                    # 3. Mode transitions
+                    self._handle_transitions()
 
-                # 3. Mode transitions
-                self._handle_transitions()
+                    # 5. Execute current mode
+                    if self.mode == RobotMode.STANDING:
+                        self._standing_step()
+                    elif self.mode == RobotMode.MOCAP:
+                        self._mocap_step()
 
-                # 5. Execute current mode
-                if self.mode == RobotMode.STANDING:
-                    self._standing_step()
-                elif self.mode == RobotMode.MOCAP:
-                    self._mocap_step()
+                    self._tick_dexterous_hand()
 
-                self._tick_dexterous_hand()
-
-                # 6. Rate control
-                self._sleep_until(t0, dt)
+                work_elapsed_s = time.monotonic() - t0
+                cycle_elapsed_s = self._sleep_until(t0, dt)
+                timing.record(
+                    loop_start_s=t0,
+                    work_elapsed_s=work_elapsed_s,
+                    cycle_elapsed_s=cycle_elapsed_s,
+                    pico_age_s=self._sample_pico_frame_age_s(),
+                )
 
         except KeyboardInterrupt:
             logger.info("KeyboardInterrupt -- shutting down")
@@ -944,12 +1032,26 @@ class Sim2RealController:
             logger.exception("Sim2real retarget viewer update failed; control continues")
 
     @staticmethod
-    def _sleep_until(t0: float, dt: float) -> None:
+    def _sleep_until(t0: float, dt: float) -> float:
         """Sleep to maintain control frequency."""
         elapsed = time.monotonic() - t0
         remaining = dt - elapsed
         if remaining > 0:
             time.sleep(remaining)
+        return time.monotonic() - t0
+
+    def _sample_pico_frame_age_s(self) -> float | None:
+        has_frame = getattr(self.input_provider, "has_frame", None)
+        get_frame_packet = getattr(self.input_provider, "get_frame_packet", None)
+        if not callable(has_frame) or not callable(get_frame_packet):
+            return None
+        try:
+            if not has_frame():
+                return None
+            _, frame_timestamp_s, _ = get_frame_packet()
+        except Exception:
+            return None
+        return max(0.0, time.monotonic() - float(frame_timestamp_s))
 
     # ------------------------------------------------------------------
     # Lifecycle
