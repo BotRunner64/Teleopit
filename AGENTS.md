@@ -145,6 +145,7 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - Optional LinkerHand L6 control uses `dexterous_hand.mode=off|gripper|vr_hand_pose`; default is `off`
 - `gripper` mode reuses `Pico4InputProvider.get_controller_snapshot()` for Pico grip/trigger open-close control
 - `vr_hand_pose` mode reuses `Pico4InputProvider.get_hand_snapshot()` and `somehand` for continuous Pico hand-pose retargeting; do not start a second `PicoBridge` for hand control
+- `gripper` mode uses the configured `dexterous_hand.speed` (default `[50]*6`); `vr_hand_pose` always sets LinkerHand L6 speed to `[255]*6`
 - LinkerHand L6 control is active only in sim2real `MOCAP`; `STANDING`, `DAMPING`, mocap pause, and shutdown must send the configured open pose
 - In `vr_hand_pose` mode, missing/inactive hand pose holds the last commanded pose for that side instead of opening the hand
 

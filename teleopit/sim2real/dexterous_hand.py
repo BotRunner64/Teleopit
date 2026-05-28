@@ -28,6 +28,7 @@ THUMB_YAW_DEFAULT = 10
 OPEN_POSE = [250, THUMB_YAW_DEFAULT, 250, 250, 250, 250]
 CLOSE_POSE = [79, THUMB_YAW_DEFAULT, 0, 0, 0, 0]
 DEFAULT_SPEED = [50, 50, 50, 50, 50, 50]
+VR_HAND_POSE_SPEED = [255, 255, 255, 255, 255, 255]
 HAND_TYPES = ("left", "right")
 HAND_MODES = ("off", "gripper", "vr_hand_pose")
 DEFAULT_SOMEHAND_CONFIG_PATH = "third_party/somehand/configs/retargeting/bihand/linkerhand_l6_bihand.yaml"
@@ -199,6 +200,8 @@ def parse_linkerhand_config(cfg: Any) -> LinkerHandConfig:
     open_pose[1] = thumb_yaw
     close_pose[1] = thumb_yaw
 
+    speed = VR_HAND_POSE_SPEED if mode == "vr_hand_pose" else _pose_values(cfg_get(hand_cfg, "speed", DEFAULT_SPEED), "speed")
+
     config = LinkerHandConfig(
         mode=mode,
         enabled=mode != "off",
@@ -212,7 +215,7 @@ def parse_linkerhand_config(cfg: Any) -> LinkerHandConfig:
         trigger_deadzone=_trigger_deadzone(cfg_get(hand_cfg, "trigger_deadzone", 0.05)),
         deadman_threshold=_deadman_threshold(cfg_get(hand_cfg, "deadman_threshold", 0.5)),
         thumb_yaw_center=thumb_yaw,
-        speed=tuple(_pose_values(cfg_get(hand_cfg, "speed", DEFAULT_SPEED), "speed")),
+        speed=tuple(speed),
         open_pose=tuple(open_pose),
         close_pose=tuple(close_pose),
         print_input=bool(cfg_get(hand_cfg, "print_input", False)),

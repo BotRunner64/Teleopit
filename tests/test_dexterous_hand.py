@@ -141,6 +141,33 @@ def test_trigger_to_pose_applies_deadzone_and_fixed_thumb_yaw() -> None:
     assert pose == [164, 10, 125, 125, 125, 125]
 
 
+def test_parse_config_keeps_gripper_default_speed() -> None:
+    cfg = parse_linkerhand_config(
+        {
+            "dexterous_hand": {
+                "mode": "gripper",
+                "hand_type": "both",
+            }
+        }
+    )
+
+    assert cfg.speed == (50, 50, 50, 50, 50, 50)
+
+
+def test_parse_config_sets_vr_hand_pose_speed_to_max() -> None:
+    cfg = parse_linkerhand_config(
+        {
+            "dexterous_hand": {
+                "mode": "vr_hand_pose",
+                "hand_type": "both",
+                "speed": [50, 50, 50, 50, 50, 50],
+            }
+        }
+    )
+
+    assert cfg.speed == (255, 255, 255, 255, 255, 255)
+
+
 def test_runtime_opens_when_deadman_released() -> None:
     provider = SnapshotProvider()
     runtime = _runtime(provider)

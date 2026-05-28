@@ -145,10 +145,12 @@ reference changes when live tracking resumes.
 Pico sim2real can drive LinkerHand L6 hands in two modes:
 
 - `gripper`: hold the matching side grip as a deadman switch; the matching
-  trigger closes that hand.
+  trigger closes that hand. This mode uses the configured
+  `dexterous_hand.speed`, which defaults to 50.
 - `vr_hand_pose`: retarget Pico hand pose through somehand and command the
   continuous L6 hand target. If a hand pose disappears, that side keeps its last
-  commanded pose. This mode currently uses `hand_type=both`.
+  commanded pose. This mode currently uses `hand_type=both` and always sets L6
+  speed to the maximum.
 
 Hand control is active only in `MOCAP`. It sends the open pose in `STANDING`,
 `DAMPING`, paused mocap, and shutdown.

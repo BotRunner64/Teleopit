@@ -124,7 +124,9 @@ Realtime Pico resume re-centers heading and ground-plane position before trackin
 `dexterous_hand.mode=gripper` or `dexterous_hand.mode=vr_hand_pose` requires
 `input.provider=pico4` and the optional `dexhand` extra. Control is active only
 in `MOCAP`; inactive modes send the open pose. In `vr_hand_pose`, missing hand
-pose holds the last command for that side.
+pose holds the last command for that side. `gripper` uses the configured
+`dexterous_hand.speed`; `vr_hand_pose` always sets LinkerHand L6 speed to the
+maximum.
 
 | Field | Description | Default |
 |-------|-------------|---------|
@@ -133,6 +135,7 @@ pose holds the last command for that side.
 | `dexterous_hand.left_can` / `right_can` | CAN channels for each hand | `can0` / `can1` |
 | `dexterous_hand.rate` | Maximum command rate in Hz | `30.0` |
 | `dexterous_hand.frame_timeout` | Gripper controller timeout, or VR hand-pose staleness threshold | `0.3` |
+| `dexterous_hand.speed` | L6 speed used by `gripper`; `vr_hand_pose` overrides this to maximum speed | see config |
 | `dexterous_hand.deadman_threshold` | Minimum grip value required to enable a side | `0.5` |
 | `dexterous_hand.trigger_deadzone` | Trigger deadzone at both ends | `0.05` |
 | `dexterous_hand.open_pose` / `close_pose` | Six-value L6 open/closed poses | see config |

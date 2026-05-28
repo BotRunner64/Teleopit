@@ -137,9 +137,10 @@ Pico 暂停/恢复是 mocap-session control event。
 Pico sim2real 可以用两种模式控制 LinkerHand L6：
 
 - `gripper`：按住同侧 grip 作为 deadman，同侧 trigger 控制对应手闭合。
+  该模式使用配置的 `dexterous_hand.speed`，默认值为 50。
 - `vr_hand_pose`：通过 somehand 重定向 Pico 手部 pose，并下发连续 L6 手部目标。
   如果某侧手部 pose 消失，该侧会保持上一条手势命令。这个模式当前使用
-  `hand_type=both`。
+  `hand_type=both`，并始终将 L6 速度设为最大值。
 
 手控只在 `MOCAP` 中生效；在 `STANDING`、`DAMPING`、mocap 暂停和退出时都会发送张开姿态。
 

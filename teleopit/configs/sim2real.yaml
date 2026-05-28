@@ -39,7 +39,7 @@ dexterous_hand:
   trigger_deadzone: 0.05
   deadman_threshold: 0.5
   thumb_yaw_center: 10
-  speed: [50, 50, 50, 50, 50, 50]
+  speed: [50, 50, 50, 50, 50, 50]  # gripper mode; vr_hand_pose always uses max speed
   open_pose: [250, 10, 250, 250, 250, 250]
   close_pose: [79, 10, 0, 0, 0, 0]
   print_input: false
