@@ -5,6 +5,7 @@ defaults:
   - _self_
 
 policy_hz: 50.0
+sim2real_runtime: auto  # auto | single_process | multiprocess; auto uses multiprocess for Pico4
 viewers: "none"  # Optional: set viewers=retarget to show the retargeted reference
 retarget_buffer_enabled: true
 retarget_buffer_window_s: 0.5
@@ -16,6 +17,18 @@ reference_steps: [0]
 reference_debug_log: false
 playback:
   pause_on_end: true
+
+multiprocess:
+  host: 127.0.0.1
+  base_port: 39700
+  start_method: spawn
+  shutdown_timeout_s: 3.0
+  pico_io_hz: 120.0
+  hand_worker_hz: 120.0
+  retarget_idle_sleep_s: 0.001
+  video_slots: 3
+  stale_reference_hold_s: 0.08
+  max_reference_age_s: 0.25
 
 # Kp ramp duration (seconds) -- gradually increases PD gains after entering STANDING
 startup_ramp_duration: 2.0

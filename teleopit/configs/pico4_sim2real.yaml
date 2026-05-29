@@ -5,6 +5,7 @@ defaults:
   - _self_
 
 policy_hz: 50.0
+sim2real_runtime: multiprocess
 viewers: "none"  # Optional: set viewers=retarget to show the retargeted reference
 input:
   video:
@@ -17,6 +18,18 @@ reference_velocity_smoothing_alpha: 0.35
 reference_anchor_velocity_smoothing_alpha: 0.25
 reference_steps: [0]
 reference_debug_log: false
+
+multiprocess:
+  host: 127.0.0.1
+  base_port: 39700
+  start_method: spawn
+  shutdown_timeout_s: 3.0
+  pico_io_hz: 120.0
+  hand_worker_hz: 120.0
+  retarget_idle_sleep_s: 0.001
+  video_slots: 3
+  stale_reference_hold_s: 0.08
+  max_reference_age_s: 0.25
 
 # Kp ramp duration (seconds) -- gradually increases PD gains after entering STANDING
 startup_ramp_duration: 2.0

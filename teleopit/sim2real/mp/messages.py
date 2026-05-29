@@ -1,0 +1,91 @@
+"""Pickle-serializable IPC message contracts for multiprocess sim2real."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+import numpy as np
+from numpy.typing import NDArray
+
+from teleopit.inputs.realtime_packet import ControlEvent, HumanFrame
+from teleopit.sim.reference_timeline import ReferenceWindow
+
+
+Float64Array = NDArray[np.float64]
+
+
+@dataclass(frozen=True)
+class BodyFramePacket:
+    frame: HumanFrame
+    timestamp_s: float
+    seq: int
+
+
+@dataclass(frozen=True)
+class ReferencePacket:
+    qpos: Float64Array
+    timestamp_s: float
+    seq: int
+    source_timestamp_s: float
+    source_seq: int
+    frame_valid: bool = True
+    reference_reset_seq: int = 0
+    reference_window: ReferenceWindow | None = None
+    retarget_elapsed_s: float = 0.0
+
+
+@dataclass(frozen=True)
+class ControlEventsPacket:
+    events: tuple[ControlEvent, ...]
+    timestamp_s: float
+    seq: int
+
+
+@dataclass(frozen=True)
+class SnapshotPacket:
+    snapshot: Any
+    timestamp_s: float
+    seq: int
+
+
+@dataclass(frozen=True)
+class ModeStatePacket:
+    mode: str
+    mocap_active: bool
+    mocap_paused: bool
+    timestamp_s: float
+    seq: int
+
+
+@dataclass(frozen=True)
+class ReferenceResetPacket:
+    reason: str
+    timestamp_s: float
+    seq: int
+
+
+@dataclass(frozen=True)
+class HealthPacket:
+    worker: str
+    timestamp_s: float
+    status: str = "ok"
+    metrics: dict[str, float | int | str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CommandPacket:
+    command: str
+    timestamp_s: float
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SharedFrameDescriptor:
+    shm_name: str
+    slot: int
+    seq: int
+    timestamp_s: float
+    shape: tuple[int, ...]
+    dtype: str
+    slots: int

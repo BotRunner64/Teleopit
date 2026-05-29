@@ -23,6 +23,7 @@ dependencies = [
     "omegaconf",
     "h5py",
     "onnxruntime",
+    "pyzmq",
     "rich",
     "loop-rate-limiters",
     "imageio",
