@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from collections import Counter
 import logging
+import os
+import signal
 import time
+import threading
 from typing import Any
 
 import hydra
@@ -164,6 +167,31 @@ def _build_provider(cfg: DictConfig, video_enabled: bool) -> Pico4InputProvider:
     )
 
 
+def _install_signal_handlers(stop_event: threading.Event) -> None:
+    def _handle_signal(signum: int, _frame: Any) -> None:
+        if stop_event.is_set():
+            os._exit(130)
+        logger.info("Received signal %s -- shutting down", signum)
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
+
+
+def _start_video_runtime_async(video_runtime: PicoVideoRuntime) -> threading.Event:
+    done = threading.Event()
+
+    def _run() -> None:
+        try:
+            video_runtime.start()
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_run, name="pico_video_start", daemon=True)
+    thread.start()
+    return done
+
+
 @hydra.main(version_base=None, config_path="../../teleopit/configs", config_name="pico4_sim2real")
 def main(cfg: DictConfig) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
@@ -195,6 +223,8 @@ def main(cfg: DictConfig) -> None:
         video_cfg.source,
     )
 
+    stop_event = threading.Event()
+    _install_signal_handlers(stop_event)
     provider = _build_provider(cfg, video_cfg.enabled)
     video_runtime = PicoVideoRuntime(provider=provider, config=video_cfg, mode="sim2real")
     total = 0
@@ -206,10 +236,13 @@ def main(cfg: DictConfig) -> None:
     window_start_s = time.monotonic()
     start_s = window_start_s
     sleep_s = 1.0 / max(poll_hz, 1.0)
+    video_start_done: threading.Event | None = None
 
     try:
-        video_runtime.start()
-        while True:
+        if video_cfg.enabled:
+            logger.info("Starting Pico video backend asynchronously")
+            video_start_done = _start_video_runtime_async(video_runtime)
+        while not stop_event.is_set():
             now = time.monotonic()
             if duration_s > 0.0 and now - start_s >= duration_s:
                 break
@@ -252,7 +285,10 @@ def main(cfg: DictConfig) -> None:
                 invalid_reasons.clear()
                 window_start_s = now
 
-            time.sleep(sleep_s)
+            if video_start_done is not None and not video_start_done.is_set() and now - start_s >= 5.0:
+                logger.info("Waiting for Pico video backend to become ready in the background")
+                video_start_done = None
+            stop_event.wait(timeout=sleep_s)
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt -- stopping Pico signal diagnostic")
     finally:
