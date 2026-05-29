@@ -480,6 +480,30 @@ def test_dexterous_hand_failure_does_not_enter_damping(monkeypatch) -> None:
     assert hand_runtime.active_flags == [True]
 
 
+def test_realtime_input_timeout_holds_mocap_instead_of_damping(monkeypatch) -> None:
+    from teleopit.sim2real.controller import RobotMode, Sim2RealController
+
+    policy = DummyPolicy()
+    obs_builder = DummyVelCmdObservationBuilder()
+    _install_controller_mocks(monkeypatch, policy=policy, obs_builder=obs_builder, qpos=np.zeros(36, dtype=np.float64))
+
+    ctrl = Sim2RealController(_make_cfg())
+    ctrl.mode = RobotMode.MOCAP
+    ctrl._mocap_session.reset()
+    hold_qpos = np.zeros(36, dtype=np.float64)
+    hold_qpos[3] = 1.0
+    hold_qpos[7] = 0.25
+    ctrl._last_commanded_motion_qpos = hold_qpos.copy()
+    ctrl._fetch_realtime_input_packet = lambda: (_ for _ in ()).throw(TimeoutError("stalled"))
+    ctrl._enter_damping = lambda: pytest.fail("input timeouts must not enter damping")
+
+    ctrl._mocap_step()
+
+    assert ctrl.mode == RobotMode.MOCAP
+    np.testing.assert_allclose(obs_builder.build_calls[-1]["motion_qpos"], hold_qpos.astype(np.float32))
+    assert len(ctrl.robot.sent_positions) == 1
+
+
 def test_can_switch_to_mocap_returns_false_without_blocking_when_realtime_has_no_frame(monkeypatch) -> None:
     from teleopit.sim2real.controller import Sim2RealController
 

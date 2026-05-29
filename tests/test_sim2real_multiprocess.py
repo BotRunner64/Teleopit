@@ -167,6 +167,35 @@ def test_human_frame_validation_rejects_bad_inputs() -> None:
     assert not _human_frame_is_valid(bad_frame)
 
 
+def test_robot_worker_holds_stale_reference_instead_of_damping() -> None:
+    worker = object.__new__(_RobotControlWorker)
+    hold_qpos = np.zeros(36, dtype=np.float64)
+    hold_qpos[3] = 1.0
+    hold_qpos[7] = 0.25
+    worker._mocap_session = SimpleNamespace(state=MocapSessionState.ACTIVE)
+    worker._latest_reference = ReferencePacket(
+        qpos=np.zeros(36, dtype=np.float64),
+        timestamp_s=1.0,
+        seq=1,
+        source_timestamp_s=1.0,
+        source_seq=1,
+        frame_valid=True,
+    )
+    worker._reference_age_s = lambda: 0.30
+    worker._stale_reference_hold_s = 0.08
+    worker._last_mocap_hold_reason = None
+    worker._last_commanded_motion_qpos = hold_qpos.copy()
+    worker._resolve_mocap_hold_qpos = lambda: hold_qpos.copy()
+    held: list[np.ndarray] = []
+    worker._run_static_mocap_step = lambda qpos: held.append(np.asarray(qpos, dtype=np.float64).copy())
+    worker._enter_damping = lambda: pytest.fail("stale references must not enter damping")
+
+    worker._mocap_step()
+
+    assert len(held) == 1
+    np.testing.assert_allclose(held[0], hold_qpos)
+
+
 def test_robot_worker_requires_consecutive_valid_references(monkeypatch) -> None:
     worker = object.__new__(_RobotControlWorker)
     worker._latest_reference = None

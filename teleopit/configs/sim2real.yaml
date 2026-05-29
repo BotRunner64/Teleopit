@@ -27,6 +27,8 @@ multiprocess:
   hand_worker_hz: 120.0
   retarget_idle_sleep_s: 0.001
   video_slots: 3
+  # In active MOCAP, delayed/invalid realtime references hold the last command instead of damping.
+  # max_reference_age_s only rejects entering MOCAP from STANDING on an old reference.
   stale_reference_hold_s: 0.08
   max_reference_age_s: 0.25
 

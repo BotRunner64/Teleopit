@@ -540,6 +540,7 @@ class _RobotControlWorker:
         self._last_action = np.zeros(self.num_actions, dtype=np.float32)
         self._last_retarget_qpos: Float64Array | None = None
         self._last_commanded_motion_qpos: Float64Array | None = None
+        self._last_mocap_hold_reason: str | None = None
         self._mocap_reentry_armed = False
         self._mocap_session = MocapSessionManager()
 
@@ -706,18 +707,16 @@ class _RobotControlWorker:
         reference = self._latest_reference
         age_s = self._reference_age_s()
         if reference is None or age_s is None:
-            self._hold_or_damp_stale_reference("no retarget reference")
+            self._hold_mocap_reference("no retarget reference")
             return
         if not reference.frame_valid:
-            logger.warning("Retarget reference invalid -- holding last command")
-            self._hold_or_damp_stale_reference("invalid retarget reference")
+            self._hold_mocap_reference("invalid retarget reference")
             return
-        if age_s > self._max_reference_age_s:
-            logger.warning("Retarget reference stale %.3fs -- entering damping", age_s)
-            self._enter_damping()
-            return
-        if age_s > self._stale_reference_hold_s and self._last_commanded_motion_qpos is not None:
-            self._run_static_mocap_step(self._last_commanded_motion_qpos)
+        if age_s > self._stale_reference_hold_s:
+            self._hold_mocap_reference(
+                "delayed retarget reference",
+                detail=f"age={age_s:.3f}s",
+            )
             return
 
         robot_state = self.robot.get_state()
@@ -765,6 +764,7 @@ class _RobotControlWorker:
         self._last_retarget_qpos = qpos.copy()
         self._ref_proc.last_reference_qpos = reference_qpos.copy()
         self._last_commanded_motion_qpos = qpos.copy()
+        self._last_mocap_hold_reason = None
         self._write_retarget_viewer(qpos)
 
     def _enter_standing(self) -> None:
@@ -842,6 +842,7 @@ class _RobotControlWorker:
         self._mocap_reentry_armed = False
         self._mocap_session.reset()
         self._last_commanded_motion_qpos = None
+        self._last_mocap_hold_reason = None
         logger.info("Mode -> DAMPING (press Start to re-enter STANDING)")
 
     def _reset_policy_state(self) -> None:
@@ -850,6 +851,7 @@ class _RobotControlWorker:
         self._ref_proc.reset_alignment()
         self._mocap_session.reset()
         self._last_commanded_motion_qpos = None
+        self._last_mocap_hold_reason = None
         self.policy.reset()
         self.obs_builder.reset()
 
@@ -859,6 +861,7 @@ class _RobotControlWorker:
         self._ref_proc.reset_alignment()
         self._mocap_session.reset()
         self._last_commanded_motion_qpos = None
+        self._last_mocap_hold_reason = None
         self.policy.reset()
         self.obs_builder.reset()
 
@@ -968,12 +971,13 @@ class _RobotControlWorker:
         self._last_commanded_motion_qpos = qpos.copy()
         self._write_retarget_viewer(qpos)
 
-    def _hold_or_damp_stale_reference(self, reason: str) -> None:
-        if self._last_commanded_motion_qpos is not None:
-            self._run_static_mocap_step(self._last_commanded_motion_qpos)
-            return
-        logger.warning("No mocap hold pose available after %s -- entering damping", reason)
-        self._enter_damping()
+    def _hold_mocap_reference(self, reason: str, *, detail: str | None = None) -> None:
+        if self._last_mocap_hold_reason != reason:
+            suffix = f" ({detail})" if detail else ""
+            logger.warning("Mocap reference not fresh: %s%s -- holding command", reason, suffix)
+            self._last_mocap_hold_reason = reason
+        hold_qpos = self._resolve_mocap_hold_qpos()
+        self._run_static_mocap_step(hold_qpos)
 
     def _publish_mode_state(self) -> None:
         self._mode_seq += 1

@@ -283,6 +283,7 @@ class Sim2RealController:
         self._mocap_reentry_armed: bool = False
         self._mocap_session = MocapSessionManager()
         self._last_commanded_motion_qpos: Float64Array | None = None
+        self._last_mocap_hold_reason: str | None = None
         self._viewers = _parse_sim2real_viewers(cfg)
         self._retarget_viewer = _Sim2RealRetargetViewer(
             xml_path=str(cfg_get(robot_cfg, "xml_path", "")) if "retarget" in self._viewers else None,
@@ -437,15 +438,16 @@ class Sim2RealController:
             return
 
         if not self.input_provider.is_available():
-            logger.warning("Input provider unavailable -- entering damping")
-            self._enter_damping()
+            self._hold_mocap_reference("input provider unavailable")
             return
 
         try:
             packet = self._fetch_realtime_input_packet()
-        except (TimeoutError, RuntimeError):
-            logger.warning("Input provider error -- entering damping")
-            self._enter_damping()
+        except (TimeoutError, RuntimeError) as exc:
+            self._hold_mocap_reference(
+                "input provider error",
+                detail=f"{type(exc).__name__}: {exc}",
+            )
             return
 
         self._handle_mocap_control_events(packet.control_events)
@@ -577,6 +579,7 @@ class Sim2RealController:
         self._last_retarget_qpos = qpos.copy()
         self._ref_proc.last_reference_qpos = reference_qpos.copy()
         self._last_commanded_motion_qpos = qpos.copy()
+        self._last_mocap_hold_reason = None
         self._write_retarget_viewer(qpos)
 
     # ------------------------------------------------------------------
@@ -787,6 +790,7 @@ class Sim2RealController:
         self._mocap_reentry_armed = False
         self._mocap_session.reset()
         self._last_commanded_motion_qpos = None
+        self._last_mocap_hold_reason = None
         logger.info("Mode -> DAMPING (press Start to re-enter STANDING)")
 
     # ------------------------------------------------------------------
@@ -801,6 +805,7 @@ class Sim2RealController:
         self._ref_proc.reset_alignment()
         self._mocap_session.reset()
         self._last_commanded_motion_qpos = None
+        self._last_mocap_hold_reason = None
         self.policy.reset()
         self.obs_builder.reset()
 
@@ -811,6 +816,7 @@ class Sim2RealController:
         self._ref_proc.reset_alignment()
         self._mocap_session.reset()
         self._last_commanded_motion_qpos = None
+        self._last_mocap_hold_reason = None
         self.policy.reset()
         self.obs_builder.reset()
 
@@ -828,6 +834,7 @@ class Sim2RealController:
             self._reference_manager.reset()
         self._ref_proc.reset_smoothers()
         self._last_live_packet_seq = -1
+        self._last_mocap_hold_reason = None
 
     def _build_robot_state_qpos(self, state: object) -> Float64Array:
         qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
@@ -1009,6 +1016,14 @@ class Sim2RealController:
         self._ref_proc.last_reference_qpos = qpos.copy()
         self._last_commanded_motion_qpos = qpos.copy()
         self._write_retarget_viewer(qpos)
+
+    def _hold_mocap_reference(self, reason: str, *, detail: str | None = None) -> None:
+        if self._last_mocap_hold_reason != reason:
+            suffix = f" ({detail})" if detail else ""
+            logger.warning("Mocap reference not fresh: %s%s -- holding command", reason, suffix)
+            self._last_mocap_hold_reason = reason
+        hold_qpos = self._resolve_mocap_hold_qpos()
+        self._run_static_mocap_step(hold_qpos)
 
     def _tick_dexterous_hand(self) -> None:
         active = self.mode == RobotMode.MOCAP and self._mocap_session.state == MocapSessionState.ACTIVE
