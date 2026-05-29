@@ -41,7 +41,6 @@ from teleopit.sim2real.mp.ipc import (
     HAND_TOPIC,
     HEALTH_TOPIC,
     MODE_TOPIC,
-    REFERENCE_RESET_TOPIC,
     REFERENCE_TOPIC,
     VIDEO_TOPIC,
     LatestSubscriber,
@@ -56,7 +55,6 @@ from teleopit.sim2real.mp.messages import (
     HealthPacket,
     ModeStatePacket,
     ReferencePacket,
-    ReferenceResetPacket,
     SharedFrameDescriptor,
     SnapshotPacket,
 )
@@ -401,7 +399,6 @@ def _run_retarget_worker(
         body_sub = LatestSubscriber(endpoints.body_pub, BODY_TOPIC)
         health_sub = LatestSubscriber(endpoints.health_pub, HEALTH_TOPIC)
         command_sub = LatestSubscriber(endpoints.command_pub, COMMAND_TOPIC)
-        reference_reset_sub = LatestSubscriber(endpoints.mode_pub, REFERENCE_RESET_TOPIC)
         ref_pub = ZmqPublisher(endpoints.reference_pub)
         idle_sleep_s = float(cfg_get(_mp_cfg(cfg), "retarget_idle_sleep_s", 0.001))
         last_body_seq = -1
@@ -412,42 +409,7 @@ def _run_retarget_worker(
             float(ref_cfg.reference_delay_s) if ref_cfg.reference_delay_s is not None else None
         )
         runtime_support_validated = ref_cfg.reference_delay_s is not None or not reference_window_builder.requires_timeline
-        last_reference_reset_seq = 0
-        last_reference_reset_timestamp_s = 0.0
         last_valid_qpos: Float64Array | None = None
-
-        def _reset_reference_state(packet: ReferenceResetPacket) -> None:
-            nonlocal last_body_seq
-            nonlocal last_body_timestamp_s
-            nonlocal body_dt_s_ema
-            nonlocal resolved_reference_delay_s
-            nonlocal runtime_support_validated
-            nonlocal last_reference_reset_seq
-            nonlocal last_reference_reset_timestamp_s
-            nonlocal last_valid_qpos
-
-            last_reference_reset_seq = int(packet.seq)
-            last_reference_reset_timestamp_s = float(packet.timestamp_s)
-            last_body_seq = -1
-            last_body_timestamp_s = None
-            body_dt_s_ema = None
-            last_valid_qpos = None
-            resolved_reference_delay_s = (
-                float(ref_cfg.reference_delay_s) if ref_cfg.reference_delay_s is not None else None
-            )
-            runtime_support_validated = (
-                ref_cfg.reference_delay_s is not None or not reference_window_builder.requires_timeline
-            )
-            if timeline is not None:
-                timeline.clear()
-            if reference_manager is not None:
-                reference_manager.set_warmup_steps(ref_cfg.realtime_buffer_warmup_steps)
-                reference_manager.reset()
-            logger.info(
-                "Retarget reference state reset | reason=%s seq=%d",
-                packet.reason,
-                last_reference_reset_seq,
-            )
 
         def _publish_invalid_reference(packet: BodyFramePacket, *, elapsed_s: float) -> None:
             qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
@@ -463,7 +425,6 @@ def _run_retarget_worker(
                     source_timestamp_s=float(packet.timestamp_s),
                     source_seq=int(packet.seq),
                     frame_valid=False,
-                    reference_reset_seq=last_reference_reset_seq,
                     retarget_elapsed_s=elapsed_s,
                 ),
             )
@@ -481,22 +442,12 @@ def _run_retarget_worker(
                     stop_event.set()
                     break
 
-                reset_packet = reference_reset_sub.recv_latest()
-                if (
-                    isinstance(reset_packet, ReferenceResetPacket)
-                    and int(reset_packet.seq) > last_reference_reset_seq
-                ):
-                    _reset_reference_state(reset_packet)
-
                 packet = body_sub.recv_latest()
                 if packet is None:
                     time.sleep(idle_sleep_s)
                     continue
                 if not isinstance(packet, BodyFramePacket) or int(packet.seq) == last_body_seq:
                     continue
-                if float(packet.timestamp_s) < last_reference_reset_timestamp_s:
-                    continue
-
                 start_s = time.monotonic()
                 frame_valid = _human_frame_is_valid(packet.frame, max_pos_value=max_position_value)
                 if not frame_valid:
@@ -556,7 +507,6 @@ def _run_retarget_worker(
                             source_timestamp_s=float(packet.timestamp_s),
                             source_seq=int(packet.seq),
                             frame_valid=True,
-                            reference_reset_seq=last_reference_reset_seq,
                             reference_window=reference_window,
                             retarget_elapsed_s=time.monotonic() - start_s,
                         ),
@@ -568,7 +518,6 @@ def _run_retarget_worker(
             body_sub.close()
             health_sub.close()
             command_sub.close()
-            reference_reset_sub.close()
             ref_pub.close()
 
     _worker_loop("retarget_worker", _main)
@@ -632,14 +581,12 @@ class _RobotControlWorker:
         self._stale_reference_hold_s = float(cfg_get(mp_cfg, "stale_reference_hold_s", 0.08))
         mocap_sw = cfg_get(cfg, "mocap_switch", {}) or {}
         self._check_frames = int(cfg_get(mocap_sw, "check_frames", 10))
-        self._reference_reset_seq = 0
         self._last_reference_seq = -1
         self._consecutive_valid_references = 0
 
         self._reference_sub = LatestSubscriber(endpoints.reference_pub, REFERENCE_TOPIC)
         self._events_sub = LatestSubscriber(endpoints.control_events_pub, CONTROL_EVENTS_TOPIC)
         self._command_sub = LatestSubscriber(endpoints.command_pub, COMMAND_TOPIC)
-        self._reference_reset_sub = LatestSubscriber(endpoints.mode_pub, REFERENCE_RESET_TOPIC)
         self._mode_pub = ZmqPublisher(endpoints.mode_pub)
 
         viewers = _parse_sim2real_viewers(cfg)
@@ -697,7 +644,6 @@ class _RobotControlWorker:
         self._reference_sub.close()
         self._events_sub.close()
         self._command_sub.close()
-        self._reference_reset_sub.close()
         self._mode_pub.close()
         self.robot.close()
 
@@ -721,9 +667,6 @@ class _RobotControlWorker:
         if isinstance(command, CommandPacket) and command.command == "shutdown":
             self.stop_event.set()
             return
-        reference_reset = self._reference_reset_sub.recv_latest()
-        if isinstance(reference_reset, ReferenceResetPacket):
-            self._apply_reference_reset(reference_reset.seq)
         reference = self._reference_sub.recv_latest()
         if isinstance(reference, ReferencePacket):
             self._note_reference_packet(reference)
@@ -796,9 +739,6 @@ class _RobotControlWorker:
         age_s = self._reference_age_s()
         if reference is None or age_s is None:
             self._hold_or_damp_stale_reference("no retarget reference")
-            return
-        if int(reference.reference_reset_seq) != self._reference_reset_seq:
-            self._hold_or_damp_stale_reference("stale reset-generation retarget reference")
             return
         if not reference.frame_valid:
             logger.warning("Retarget reference invalid -- holding last command")
@@ -876,7 +816,6 @@ class _RobotControlWorker:
             self.robot.lock_all_joints()
             time.sleep(0.3)
 
-        self._publish_reference_reset("enter_standing")
         init_qpos = self._build_robot_state_qpos(state)
         self._last_retarget_qpos = init_qpos
         self._ref_proc.last_reference_qpos = None
@@ -901,8 +840,6 @@ class _RobotControlWorker:
             return False
         if not self._latest_reference.frame_valid:
             return False
-        if self._latest_reference.reference_reset_seq != self._reference_reset_seq:
-            return False
         if age_s > self._max_reference_age_s:
             return False
         if self._consecutive_valid_references < self._check_frames:
@@ -918,7 +855,6 @@ class _RobotControlWorker:
         state = self.robot.get_state()
         resume_qpos = self._build_resume_alignment_qpos(self._standing_qpos, state)
         self._mocap_reentry_armed = False
-        self._publish_reference_reset("standing_to_mocap")
         self._reset_policy_state()
         self._last_retarget_qpos = None
         self._last_commanded_motion_qpos = resume_qpos.copy()
@@ -933,7 +869,6 @@ class _RobotControlWorker:
             time.sleep(0.5)
             logger.info("DAMPING: exiting debug mode...")
             self.robot.exit_debug_mode()
-        self._publish_reference_reset("enter_damping")
         self.mode = RobotMode.DAMPING
         self._ref_proc.last_reference_qpos = None
         self._mocap_reentry_armed = False
@@ -1004,7 +939,6 @@ class _RobotControlWorker:
         self._last_retarget_qpos = hold_qpos.copy()
         self._ref_proc.last_reference_qpos = hold_qpos.copy()
         self._last_commanded_motion_qpos = hold_qpos.copy()
-        self._publish_reference_reset("pause_active_mocap")
         self._reset_policy_reference_state()
         self._mocap_session.pause(hold_qpos)
         logger.info("Mocap session -> PAUSED (multiprocess episode-reset)")
@@ -1016,7 +950,6 @@ class _RobotControlWorker:
         state = self.robot.get_state()
         resume_qpos = self._build_resume_alignment_qpos(hold_qpos, state)
         self._last_commanded_motion_qpos = resume_qpos.copy()
-        self._publish_reference_reset("resume_paused_mocap")
         self._reset_policy_reference_state()
         self._last_retarget_qpos = None
         self._last_commanded_motion_qpos = resume_qpos.copy()
@@ -1100,20 +1033,7 @@ class _RobotControlWorker:
             return None
         return max(0.0, time.monotonic() - float(self._latest_reference.timestamp_s))
 
-    def _apply_reference_reset(self, reference_reset_seq: int) -> None:
-        reset_seq = int(reference_reset_seq)
-        if reset_seq <= self._reference_reset_seq:
-            return
-        self._reference_reset_seq = reset_seq
-        self._latest_reference = None
-        self._last_reference_seq = -1
-        self._consecutive_valid_references = 0
-
     def _note_reference_packet(self, reference: ReferencePacket) -> None:
-        if int(reference.reference_reset_seq) < self._reference_reset_seq:
-            return
-        if int(reference.reference_reset_seq) > self._reference_reset_seq:
-            self._apply_reference_reset(int(reference.reference_reset_seq))
         if int(reference.seq) <= self._last_reference_seq:
             return
         self._last_reference_seq = int(reference.seq)
@@ -1122,20 +1042,6 @@ class _RobotControlWorker:
             self._consecutive_valid_references = 0
             return
         self._consecutive_valid_references += 1
-
-    def _publish_reference_reset(self, reason: str) -> None:
-        self._reference_reset_seq += 1
-        self._latest_reference = None
-        self._last_reference_seq = -1
-        self._consecutive_valid_references = 0
-        self._mode_pub.publish(
-            REFERENCE_RESET_TOPIC,
-            ReferenceResetPacket(
-                reason=reason,
-                timestamp_s=time.monotonic(),
-                seq=self._reference_reset_seq,
-            ),
-        )
 
     @staticmethod
     def _sleep_until(t0: float, dt: float) -> float:

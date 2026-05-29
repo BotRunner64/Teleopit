@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 
 from teleopit.runtime.mocap_session import MocapSessionState
-from teleopit.sim2real.mp.ipc import HEALTH_TOPIC, REFERENCE_RESET_TOPIC, LatestSubscriber, ZmqPublisher
+from teleopit.sim2real.mp.ipc import HEALTH_TOPIC, LatestSubscriber, ZmqPublisher
 from teleopit.sim2real.mp import resolve_sim2real_runtime_mode
-from teleopit.sim2real.mp.messages import ReferencePacket, ReferenceResetPacket, SharedFrameDescriptor
+from teleopit.sim2real.mp.messages import ReferencePacket, SharedFrameDescriptor
 from teleopit.sim2real.mp.runtime import MultiprocessSim2RealController, _RobotControlWorker, _human_frame_is_valid
 from teleopit.sim2real.mp.shm import SharedFrameRingReader, SharedFrameRingWriter
 
@@ -167,9 +167,8 @@ def test_human_frame_validation_rejects_bad_inputs() -> None:
     assert not _human_frame_is_valid(bad_frame, max_pos_value=5.0)
 
 
-def test_robot_worker_requires_consecutive_valid_references_and_reset_generation(monkeypatch) -> None:
+def test_robot_worker_requires_consecutive_valid_references(monkeypatch) -> None:
     worker = object.__new__(_RobotControlWorker)
-    worker._reference_reset_seq = 0
     worker._latest_reference = None
     worker._last_reference_seq = -1
     worker._consecutive_valid_references = 0
@@ -190,7 +189,6 @@ def test_robot_worker_requires_consecutive_valid_references_and_reset_generation
         source_timestamp_s=1.0,
         source_seq=1,
         frame_valid=True,
-        reference_reset_seq=0,
     )
     worker._note_reference_packet(valid0)
     assert worker._can_switch_to_mocap() is False
@@ -202,7 +200,6 @@ def test_robot_worker_requires_consecutive_valid_references_and_reset_generation
         source_timestamp_s=1.1,
         source_seq=2,
         frame_valid=True,
-        reference_reset_seq=0,
     )
     worker._note_reference_packet(valid1)
     assert worker._can_switch_to_mocap() is True
@@ -214,43 +211,17 @@ def test_robot_worker_requires_consecutive_valid_references_and_reset_generation
         source_timestamp_s=1.2,
         source_seq=3,
         frame_valid=False,
-        reference_reset_seq=0,
     )
     worker._note_reference_packet(invalid)
     assert worker._can_switch_to_mocap() is False
 
-    worker._publish_reference_reset("enter_standing")
-    assert worker._reference_reset_seq == 1
-    assert worker._latest_reference is None
-    assert worker._consecutive_valid_references == 0
-    assert worker._mode_pub_events
-    topic, payload = worker._mode_pub_events[-1]
-    assert topic == REFERENCE_RESET_TOPIC
-    assert isinstance(payload, ReferenceResetPacket)
-    assert payload.seq == 1
-    assert payload.reason == "enter_standing"
-
-    old_packet = ReferencePacket(
-        qpos=np.zeros(36, dtype=np.float64),
-        timestamp_s=1.3,
-        seq=4,
-        source_timestamp_s=1.3,
-        source_seq=4,
-        frame_valid=True,
-        reference_reset_seq=0,
-    )
-    worker._note_reference_packet(old_packet)
-    assert worker._latest_reference is None
-    assert worker._consecutive_valid_references == 0
-
     fresh_packet = ReferencePacket(
         qpos=np.zeros(36, dtype=np.float64),
         timestamp_s=1.4,
-        seq=5,
+        seq=4,
         source_timestamp_s=1.4,
-        source_seq=5,
+        source_seq=4,
         frame_valid=True,
-        reference_reset_seq=1,
     )
     worker._note_reference_packet(fresh_packet)
     assert worker._latest_reference == fresh_packet

@@ -30,7 +30,6 @@ class ReferencePacket:
     source_timestamp_s: float
     source_seq: int
     frame_valid: bool = True
-    reference_reset_seq: int = 0
     reference_window: ReferenceWindow | None = None
     retarget_elapsed_s: float = 0.0
 
@@ -54,13 +53,6 @@ class ModeStatePacket:
     mode: str
     mocap_active: bool
     mocap_paused: bool
-    timestamp_s: float
-    seq: int
-
-
-@dataclass(frozen=True)
-class ReferenceResetPacket:
-    reason: str
     timestamp_s: float
     seq: int
 
