@@ -68,13 +68,12 @@ def _frame_stats(frame: dict[str, Any]) -> dict[str, Any]:
 def _log_invalid(seq: int, age_ms: float, result: HumanFrameValidationResult) -> None:
     logger.warning(
         "Invalid Pico body frame | seq=%s age_ms=%.1f reason=%s joint=%s "
-        "max_abs_pos=%s threshold=%s pos=%s quat=%s detail=%s",
+        "max_abs_pos=%s pos=%s quat=%s detail=%s",
         seq,
         age_ms,
         result.reason,
         result.joint_name,
         f"{result.max_abs_pos:.4f}" if result.max_abs_pos is not None else "None",
-        f"{result.max_pos_value:.4f}" if result.max_pos_value is not None else "None",
         _fmt_vec(result.pos),
         _fmt_vec(result.quat),
         result.detail,
@@ -197,8 +196,6 @@ def main(cfg: DictConfig) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
     input_cfg = cfg_get(cfg, "input", {}) or {}
     video_cfg = parse_pico_video_config(input_cfg)
-    mocap_switch = cfg_get(cfg, "mocap_switch", {}) or {}
-    max_pos_value = float(cfg_get(mocap_switch, "max_position_value", 5.0))
     diag_cfg = cfg_get(cfg, "diagnostic", {}) or {}
     poll_hz = float(cfg_get(diag_cfg, "poll_hz", cfg_get(cfg_get(cfg, "multiprocess", {}) or {}, "pico_io_hz", 120.0)))
     summary_interval_s = float(cfg_get(diag_cfg, "summary_interval_s", 1.0))
@@ -213,9 +210,8 @@ def main(cfg: DictConfig) -> None:
         cfg_get(input_cfg, "bridge_advertise_ip", None),
     )
     logger.info(
-        "Signal check | max_position_value=%.3fm poll_hz=%.1f summary_interval_s=%.1f "
+        "Signal check | validation=finite_values poll_hz=%.1f summary_interval_s=%.1f "
         "duration_s=%s video_enabled=%s video_source=%s",
-        max_pos_value,
         poll_hz,
         summary_interval_s,
         f"{duration_s:.1f}" if duration_s > 0.0 else "until Ctrl-C",
@@ -259,7 +255,7 @@ def main(cfg: DictConfig) -> None:
                         last_seq = seq
                         last_age_ms = max((time.monotonic() - float(timestamp_s)) * 1000.0, 0.0)
                         last_stats = _frame_stats(frame)
-                        result = validate_human_frame(frame, max_pos_value=max_pos_value)
+                        result = validate_human_frame(frame)
                         total += 1
                         if result.valid:
                             valid += 1

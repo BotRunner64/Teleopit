@@ -1,4 +1,4 @@
-"""HumanFrame sanity validation shared by realtime diagnostics and runtimes."""
+"""HumanFrame finite-value validation shared by realtime diagnostics and runtimes."""
 
 from __future__ import annotations
 
@@ -15,23 +15,15 @@ class HumanFrameValidationResult:
     pos: tuple[float, ...] | None = None
     quat: tuple[float, ...] | None = None
     max_abs_pos: float | None = None
-    max_pos_value: float | None = None
     detail: str = ""
 
 
-def validate_human_frame(frame: object, *, max_pos_value: float) -> HumanFrameValidationResult:
-    """Validate the same HumanFrame conditions used before realtime retargeting."""
+def validate_human_frame(frame: object) -> HumanFrameValidationResult:
+    """Validate HumanFrame numeric values before realtime retargeting."""
     if not isinstance(frame, dict):
         return HumanFrameValidationResult(False, reason="frame_not_dict", detail=f"type={type(frame)!r}")
 
-    max_pos = float(max_pos_value)
-    if not np.isfinite(max_pos) or max_pos <= 0.0:
-        return HumanFrameValidationResult(
-            False,
-            reason="invalid_max_position_value",
-            max_pos_value=max_pos,
-        )
-
+    max_frame_abs_pos: float | None = None
     for name, value in frame.items():
         joint_name = str(name)
         try:
@@ -41,7 +33,6 @@ def validate_human_frame(frame: object, *, max_pos_value: float) -> HumanFrameVa
                 False,
                 reason="joint_unpack_failed",
                 joint_name=joint_name,
-                max_pos_value=max_pos,
                 detail=str(exc),
             )
 
@@ -52,7 +43,6 @@ def validate_human_frame(frame: object, *, max_pos_value: float) -> HumanFrameVa
                 False,
                 reason="position_cast_failed",
                 joint_name=joint_name,
-                max_pos_value=max_pos,
                 detail=str(exc),
             )
         try:
@@ -63,13 +53,15 @@ def validate_human_frame(frame: object, *, max_pos_value: float) -> HumanFrameVa
                 reason="quaternion_cast_failed",
                 joint_name=joint_name,
                 pos=_to_tuple(pos_arr),
-                max_pos_value=max_pos,
                 detail=str(exc),
             )
 
         pos_tuple = _to_tuple(pos_arr)
         quat_tuple = _to_tuple(quat_arr)
         max_abs_pos = float(np.max(np.abs(pos_arr))) if pos_arr.size > 0 else 0.0
+        max_frame_abs_pos = (
+            max_abs_pos if max_frame_abs_pos is None else max(max_frame_abs_pos, max_abs_pos)
+        )
 
         if np.any(np.isnan(pos_arr)):
             return HumanFrameValidationResult(
@@ -79,7 +71,6 @@ def validate_human_frame(frame: object, *, max_pos_value: float) -> HumanFrameVa
                 pos=pos_tuple,
                 quat=quat_tuple,
                 max_abs_pos=max_abs_pos,
-                max_pos_value=max_pos,
             )
         if np.any(np.isinf(pos_arr)):
             return HumanFrameValidationResult(
@@ -89,17 +80,6 @@ def validate_human_frame(frame: object, *, max_pos_value: float) -> HumanFrameVa
                 pos=pos_tuple,
                 quat=quat_tuple,
                 max_abs_pos=max_abs_pos,
-                max_pos_value=max_pos,
-            )
-        if np.any(np.abs(pos_arr) > max_pos):
-            return HumanFrameValidationResult(
-                False,
-                reason="position_out_of_range",
-                joint_name=joint_name,
-                pos=pos_tuple,
-                quat=quat_tuple,
-                max_abs_pos=max_abs_pos,
-                max_pos_value=max_pos,
             )
         if np.any(np.isnan(quat_arr)):
             return HumanFrameValidationResult(
@@ -109,7 +89,6 @@ def validate_human_frame(frame: object, *, max_pos_value: float) -> HumanFrameVa
                 pos=pos_tuple,
                 quat=quat_tuple,
                 max_abs_pos=max_abs_pos,
-                max_pos_value=max_pos,
             )
         if np.any(np.isinf(quat_arr)):
             return HumanFrameValidationResult(
@@ -119,10 +98,9 @@ def validate_human_frame(frame: object, *, max_pos_value: float) -> HumanFrameVa
                 pos=pos_tuple,
                 quat=quat_tuple,
                 max_abs_pos=max_abs_pos,
-                max_pos_value=max_pos,
             )
 
-    return HumanFrameValidationResult(True, max_pos_value=max_pos)
+    return HumanFrameValidationResult(True, max_abs_pos=max_frame_abs_pos)
 
 
 def _to_tuple(values: np.ndarray) -> tuple[float, ...]:

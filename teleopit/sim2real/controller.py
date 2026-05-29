@@ -323,7 +323,6 @@ class Sim2RealController:
             if self._reference_timeline is not None
             else None
         )
-        mocap_sw = cfg_get(cfg, "mocap_switch", {})
         self._ref_proc = Sim2RealReferenceProcessor(
             obs_builder=self.obs_builder,
             policy=self.policy,
@@ -331,7 +330,6 @@ class Sim2RealController:
             num_actions=self.num_actions,
             reference_velocity_smoothing_alpha=rc.reference_velocity_smoothing_alpha,
             reference_anchor_velocity_smoothing_alpha=rc.reference_anchor_velocity_smoothing_alpha,
-            max_pos_value=float(cfg_get(mocap_sw, "max_position_value", 5.0)),
         )
         self._last_live_packet_seq = -1
 

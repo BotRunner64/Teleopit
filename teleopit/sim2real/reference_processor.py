@@ -15,6 +15,7 @@ from numpy.typing import NDArray
 
 from teleopit.controllers import reference_processing as ref_proc
 from teleopit.controllers.observation import VelCmdObservationBuilder
+from teleopit.inputs.human_frame_validation import validate_human_frame
 from teleopit.sim.realtime_utils import ExponentialVecSmoother
 from teleopit.sim.reference_timeline import ReferenceWindow
 
@@ -34,13 +35,11 @@ class Sim2RealReferenceProcessor:
         num_actions: int,
         reference_velocity_smoothing_alpha: float,
         reference_anchor_velocity_smoothing_alpha: float,
-        max_pos_value: float,
     ) -> None:
         self._obs_builder = obs_builder
         self._policy = policy
         self._policy_hz = policy_hz
         self._num_actions = num_actions
-        self._max_pos_value = max_pos_value
 
         # Yaw alignment state (lazy-init)
         self._fixed_reference_yaw_quat: Float32Array | None = None
@@ -77,14 +76,7 @@ class Sim2RealReferenceProcessor:
         return ref_proc.retarget_to_qpos(retargeted)
 
     def frame_is_valid(self, frame: dict[str, tuple[np.ndarray, np.ndarray]]) -> bool:
-        for pos, quat in frame.values():
-            if np.any(np.isnan(pos)) or np.any(np.isinf(pos)):
-                return False
-            if np.any(np.abs(pos) > self._max_pos_value):
-                return False
-            if np.any(np.isnan(quat)) or np.any(np.isinf(quat)):
-                return False
-        return True
+        return validate_human_frame(frame).valid
 
     # ------------------------------------------------------------------
     # Yaw alignment

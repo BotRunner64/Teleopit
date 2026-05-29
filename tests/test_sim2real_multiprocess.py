@@ -159,12 +159,12 @@ def test_human_frame_validation_rejects_bad_inputs() -> None:
     valid_frame = {
         "Pelvis": (np.zeros(3, dtype=np.float64), np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)),
     }
-    assert _human_frame_is_valid(valid_frame, max_pos_value=5.0)
+    assert _human_frame_is_valid(valid_frame)
 
     bad_frame = {
-        "Pelvis": (np.array([6.0, 0.0, 0.0], dtype=np.float64), np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)),
+        "Pelvis": (np.array([np.nan, 0.0, 0.0], dtype=np.float64), np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)),
     }
-    assert not _human_frame_is_valid(bad_frame, max_pos_value=5.0)
+    assert not _human_frame_is_valid(bad_frame)
 
 
 def test_robot_worker_requires_consecutive_valid_references(monkeypatch) -> None:

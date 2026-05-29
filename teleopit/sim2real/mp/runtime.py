@@ -117,8 +117,8 @@ def _worker_loop(name: str, fn: Callable[[], None]) -> None:
         raise
 
 
-def _human_frame_is_valid(frame: object, *, max_pos_value: float) -> bool:
-    return validate_human_frame(frame, max_pos_value=max_pos_value).valid
+def _human_frame_is_valid(frame: object) -> bool:
+    return validate_human_frame(frame).valid
 
 
 class MultiprocessSim2RealController:
@@ -366,8 +366,6 @@ def _run_retarget_worker(
             human_format=str(cfg_get(input_cfg, "human_format", "pico_bridge")),
             actual_human_height=float(cfg_get(input_cfg, "human_height", 1.75)),
         )
-        mocap_sw = cfg_get(cfg, "mocap_switch", {}) or {}
-        max_position_value = float(cfg_get(mocap_sw, "max_position_value", 5.0))
         body_sub = LatestSubscriber(endpoints.body_pub, BODY_TOPIC)
         health_sub = LatestSubscriber(endpoints.health_pub, HEALTH_TOPIC)
         command_sub = LatestSubscriber(endpoints.command_pub, COMMAND_TOPIC)
@@ -421,7 +419,7 @@ def _run_retarget_worker(
                 if not isinstance(packet, BodyFramePacket) or int(packet.seq) == last_body_seq:
                     continue
                 start_s = time.monotonic()
-                frame_valid = _human_frame_is_valid(packet.frame, max_pos_value=max_position_value)
+                frame_valid = _human_frame_is_valid(packet.frame)
                 if not frame_valid:
                     last_body_seq = int(packet.seq)
                     last_body_timestamp_s = None
@@ -527,7 +525,6 @@ class _RobotControlWorker:
             policy_dt_s=self.dt,
             reference_steps=cfg_get(cfg, "reference_steps", [0]),
         )
-        mocap_sw = cfg_get(cfg, "mocap_switch", {}) or {}
         self._ref_proc = Sim2RealReferenceProcessor(
             obs_builder=self.obs_builder,
             policy=self.policy,
@@ -535,7 +532,6 @@ class _RobotControlWorker:
             num_actions=self.num_actions,
             reference_velocity_smoothing_alpha=self._ref_cfg.reference_velocity_smoothing_alpha,
             reference_anchor_velocity_smoothing_alpha=self._ref_cfg.reference_anchor_velocity_smoothing_alpha,
-            max_pos_value=float(cfg_get(mocap_sw, "max_position_value", 5.0)),
         )
 
         self._standing_qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
