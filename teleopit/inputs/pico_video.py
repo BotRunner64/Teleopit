@@ -82,6 +82,13 @@ class PicoVideoRuntime:
     def enabled(self) -> bool:
         return self._config.enabled
 
+    @property
+    def pushed_frames(self) -> int:
+        producer = self._producer
+        if producer is None:
+            return 0
+        return int(getattr(producer, "pushed_frames", 0))
+
     def start(self) -> None:
         if not self._config.enabled:
             return
@@ -152,6 +159,11 @@ class _RealSenseVideoProducer(_VideoProducer):
         self._ready_event = threading.Event()
         self._thread = threading.Thread(target=self._run, name="pico_realsense_video", daemon=True)
         self._error: BaseException | None = None
+        self._pushed_frames = 0
+
+    @property
+    def pushed_frames(self) -> int:
+        return int(self._pushed_frames)
 
     def start(self) -> None:
         self._thread.start()
@@ -194,7 +206,7 @@ class _RealSenseVideoProducer(_VideoProducer):
                     if not color_frame:
                         continue
                     rgb = np.ascontiguousarray(np.asanyarray(color_frame.get_data()), dtype=np.uint8)
-                    self._provider.push_video_frame(rgb)
+                    self._pushed_frames = int(self._provider.push_video_frame(rgb))
             finally:
                 pipeline.stop()
         except BaseException as exc:
@@ -211,6 +223,11 @@ class _MujocoCameraVideoProducer(_VideoProducer):
         self._renderer: Any | None = None
         self._next_frame_time = 0.0
         self._camera_name = "d435i_rgb"
+        self._pushed_frames = 0
+
+    @property
+    def pushed_frames(self) -> int:
+        return int(self._pushed_frames)
 
     def start(self) -> None:
         if self._robot is None:
@@ -236,7 +253,7 @@ class _MujocoCameraVideoProducer(_VideoProducer):
             raise RuntimeError("MuJoCo Pico video requires robot.data")
         self._renderer.update_scene(data, camera=self._camera_name)
         frame = np.ascontiguousarray(self._renderer.render(), dtype=np.uint8)
-        self._provider.push_video_frame(frame)
+        self._pushed_frames = int(self._provider.push_video_frame(frame))
         self._next_frame_time = now + 1.0 / float(self._config.fps)
 
     def stop(self) -> None:

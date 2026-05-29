@@ -16,7 +16,7 @@ from teleopit.constants import FULL_QPOS_DIM, NUM_JOINTS, ROOT_DIM
 from teleopit.controllers.observation import VelCmdObservationBuilder, align_motion_qpos_yaw
 from teleopit.controllers.rl_policy import RLPolicyController
 from teleopit.inputs.pico4_provider import Pico4InputProvider
-from teleopit.inputs.pico_video import bridge_video_source, parse_pico_video_config
+from teleopit.inputs.pico_video import PicoVideoRuntime, bridge_video_source, parse_pico_video_config
 from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.runtime.common import cfg_get, require_section
@@ -58,7 +58,7 @@ from teleopit.sim2real.mp.messages import (
     SharedFrameDescriptor,
     SnapshotPacket,
 )
-from teleopit.sim2real.mp.shm import SharedFrameRingReader, SharedFrameRingWriter
+from teleopit.sim2real.mp.shm import SharedFrameRingWriter
 from teleopit.sim2real.reference_processor import Sim2RealReferenceProcessor
 from teleopit.sim2real.remote import UnitreeRemote
 from teleopit.sim2real.safety import Sim2RealSafetyManager
@@ -208,11 +208,8 @@ class MultiprocessSim2RealController:
         if hand_mode != "off":
             specs.append(("hand_worker", _run_hand_worker))
         video_cfg = parse_pico_video_config(cfg_get(self.cfg, "input", {}))
-        if video_cfg.enabled and video_cfg.source not in (None, "test-pattern"):
-            specs.append(("video_worker", _run_video_worker))
-        elif video_cfg.enabled and video_cfg.source == "test-pattern":
-            # pico-bridge can generate test-pattern internally without a camera worker.
-            logger.info("Pico video test-pattern uses pico_bridge internal source")
+        if video_cfg.enabled:
+            logger.info("Pico video runs inside pico_io so frames are pushed directly to PicoBridge")
 
         for name, target in specs:
             process = self._ctx.Process(
@@ -255,12 +252,11 @@ def _run_pico_io_worker(
         events_pub = ZmqPublisher(endpoints.control_events_pub)
         health_pub = ZmqPublisher(endpoints.health_pub)
         command_sub = LatestSubscriber(endpoints.command_pub, COMMAND_TOPIC)
-        video_sub = (
-            LatestSubscriber(endpoints.video_pub, VIDEO_TOPIC)
-            if video_cfg.enabled and video_cfg.source not in (None, "test-pattern")
-            else None
+        video_runtime = PicoVideoRuntime(
+            provider=provider,
+            config=video_cfg,
+            mode="sim2real",
         )
-        frame_reader = SharedFrameRingReader()
 
         hz = float(cfg_get(_mp_cfg(cfg), "pico_io_hz", 120.0))
         sleep_s = 1.0 / max(hz, 1.0)
@@ -270,7 +266,9 @@ def _run_pico_io_worker(
         last_video_seq = -1
         last_health_s = 0.0
         try:
+            video_runtime.start()
             while not stop_event.is_set():
+                video_runtime.tick()
                 command = command_sub.recv_latest()
                 if isinstance(command, CommandPacket) and command.command == "shutdown":
                     stop_event.set()
@@ -321,15 +319,8 @@ def _run_pico_io_worker(
                     )
                     last_hand_seq = int(hand_snapshot.seq)
 
-                if video_sub is not None:
-                    descriptor = video_sub.recv_latest()
-                    if isinstance(descriptor, SharedFrameDescriptor):
-                        try:
-                            frame = frame_reader.read(descriptor, copy=False)
-                            provider.push_video_frame(np.asarray(frame, dtype=np.uint8))
-                            last_video_seq = int(descriptor.seq)
-                        except Exception as exc:
-                            logger.warning("Pico video frame dropped: %s", exc)
+                if video_cfg.enabled:
+                    last_video_seq = int(video_runtime.pushed_frames)
 
                 if now - last_health_s >= 1.0:
                     health_pub.publish(
@@ -349,9 +340,7 @@ def _run_pico_io_worker(
                     last_health_s = now
                 time.sleep(sleep_s)
         finally:
-            frame_reader.close()
-            if video_sub is not None:
-                video_sub.close()
+            video_runtime.stop()
             command_sub.close()
             for publisher in (body_pub, hand_pub, controller_pub, events_pub, health_pub):
                 publisher.close()
