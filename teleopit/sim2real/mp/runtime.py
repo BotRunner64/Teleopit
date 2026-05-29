@@ -15,6 +15,7 @@ from numpy.typing import NDArray
 from teleopit.constants import FULL_QPOS_DIM, NUM_JOINTS, ROOT_DIM
 from teleopit.controllers.observation import VelCmdObservationBuilder, align_motion_qpos_yaw
 from teleopit.controllers.rl_policy import RLPolicyController
+from teleopit.inputs.human_frame_validation import validate_human_frame
 from teleopit.inputs.pico4_provider import Pico4InputProvider
 from teleopit.inputs.pico_video import PicoVideoRuntime, bridge_video_source, parse_pico_video_config
 from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType
@@ -117,25 +118,7 @@ def _worker_loop(name: str, fn: Callable[[], None]) -> None:
 
 
 def _human_frame_is_valid(frame: object, *, max_pos_value: float) -> bool:
-    if not isinstance(frame, dict):
-        return False
-    max_pos = float(max_pos_value)
-    if not np.isfinite(max_pos) or max_pos <= 0.0:
-        return False
-    for value in frame.values():
-        try:
-            pos, quat = value
-        except Exception:
-            return False
-        pos_arr = np.asarray(pos, dtype=np.float64).reshape(-1)
-        quat_arr = np.asarray(quat, dtype=np.float64).reshape(-1)
-        if np.any(np.isnan(pos_arr)) or np.any(np.isinf(pos_arr)):
-            return False
-        if np.any(np.abs(pos_arr) > max_pos):
-            return False
-        if np.any(np.isnan(quat_arr)) or np.any(np.isinf(quat_arr)):
-            return False
-    return True
+    return validate_human_frame(frame, max_pos_value=max_pos_value).valid
 
 
 class MultiprocessSim2RealController:
