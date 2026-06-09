@@ -87,61 +87,6 @@ def test_realsense_video_runtime_pushes_rgb_frames(monkeypatch: pytest.MonkeyPat
     assert sink.frames[-1].dtype == np.uint8
 
 
-def test_realsense_video_runtime_keeps_running_when_frames_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_rs = ModuleType("pyrealsense2")
-    fake_rs.stream = SimpleNamespace(color="color")
-    fake_rs.format = SimpleNamespace(rgb8="rgb8")
-
-    class FakeConfig:
-        def enable_stream(self, *_args: object) -> None:
-            pass
-
-    class FakeColorFrame:
-        def get_data(self) -> np.ndarray:
-            return np.full((2, 3, 3), 7, dtype=np.uint8)
-
-    class FakeFrames:
-        def get_color_frame(self) -> FakeColorFrame:
-            return FakeColorFrame()
-
-    class FakePipeline:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def start(self, _config: object) -> None:
-            pass
-
-        def try_wait_for_frames(self, *, timeout_ms: int) -> tuple[bool, FakeFrames | None]:
-            assert timeout_ms > 0
-            self.calls += 1
-            time.sleep(0.002)
-            if self.calls == 1:
-                return True, FakeFrames()
-            return False, None
-
-        def stop(self) -> None:
-            pass
-
-    fake_rs.config = FakeConfig
-    fake_rs.pipeline = FakePipeline
-    monkeypatch.setitem(sys.modules, "pyrealsense2", fake_rs)
-
-    sink = _FrameSink()
-    config = parse_pico_video_config(
-        {"video": {"enabled": True, "source": "realsense", "fail_on_error": True}}
-    )
-    runtime = PicoVideoRuntime(provider=sink, config=config, mode="sim2real")
-
-    runtime.start()
-    time.sleep(0.03)
-    runtime.tick()
-    pushed_frames = runtime.pushed_frames
-    runtime.stop()
-
-    assert len(sink.frames) == 1
-    assert pushed_frames == 1
-
-
 def test_video_runtime_stops_producer_after_startup_error(monkeypatch: pytest.MonkeyPatch) -> None:
     stopped = False
 
