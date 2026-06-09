@@ -6,8 +6,7 @@ import hydra
 from omegaconf import DictConfig
 
 from teleopit.runtime.cli import validate_policy_path
-from teleopit.sim2real.mp import MultiprocessSim2RealController, resolve_sim2real_runtime_mode
-from teleopit.sim2real.controller import Sim2RealController
+from teleopit.sim2real.mp import Sim2RealRuntime
 
 
 def _print_sim2real_controls(cfg: DictConfig) -> None:
@@ -19,7 +18,7 @@ def _print_sim2real_controls(cfg: DictConfig) -> None:
     print("  Remote L1+R1: DAMPING / estop.")
     if provider == "pico4":
         print("  Mocap pause/resume: Pico/controller A.")
-        print("  Dexterous hand: dexterous_hand.mode=off|gripper|vr_hand_pose (default off).")
+        print("  Dexterous hand: hands.enabled=true hands.mode=gripper|vr_hand_pose.")
     else:
         print("  Offline playback: A pause/resume, B replay from start.")
     print("  State flow: IDLE -> STANDING -> MOCAP -> STANDING, Any -> DAMPING.")
@@ -32,15 +31,10 @@ def main(cfg: DictConfig) -> None:
 
 def _run_sim2real(cfg: DictConfig) -> None:
     validate_policy_path(cfg, "run_sim2real.py")
-    runtime_mode = resolve_sim2real_runtime_mode(cfg)
-    controller = (
-        MultiprocessSim2RealController(cfg)
-        if runtime_mode == "multiprocess"
-        else Sim2RealController(cfg)
-    )
+    controller = Sim2RealRuntime(cfg)
     if cfg.input.get("provider") == "pico4":
         print("Waiting for Pico4 body tracking data...")
-        print(f"Sim2real runtime: {runtime_mode}")
+    print("Sim2real runtime: multiprocess")
     _print_sim2real_controls(cfg)
     try:
         controller.run()

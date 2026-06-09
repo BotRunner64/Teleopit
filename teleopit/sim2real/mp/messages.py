@@ -32,6 +32,8 @@ class ReferencePacket:
     frame_valid: bool = True
     reference_window: ReferenceWindow | None = None
     retarget_elapsed_s: float = 0.0
+    playback_paused: bool = False
+    playback_finished: bool = False
 
 
 @dataclass(frozen=True)

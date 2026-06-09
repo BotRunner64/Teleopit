@@ -9,26 +9,31 @@ import pytest
 
 from teleopit.runtime.mocap_session import MocapSessionState
 from teleopit.sim2real.mp.ipc import HEALTH_TOPIC, LatestSubscriber, ZmqPublisher
-from teleopit.sim2real.mp import resolve_sim2real_runtime_mode
 from teleopit.sim2real.mp.messages import ReferencePacket, SharedFrameDescriptor
-from teleopit.sim2real.mp.runtime import MultiprocessSim2RealController, _RobotControlWorker, _human_frame_is_valid
+from teleopit.sim2real.mp.runtime import RobotMode, Sim2RealRuntime, _RobotControlWorker, _human_frame_is_valid
 from teleopit.sim2real.mp.shm import SharedFrameRingReader, SharedFrameRingWriter
 
 
-def test_resolve_runtime_auto_uses_multiprocess_for_pico4() -> None:
+def test_sim2real_runtime_rejects_legacy_runtime_keys() -> None:
     cfg = {"sim2real_runtime": "auto", "input": {"provider": "pico4"}}
-    assert resolve_sim2real_runtime_mode(cfg) == "multiprocess"
+    with pytest.raises(ValueError, match="Legacy sim2real config keys"):
+        Sim2RealRuntime(cfg)
 
 
-def test_resolve_runtime_auto_uses_single_process_for_bvh() -> None:
-    cfg = {"sim2real_runtime": "auto", "input": {"provider": "bvh"}}
-    assert resolve_sim2real_runtime_mode(cfg) == "single_process"
+def test_sim2real_runtime_accepts_bvh_provider() -> None:
+    cfg = {"input": {"provider": "bvh"}, "runtime": {"shutdown_timeout_s": 0.01}}
+    runtime = Sim2RealRuntime(cfg)
+    runtime.shutdown()
 
 
-def test_multiprocess_requires_pico4_provider() -> None:
-    cfg = {"sim2real_runtime": "multiprocess", "input": {"provider": "bvh"}}
-    with pytest.raises(ValueError, match="requires input.provider=pico4"):
-        resolve_sim2real_runtime_mode(cfg)
+def test_sim2real_runtime_rejects_hands_without_pico_provider() -> None:
+    cfg = {
+        "input": {"provider": "bvh"},
+        "runtime": {"shutdown_timeout_s": 0.01},
+        "hands": {"enabled": True, "driver": "linkerhand_l6", "mode": "gripper"},
+    }
+    with pytest.raises(ValueError, match="hands.enabled=true requires input.provider=pico4"):
+        Sim2RealRuntime(cfg)
 
 
 def test_shared_frame_ring_roundtrip() -> None:
@@ -51,11 +56,11 @@ def test_shared_frame_ring_roundtrip() -> None:
 
 def test_multiprocess_rejects_unsupported_video_source() -> None:
     cfg = {
-        "sim2real_runtime": "multiprocess",
         "input": {"provider": "pico4", "video": {"enabled": True, "source": "mujoco"}},
+        "runtime": {},
     }
     with pytest.raises(ValueError, match="only supports input.video.source=realsense or test-pattern"):
-        MultiprocessSim2RealController(cfg)
+        Sim2RealRuntime(cfg)
 
 
 def test_zmq_endpoint_allows_one_publisher_and_subscribers() -> None:
@@ -74,7 +79,7 @@ def test_zmq_endpoint_allows_one_publisher_and_subscribers() -> None:
         context.term()
 
 
-def test_run_sim2real_single_process_shutdowns_on_exception(monkeypatch) -> None:
+def test_run_sim2real_shutdowns_on_exception(monkeypatch) -> None:
     script_path = Path.cwd() / "scripts" / "run" / "run_sim2real.py"
     spec = importlib.util.spec_from_file_location("test_run_sim2real", script_path)
     assert spec is not None and spec.loader is not None
@@ -83,7 +88,7 @@ def test_run_sim2real_single_process_shutdowns_on_exception(monkeypatch) -> None
 
     calls: list[str] = []
 
-    class FailingController:
+    class FailingRuntime:
         def __init__(self, _cfg: object) -> None:
             calls.append("init")
 
@@ -99,8 +104,7 @@ def test_run_sim2real_single_process_shutdowns_on_exception(monkeypatch) -> None
         controller=SimpleNamespace(policy_path="policy.onnx"),
     )
     monkeypatch.setattr(run_sim2real, "validate_policy_path", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(run_sim2real, "resolve_sim2real_runtime_mode", lambda _cfg: "single_process")
-    monkeypatch.setattr(run_sim2real, "Sim2RealController", FailingController)
+    monkeypatch.setattr(run_sim2real, "Sim2RealRuntime", FailingRuntime)
 
     with pytest.raises(RuntimeError, match="boom"):
         run_sim2real._run_sim2real(cfg)
@@ -132,19 +136,18 @@ def test_multiprocess_run_cleans_up_after_start_failure(monkeypatch) -> None:
         def terminate(self) -> None:
             self.terminated = True
 
-    started_process = FakeProcess(name="pico_io")
+    started_process = FakeProcess(name="pico_input")
 
-    def fake_start_processes(self: MultiprocessSim2RealController) -> None:
+    def fake_start_processes(self: Sim2RealRuntime) -> None:
         started_process.started = True
         self._processes.append(started_process)
         raise RuntimeError("start failed")
 
     cfg = {
-        "sim2real_runtime": "multiprocess",
         "input": {"provider": "pico4"},
-        "multiprocess": {"shutdown_timeout_s": 0.01},
+        "runtime": {"shutdown_timeout_s": 0.01},
     }
-    controller = MultiprocessSim2RealController(cfg)
+    controller = Sim2RealRuntime(cfg)
     monkeypatch.setattr(controller, "_start_processes", fake_start_processes.__get__(controller))
 
     with pytest.raises(RuntimeError, match="start failed"):
@@ -203,6 +206,7 @@ def test_robot_worker_requires_consecutive_valid_references(monkeypatch) -> None
     worker._consecutive_valid_references = 0
     worker._check_frames = 2
     worker._max_reference_age_s = 0.25
+    worker.provider_kind = "pico4"
     worker._reference_age_s = lambda: 0.0
     worker._mocap_session = SimpleNamespace(state=MocapSessionState.ACTIVE)
     worker._last_commanded_motion_qpos = np.zeros(36, dtype=np.float64)
@@ -255,3 +259,51 @@ def test_robot_worker_requires_consecutive_valid_references(monkeypatch) -> None
     worker._note_reference_packet(fresh_packet)
     assert worker._latest_reference == fresh_packet
     assert worker._consecutive_valid_references == 1
+
+
+def test_robot_worker_replays_bvh_on_mocap_entry() -> None:
+    worker = object.__new__(_RobotControlWorker)
+    commands: list[str] = []
+    worker.provider_kind = "bvh"
+    worker.robot = SimpleNamespace(get_state=lambda: SimpleNamespace())
+    worker._standing_qpos = np.zeros(36, dtype=np.float64)
+    worker._mocap_reentry_armed = True
+    worker._reset_policy_state = lambda: None
+    worker._build_resume_alignment_qpos = lambda _hold, _state: np.ones(36, dtype=np.float64)
+    worker._ref_proc = SimpleNamespace(reset_alignment=lambda **_kwargs: None)
+    worker._send_reference_command = commands.append
+
+    worker._transition_to_mocap()
+
+    assert worker.mode == RobotMode.MOCAP
+    assert commands == ["replay_mocap"]
+
+
+def test_robot_worker_pauses_when_bvh_reference_reports_paused() -> None:
+    worker = object.__new__(_RobotControlWorker)
+    worker.provider_kind = "bvh"
+    worker.mode = RobotMode.MOCAP
+    worker._mocap_session = SimpleNamespace(state=MocapSessionState.ACTIVE)
+    worker._last_reference_seq = -1
+    worker._consecutive_valid_references = 0
+    paused: list[str] = []
+
+    def pause_active_mocap() -> None:
+        paused.append("pause")
+        worker._mocap_session.state = MocapSessionState.PAUSED
+
+    worker._pause_active_mocap = pause_active_mocap
+    packet = ReferencePacket(
+        qpos=np.zeros(36, dtype=np.float64),
+        timestamp_s=1.0,
+        seq=1,
+        source_timestamp_s=0.0,
+        source_seq=0,
+        playback_paused=True,
+        playback_finished=True,
+    )
+
+    worker._note_reference_packet(packet)
+
+    assert paused == ["pause"]
+    assert worker._latest_reference is packet

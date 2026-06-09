@@ -1,7 +1,7 @@
 """Shared reference-window / realtime-buffer configuration.
 
 Parsed once from the top-level config and consumed by both
-``SimulationLoop`` and ``Sim2RealController``.
+``SimulationLoop`` and the process-isolated sim2real runtime.
 """
 
 from __future__ import annotations

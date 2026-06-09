@@ -146,13 +146,12 @@ Pico sim2real can drive LinkerHand L6 hands in two modes:
 
 - `gripper`: hold the matching side grip as a deadman switch; the matching
   trigger closes that hand. This mode uses the configured
-  `dexterous_hand.speed`, which defaults to 50.
+  `hands.linkerhand_l6.speed`, which defaults to 50.
 - `vr_hand_pose`: retarget Pico hand pose through somehand and command the
   continuous L6 hand target. If a hand pose disappears, that side keeps its last
-  commanded pose. This mode currently uses `hand_type=both` and always sets L6
-  speed to the maximum. The default configuration uses a low-latency somehand
-  path at 60 Hz with reduced smoothing, so it should feel more responsive but
-  can be noisier than the standard somehand settings.
+  commanded pose. This mode uses Teleopit's Pico landmark adapter and the
+  public `somehand.api` from somehand 0.2.0. It always sets L6 speed to the
+  maximum.
 
 Hand control is active only in `MOCAP`. It sends the open pose in `STANDING`,
 `DAMPING`, paused mocap, and shutdown.
@@ -185,18 +184,19 @@ python scripts/dev/test_linkerhand_l6.py \
 Then enable L6 control in Pico sim2real:
 
 ```bash
-dexterous_hand.mode=gripper
-dexterous_hand.left_can=can0
-dexterous_hand.right_can=can1
+hands.enabled=true
+hands.mode=gripper
+hands.linkerhand_l6.left_can=can0
+hands.linkerhand_l6.right_can=can1
 ```
 
 For continuous VR hand-pose control, use:
 
 ```bash
-dexterous_hand.mode=vr_hand_pose
-dexterous_hand.hand_type=both
-dexterous_hand.left_can=can0
-dexterous_hand.right_can=can1
+hands.enabled=true
+hands.mode=vr_hand_pose
+hands.linkerhand_l6.left_can=can0
+hands.linkerhand_l6.right_can=can1
 ```
 
 ## Optional RealSense Preview
@@ -233,7 +233,8 @@ mocap_switch.check_frames=10
 input.pause_button=right_axis_click
 
 # Enable LinkerHand L6 control
-dexterous_hand.mode=gripper
+hands.enabled=true
+hands.mode=gripper
 
 # Enable headset video preview
 input.video.enabled=true
@@ -248,5 +249,5 @@ input.video.enabled=true
 | Cannot enter debug mode | Unitree mode release failed | Stop other robot modes and press `Start` again |
 | Robot enters `STANDING` but not `MOCAP` | Mocap validation failed | Keep tracking active and stable; check `mocap_switch.check_frames` logs |
 | Pico pause does not return to `STANDING` | Expected behavior | Pico pause freezes mocap; press remote `X` for `STANDING` |
-| LinkerHand does not move | Mode is `off`, not in `MOCAP`, gripper deadman released, SDK/assets not installed, or CAN channel wrong | Set `dexterous_hand.mode`, enter `MOCAP`, run `scripts/dev/test_linkerhand_l6.py`, and check `dexterous_hand.left_can` / `right_can` |
+| LinkerHand does not move | `hands.enabled=false`, not in `MOCAP`, gripper deadman released, SDK/assets not installed, or CAN channel wrong | Enable `hands.enabled`, enter `MOCAP`, run `scripts/dev/test_linkerhand_l6.py`, and check `hands.linkerhand_l6.left_can` / `right_can` |
 | Video preview is unavailable | RealSense or video source failed | Check camera permissions, `input.video.source`, and logs |

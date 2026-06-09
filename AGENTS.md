@@ -55,8 +55,8 @@ teleopit/                 # Core inference package
 ├── sim/
 │   └── loop.py           # SimulationLoop — PD control at 1000Hz, policy at 50Hz
 ├── sim2real/
-│   ├── controller.py     # G1 state machine and hardware control loop
-│   └── dexterous_hand.py # Optional Pico gripper / VR hand pose → LinkerHand L6 runtime
+│   ├── mp/               # Process-isolated sim2real runtime and IPC
+│   └── hands/            # Optional LinkerHand L6 driver/mapper plugins
 └── recording/            # HDF5Recorder
 scripts/
 ├── run_sim.py            # Offline sim2sim pipeline
@@ -140,13 +140,14 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - Pico sim2sim supports a keyboard-driven top-level mode state machine: `STANDING → MOCAP → STANDING`
 - Default Pico sim2sim keyboard mappings are `Y` → `MOCAP`, `A` → pause/resume mocap, `X` → back to `STANDING`, `Q` → quit
 - Pico4 sim2real pause/resume is handled as a mocap-session control event (`toggle_pause`), not as a mode switch to `STANDING`
-- Default Pico pause button is `A`; resume rebuilds the realtime buffer and yaw/XY root-offset alignment, then waits for the configured realtime warmup before tracking continues
-- Realtime mode switches and pause/resume use a retargeter-preserving soft reset: policy/reference history, smoothers, realtime buffers, and reference alignment are reset, while the GMR IK warm-start is retained
-- Optional LinkerHand L6 control uses `dexterous_hand.mode=off|gripper|vr_hand_pose`; default is `off`
+- Default Pico pause button is `A`; resume resets policy/reference state and yaw/XY root-offset alignment while the process-isolated realtime reference worker continues its live input timeline
+- Realtime mode switches and pause/resume use a retargeter-preserving soft reset: policy/reference state, smoothers, and reference alignment are reset, while the GMR IK warm-start is retained
+- Optional LinkerHand L6 control uses `hands.enabled=true` and `hands.mode=gripper|vr_hand_pose`; default is disabled
 - `gripper` mode reuses `Pico4InputProvider.get_controller_snapshot()` for Pico grip/trigger open-close control
-- `vr_hand_pose` mode reuses `Pico4InputProvider.get_hand_snapshot()` and `somehand` for continuous Pico hand-pose retargeting; do not start a second `PicoBridge` for hand control
-- `gripper` mode uses the configured `dexterous_hand.speed` (default `[50]*6`); `vr_hand_pose` always sets LinkerHand L6 speed to `[255]*6`
-- `vr_hand_pose` defaults to a low-latency somehand path: `dexterous_hand.somehand.rate=60`, `threaded=true`, `max_iterations=12`, `temporal_filter_alpha=1.0`, and `output_alpha=1.0`; this prioritizes response speed over smoothing
+- `vr_hand_pose` mode reuses `Pico4InputProvider.get_hand_snapshot()` and somehand 0.2.0 public `somehand.api` for continuous Pico hand-pose retargeting; do not start a second `PicoBridge` for hand control
+- Teleopit owns Pico 26-joint hand-state to 21-landmark conversion; do not import `somehand.pico_input`
+- `gripper` mode uses the configured `hands.linkerhand_l6.speed` (default `[50]*6`); `vr_hand_pose` always sets LinkerHand L6 speed to `[255]*6`
+- `vr_hand_pose` defaults to a low-latency somehand path: `hands.somehand.rate_hz=60`, `max_iterations=12`, `temporal_filter_alpha=1.0`, and `output_alpha=1.0`; this prioritizes response speed over smoothing
 - LinkerHand L6 control is active only in sim2real `MOCAP`; `STANDING`, `DAMPING`, mocap pause, and shutdown must send the configured open pose
 - In `vr_hand_pose` mode, missing/inactive hand pose holds the last commanded pose for that side instead of opening the hand
 
@@ -157,7 +158,7 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - BVH frame alignment is time-based: `bvh_idx = int(policy_time × input_fps)`
 - Realtime reference buffering is controlled by `retarget_buffer_enabled`, `retarget_buffer_window_s`, `retarget_buffer_delay_s`, `reference_steps`, and `realtime_buffer_warmup_steps`
 - Realtime inferred `motion_joint_vel`, anchor linear velocity, and anchor angular velocity can be EMA-smoothed via `reference_velocity_smoothing_alpha` and `reference_anchor_velocity_smoothing_alpha`
-- Sim2real Pico pause/resume uses mocap-session states `ACTIVE ↔ PAUSED`; resume clears policy/reference state, rebuilds yaw/XY root alignment, warms the realtime buffer, and does not interpolate retarget qpos from the paused pose
+- Sim2real Pico pause/resume uses mocap-session states `ACTIVE ↔ PAUSED`; resume clears policy/reference state, rebuilds yaw/XY root alignment, and does not interpolate retarget qpos from the paused pose
 - Realtime sim2sim with Pico control events uses the same mocap-session pause/resume semantics and rebuilds the realtime reference path on resume, including the configured warmup
 - Realtime sim2sim/sim2real `STANDING ↔ MOCAP` transitions use the same retargeter-preserving soft reset, rather than cold-starting the retargeter from its default qpos
 - Realtime Pico sim2sim can start directly in `STANDING` with keyboard mode control enabled via top-level `keyboard.enabled`

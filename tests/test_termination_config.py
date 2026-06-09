@@ -23,7 +23,7 @@ def test_general_tracking_termination_config_matches_baseline_policy() -> None:
     assert anchor_pos.func is mdp.bad_anchor_pos_z_only
     assert anchor_pos.params == {
         "command_name": "motion",
-        "threshold": 0.4,
+        "threshold": 0.25,
     }
 
     anchor_ori = terminations["anchor_ori"]
@@ -34,7 +34,7 @@ def test_general_tracking_termination_config_matches_baseline_policy() -> None:
     assert ee_body_pos.func is mdp.bad_motion_body_pos_z_only
     assert ee_body_pos.params == {
         "command_name": "motion",
-        "threshold": 0.4,
+        "threshold": 0.25,
         "body_names": (
             "left_ankle_roll_link",
             "right_ankle_roll_link",

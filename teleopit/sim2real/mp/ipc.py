@@ -32,6 +32,7 @@ class Sim2RealIpcEndpoints:
     video_pub: str
     health_pub: str
     command_pub: str
+    reference_command_pub: str
 
 
 def default_endpoints(*, host: str = "127.0.0.1", base_port: int = 39700) -> Sim2RealIpcEndpoints:
@@ -47,6 +48,7 @@ def default_endpoints(*, host: str = "127.0.0.1", base_port: int = 39700) -> Sim
         video_pub=f"{prefix}{base_port + 6}",
         health_pub=f"{prefix}{base_port + 7}",
         command_pub=f"{prefix}{base_port + 8}",
+        reference_command_pub=f"{prefix}{base_port + 9}",
     )
 
 

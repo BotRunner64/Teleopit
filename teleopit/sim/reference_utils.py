@@ -1,6 +1,6 @@
 """Shared reference-window utilities used by both offline simulation and sim2real.
 
-These are pure functions extracted from ``SimLoop`` and ``Sim2RealController`` to avoid
+These are pure functions extracted from ``SimLoop`` and sim2real runtime code to avoid
 code duplication.  Each function takes explicit arguments instead of ``self``.
 """
 

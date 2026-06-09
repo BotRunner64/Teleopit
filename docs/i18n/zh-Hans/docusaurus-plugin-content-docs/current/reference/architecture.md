@@ -43,7 +43,7 @@ teleopit/
 | 接口层 | `interfaces.py` | 定义所有核心抽象接口，模块间仅通过接口通信 |
 | 运行时 | `runtime/` | Hydra 配置加载、对象组装、依赖注入 |
 | Pipeline | `pipeline/` | 数据流编排，驱动每一帧的采样-推理-执行循环 |
-| Sim2Real | `sim2real/` | 实机通信适配（DDS 桥接、状态同步） |
+| Sim2Real | `sim2real/mp/` | 进程隔离的实机状态机、IPC 与机器人控制循环 |
 | 观测 | `observation/` | 从仿真/实机状态构建策略所需的观测向量 |
 | 策略 | `rl_policy/` | ONNX 模型加载与推理，action 后处理 |
 | 入口 | `app.py` | 命令行入口，调用 runtime 装配并启动 pipeline |

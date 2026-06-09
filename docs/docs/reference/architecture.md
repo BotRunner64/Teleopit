@@ -16,7 +16,7 @@ InputProvider (BVH file / Pico4)
     -> Robot (MuJoCo sim or Unitree G1)
 ```
 
-Offline/online inference is assembled by `teleopit/runtime/` and `teleopit/pipeline.py`. The hardware state machine lives in `teleopit/sim2real/controller.py`. Training is provided by `train_mimic/`.
+Offline/online inference is assembled by `teleopit/runtime/` and `teleopit/pipeline.py`. The hardware state machine runs through the process-isolated runtime in `teleopit/sim2real/mp/`. Training is provided by `train_mimic/`.
 
 ## Code Structure
 
@@ -43,7 +43,7 @@ train_mimic/scripts/data
 | `teleopit/interfaces.py` | Stable protocols: InputProvider, Retargeter, Controller, Robot, ObservationBuilder, Recorder |
 | `teleopit/runtime/` | Config parsing, path normalization, component assembly, CLI validation |
 | `teleopit/pipeline.py` | Lightweight facade for offline sim |
-| `teleopit/sim2real/controller.py` | Hardware state machine and control logic |
+| `teleopit/sim2real/mp/` | Process-isolated sim2real state machine, IPC, and robot-control loop |
 | `teleopit/controllers/observation.py` | ObservationBuilder |
 | `teleopit/controllers/rl_policy.py` | Only accepts 166D dual-input ONNX |
 | `train_mimic/app.py` | Shared train/play/benchmark assembly |

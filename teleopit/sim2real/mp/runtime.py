@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import multiprocessing as mp
 from multiprocessing.synchronize import Event as MpEvent
+from enum import Enum
 from pathlib import Path
 import time
 from typing import Any, Callable
@@ -15,25 +16,27 @@ from numpy.typing import NDArray
 from teleopit.constants import FULL_QPOS_DIM, NUM_JOINTS, ROOT_DIM
 from teleopit.controllers.observation import VelCmdObservationBuilder, align_motion_qpos_yaw
 from teleopit.controllers.rl_policy import RLPolicyController
+from teleopit.inputs.bvh_provider import BVHInputProvider
 from teleopit.inputs.human_frame_validation import validate_human_frame
 from teleopit.inputs.pico4_provider import Pico4InputProvider
 from teleopit.inputs.pico_video import PicoVideoRuntime, bridge_video_source, parse_pico_video_config
 from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType
 from teleopit.retargeting.core import RetargetingModule
-from teleopit.runtime.common import cfg_get, require_section
+from teleopit.runtime.offline_playback import OfflinePlaybackController
+from teleopit.runtime.common import cfg_get, parse_viewers, require_section
 from teleopit.runtime.factory import _build_policy_components, build_simulation_cfg
 from teleopit.runtime.mocap_session import MocapSessionManager, MocapSessionState
 from teleopit.runtime.reference_config import parse_reference_config
+from teleopit.sim.reference_motion import OfflineReferenceMotion
 from teleopit.sim.reference_timeline import ReferenceTimeline, ReferenceWindow, ReferenceWindowBuilder
-from teleopit.sim.reference_utils import build_static_reference_window, obs_builder_requires_reference_window
-from teleopit.sim.realtime_utils import RealtimeReferenceManager
-from teleopit.sim2real.controller import (
-    RobotMode,
-    _LoopTimingReporter,
-    _parse_sim2real_viewers,
-    _Sim2RealRetargetViewer,
+from teleopit.sim.reference_utils import (
+    build_offline_reference_window,
+    build_static_reference_window,
+    obs_builder_requires_reference_window,
 )
-from teleopit.sim2real.dexterous_hand import build_linkerhand_runtime
+from teleopit.sim.realtime_utils import RealtimeReferenceManager
+from teleopit.sim.viewer_subprocess import start_robot_viewer
+from teleopit.sim2real.hands.worker import build_hand_runtime
 from teleopit.sim2real.mp.ipc import (
     BODY_TOPIC,
     COMMAND_TOPIC,
@@ -78,20 +81,118 @@ Float64Array = NDArray[np.float64]
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
-def resolve_sim2real_runtime_mode(cfg: Any) -> str:
-    """Resolve ``auto|single_process|multiprocess`` into a concrete runtime."""
-    raw = str(cfg_get(cfg, "sim2real_runtime", "auto")).strip().lower()
-    if raw in ("single", "single_process", "legacy"):
-        return "single_process"
-    if raw in ("mp", "multi", "multiprocess"):
-        provider = str(cfg_get(cfg_get(cfg, "input", {}), "provider", "")).lower()
-        if provider != "pico4":
-            raise ValueError("sim2real_runtime=multiprocess currently requires input.provider=pico4")
-        return "multiprocess"
-    if raw != "auto":
-        raise ValueError("sim2real_runtime must be auto, single_process, or multiprocess")
-    provider = str(cfg_get(cfg_get(cfg, "input", {}), "provider", "")).lower()
-    return "multiprocess" if provider == "pico4" else "single_process"
+class RobotMode(Enum):
+    IDLE = "idle"
+    STANDING = "standing"
+    MOCAP = "mocap"
+    DAMPING = "damping"
+
+
+class _LoopTimingReporter:
+    def __init__(self, *, target_period_s: float, log_interval_s: float = 1.0) -> None:
+        self._target_period_s = float(target_period_s)
+        self._log_interval_s = float(log_interval_s)
+        self._window_start_s: float | None = None
+        self._loop_ms: list[float] = []
+        self._work_ms: list[float] = []
+        self._pico_age_ms: list[float] = []
+        self._overrun_count = 0
+
+    def record(self, *, loop_start_s: float, work_elapsed_s: float, cycle_elapsed_s: float, pico_age_s: float | None) -> None:
+        if self._window_start_s is None:
+            self._window_start_s = float(loop_start_s)
+        self._loop_ms.append(float(cycle_elapsed_s) * 1000.0)
+        self._work_ms.append(float(work_elapsed_s) * 1000.0)
+        if pico_age_s is not None:
+            self._pico_age_ms.append(float(pico_age_s) * 1000.0)
+        if cycle_elapsed_s > self._target_period_s + 1e-9:
+            self._overrun_count += 1
+        if loop_start_s - self._window_start_s >= self._log_interval_s:
+            self._emit(loop_start_s)
+
+    def _emit(self, end_s: float) -> None:
+        sample_count = len(self._loop_ms)
+        if sample_count <= 0:
+            self._reset(end_s)
+            return
+        loop_summary = self._summarize(self._loop_ms)
+        work_summary = self._summarize(self._work_ms)
+        message = (
+            "Timing stats | samples=%d window=%.1fs | "
+            "loop_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f overrun=%d/%d | "
+            "work_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f"
+        )
+        args: list[object] = [
+            sample_count,
+            end_s - float(self._window_start_s),
+            *loop_summary,
+            self._overrun_count,
+            sample_count,
+            *work_summary,
+        ]
+        if self._pico_age_ms:
+            message += " | reference_age_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f"
+            args.extend(self._summarize(self._pico_age_ms))
+        logger.info(message, *args)
+        self._reset(end_s)
+
+    def _reset(self, window_start_s: float) -> None:
+        self._window_start_s = float(window_start_s)
+        self._loop_ms.clear()
+        self._work_ms.clear()
+        self._pico_age_ms.clear()
+        self._overrun_count = 0
+
+    @staticmethod
+    def _summarize(samples: list[float]) -> tuple[float, float, float, float]:
+        values = np.asarray(samples, dtype=np.float64)
+        if values.size <= 0:
+            return 0.0, 0.0, 0.0, 0.0
+        p50, p95, p99 = np.percentile(values, [50.0, 95.0, 99.0])
+        return float(p50), float(p95), float(p99), float(np.max(values))
+
+
+def _parse_sim2real_viewers(cfg: Any) -> set[str]:
+    viewers = parse_viewers(cfg)
+    unsupported = viewers.difference({"retarget"})
+    if unsupported:
+        raise ValueError(
+            f"Sim2real supports only the optional 'retarget' viewer; got unsupported viewers {sorted(unsupported)}. "
+            "Use viewers=retarget or viewers=none."
+        )
+    return viewers
+
+
+class _Sim2RealRetargetViewer:
+    def __init__(self, *, xml_path: str | None, enabled: bool) -> None:
+        self._entry: tuple[Any, Any, Any, Any] | None = None
+        if not enabled:
+            return
+        if not xml_path:
+            raise ValueError("Sim2real retarget viewer requires robot.xml_path to be set.")
+        self._entry = start_robot_viewer(xml_path, FULL_QPOS_DIM, True, "Retarget", 900, 50)
+
+    def write(self, qpos: Float64Array) -> None:
+        if self._entry is None:
+            return
+        _, arr, alive, _ = self._entry
+        if not alive.value:
+            return
+        qpos = np.asarray(qpos, dtype=np.float64).reshape(-1)
+        if qpos.shape[0] < FULL_QPOS_DIM:
+            return
+        with arr.get_lock():
+            arr[:FULL_QPOS_DIM] = qpos[:FULL_QPOS_DIM].tolist()
+
+    def shutdown(self) -> None:
+        if self._entry is None:
+            return
+        proc, _, _, shutdown = self._entry
+        shutdown.set()
+        proc.join(timeout=3)
+        if proc.is_alive():
+            proc.terminate()
+        self._entry = None
 
 
 def _plain_cfg(cfg: Any) -> dict[str, Any]:
@@ -103,7 +204,26 @@ def _plain_cfg(cfg: Any) -> dict[str, Any]:
 
 
 def _mp_cfg(cfg: Any) -> Any:
-    return cfg_get(cfg, "multiprocess", {}) or {}
+    return cfg_get(cfg, "runtime", {}) or {}
+
+
+def _input_provider_kind(cfg: Any) -> str:
+    return str(cfg_get(cfg_get(cfg, "input", {}) or {}, "provider", "bvh")).strip().lower()
+
+
+def _validate_new_runtime_config(cfg: Any) -> None:
+    legacy_keys = [key for key in ("sim2real_runtime", "multiprocess", "dexterous_hand") if cfg_get(cfg, key, None) is not None]
+    if legacy_keys:
+        raise ValueError(
+            "Legacy sim2real config keys are no longer supported: "
+            f"{', '.join(legacy_keys)}. Use input.provider, runtime, and hands instead."
+        )
+    provider = _input_provider_kind(cfg)
+    if provider not in ("pico4", "bvh"):
+        raise ValueError(f"sim2real input.provider must be pico4 or bvh, got {provider!r}")
+    hands_cfg = cfg_get(cfg, "hands", {}) or {}
+    if bool(cfg_get(hands_cfg, "enabled", False)) and provider != "pico4":
+        raise ValueError("hands.enabled=true requires input.provider=pico4")
 
 
 def _worker_loop(name: str, fn: Callable[[], None]) -> None:
@@ -121,19 +241,18 @@ def _human_frame_is_valid(frame: object) -> bool:
     return validate_human_frame(frame).valid
 
 
-class MultiprocessSim2RealController:
-    """Supervisor facade for the multiprocess Pico sim2real runtime."""
+class Sim2RealRuntime:
+    """Supervisor facade for the process-isolated sim2real runtime."""
 
     def __init__(self, cfg: Any) -> None:
         self.cfg = _plain_cfg(cfg)
-        if resolve_sim2real_runtime_mode(self.cfg) != "multiprocess":
-            raise ValueError("MultiprocessSim2RealController requires sim2real_runtime=multiprocess or auto+pico4")
+        _validate_new_runtime_config(self.cfg)
 
         mp_cfg = _mp_cfg(self.cfg)
         video_cfg = parse_pico_video_config(cfg_get(self.cfg, "input", {}))
         if video_cfg.enabled and video_cfg.source not in ("realsense", "test-pattern"):
             raise ValueError(
-                "Multiprocess sim2real only supports input.video.source=realsense or test-pattern"
+                "Sim2RealRuntime only supports input.video.source=realsense or test-pattern"
             )
         self._ctx = mp.get_context(str(cfg_get(mp_cfg, "start_method", "spawn")))
         self._stop_event = self._ctx.Event()
@@ -145,24 +264,36 @@ class MultiprocessSim2RealController:
         )
 
     def run(self) -> None:
-        logger.info("Starting multiprocess sim2real runtime")
+        logger.info("Starting sim2real runtime")
         try:
             self._start_processes()
             while not self._stop_event.is_set():
                 time.sleep(0.2)
+                critical_names = {"robot_control", "reference"}
+                if _input_provider_kind(self.cfg) == "pico4":
+                    critical_names.add("pico_input")
                 critical_dead = [
                     process.name
                     for process in self._processes
                     if not process.is_alive()
                     and process.exitcode not in (None, 0)
-                    and process.name in {"robot_control", "pico_io", "retarget_worker"}
+                    and process.name in critical_names
                 ]
                 if critical_dead:
                     logger.error("Critical sim2real worker exited: %s", ", ".join(critical_dead))
                     self._stop_event.set()
                     break
+                noncritical_dead = [
+                    process.name
+                    for process in self._processes
+                    if not process.is_alive()
+                    and process.exitcode not in (None, 0)
+                    and process.name not in critical_names
+                ]
+                if noncritical_dead:
+                    logger.warning("Non-critical sim2real worker exited: %s", ", ".join(noncritical_dead))
         except KeyboardInterrupt:
-            logger.info("KeyboardInterrupt -- shutting down multiprocess sim2real")
+            logger.info("KeyboardInterrupt -- shutting down sim2real")
             self._stop_event.set()
         finally:
             self.shutdown()
@@ -182,17 +313,21 @@ class MultiprocessSim2RealController:
         if self._processes:
             return
 
-        specs: list[tuple[str, Callable[..., None]]] = [
-            ("pico_io", _run_pico_io_worker),
-            ("retarget_worker", _run_retarget_worker),
-            ("robot_control", _run_robot_control_worker),
-        ]
-        hand_mode = str(cfg_get(cfg_get(self.cfg, "dexterous_hand", {}) or {}, "mode", "off")).lower()
-        if hand_mode != "off":
+        specs: list[tuple[str, Callable[..., None]]] = []
+        if _input_provider_kind(self.cfg) == "pico4":
+            specs.append(("pico_input", _run_pico_io_worker))
+        specs.extend(
+            [
+                ("reference", _run_reference_worker),
+                ("robot_control", _run_robot_control_worker),
+            ]
+        )
+        hands_cfg = cfg_get(self.cfg, "hands", {}) or {}
+        if bool(cfg_get(hands_cfg, "enabled", False)):
             specs.append(("hand_worker", _run_hand_worker))
         video_cfg = parse_pico_video_config(cfg_get(self.cfg, "input", {}))
         if video_cfg.enabled:
-            logger.info("Pico video runs inside pico_io so frames are pushed directly to PicoBridge")
+            logger.info("Pico video runs inside pico_input so frames are pushed directly to PicoBridge")
 
         for name, target in specs:
             process = self._ctx.Process(
@@ -241,7 +376,7 @@ def _run_pico_io_worker(
             mode="sim2real",
         )
 
-        hz = float(cfg_get(_mp_cfg(cfg), "pico_io_hz", 120.0))
+        hz = float(cfg_get(_mp_cfg(cfg), "pico_input_hz", 120.0))
         sleep_s = 1.0 / max(hz, 1.0)
         last_body_seq = -1
         last_hand_seq = -1
@@ -262,7 +397,7 @@ def _run_pico_io_worker(
                     try:
                         frame, timestamp_s, seq = provider.get_frame_packet()
                     except Exception:
-                        logger.exception("pico_io failed to read body frame")
+                        logger.exception("pico_input failed to read body frame")
                     else:
                         if int(seq) != last_body_seq:
                             body_pub.publish(
@@ -309,7 +444,7 @@ def _run_pico_io_worker(
                     health_pub.publish(
                         HEALTH_TOPIC,
                         HealthPacket(
-                            worker="pico_io",
+                            worker="pico_input",
                             timestamp_s=now,
                             metrics={
                                 "body_seq": last_body_seq,
@@ -329,10 +464,21 @@ def _run_pico_io_worker(
                 publisher.close()
             provider.close()
 
-    _worker_loop("pico_io", _main)
+    _worker_loop("pico_input", _main)
 
 
-def _run_retarget_worker(
+def _run_reference_worker(
+    cfg: dict[str, Any],
+    endpoints: Sim2RealIpcEndpoints,
+    stop_event: MpEvent,
+) -> None:
+    if _input_provider_kind(cfg) == "bvh":
+        _run_bvh_reference_worker(cfg, endpoints, stop_event)
+        return
+    _run_pico_reference_worker(cfg, endpoints, stop_event)
+
+
+def _run_pico_reference_worker(
     cfg: dict[str, Any],
     endpoints: Sim2RealIpcEndpoints,
     stop_event: MpEvent,
@@ -401,16 +547,16 @@ def _run_retarget_worker(
 
         try:
             while not stop_event.is_set():
-                health_packet = health_sub.recv_latest()
-                if isinstance(health_packet, HealthPacket) and health_packet.worker == "pico_io":
-                    metric_fps = health_packet.metrics.get("body_fps")
-                    if isinstance(metric_fps, (int, float)) and float(metric_fps) > 0.0:
-                        latest_body_fps = float(metric_fps)
-
                 command = command_sub.recv_latest()
                 if isinstance(command, CommandPacket) and command.command == "shutdown":
                     stop_event.set()
                     break
+
+                health_packet = health_sub.recv_latest()
+                if isinstance(health_packet, HealthPacket) and health_packet.worker == "pico_input":
+                    metric_fps = health_packet.metrics.get("body_fps")
+                    if isinstance(metric_fps, (int, float)) and float(metric_fps) > 0.0:
+                        latest_body_fps = float(metric_fps)
 
                 packet = body_sub.recv_latest()
                 if packet is None:
@@ -425,7 +571,7 @@ def _run_retarget_worker(
                     last_body_timestamp_s = None
                     body_dt_s_ema = None
                     _publish_invalid_reference(packet, elapsed_s=time.monotonic() - start_s)
-                    logger.warning("retarget_worker dropped invalid body frame seq=%s", packet.seq)
+                    logger.warning("reference worker dropped invalid body frame seq=%s", packet.seq)
                     continue
 
                 try:
@@ -483,14 +629,144 @@ def _run_retarget_worker(
                     )
                     last_body_seq = int(packet.seq)
                 except Exception:
-                    logger.exception("retarget_worker failed to retarget body seq=%s", getattr(packet, "seq", None))
+                    logger.exception("reference worker failed to retarget body seq=%s", getattr(packet, "seq", None))
         finally:
             body_sub.close()
             health_sub.close()
             command_sub.close()
             ref_pub.close()
 
-    _worker_loop("retarget_worker", _main)
+    _worker_loop("reference", _main)
+
+
+def _run_bvh_reference_worker(
+    cfg: dict[str, Any],
+    endpoints: Sim2RealIpcEndpoints,
+    stop_event: MpEvent,
+) -> None:
+    def _main() -> None:
+        input_cfg = cfg_get(cfg, "input", {}) or {}
+        policy_hz = float(cfg_get(cfg, "policy_hz", 50.0))
+        provider = BVHInputProvider(
+            str(cfg_get(input_cfg, "bvh_file", "")),
+            human_format=str(cfg_get(input_cfg, "bvh_format", cfg_get(input_cfg, "human_format", "lafan1"))),
+        )
+        retargeter = RetargetingModule(
+            robot_name=str(cfg_get(input_cfg, "robot_name", "unitree_g1")),
+            human_format=str(cfg_get(input_cfg, "human_format", cfg_get(input_cfg, "bvh_format", "lafan1"))),
+            actual_human_height=float(cfg_get(input_cfg, "human_height", provider.human_height)),
+        )
+        offline_reference = OfflineReferenceMotion(provider, retargeter)
+        playback_cfg = cfg_get(cfg, "playback", {}) or {}
+        playback = OfflinePlaybackController(
+            duration_s=offline_reference.duration_s,
+            step_dt_s=1.0 / policy_hz,
+            pause_on_end=bool(cfg_get(playback_cfg, "pause_on_end", True)),
+        )
+        reference_window_builder = ReferenceWindowBuilder(
+            policy_dt_s=1.0 / policy_hz,
+            reference_steps=cfg_get(cfg, "reference_steps", [0]),
+        )
+        ref_pub = ZmqPublisher(endpoints.reference_pub)
+        command_sub = LatestSubscriber(endpoints.command_pub, COMMAND_TOPIC)
+        reference_command_sub = LatestSubscriber(endpoints.reference_command_pub, COMMAND_TOPIC)
+        mode_sub = LatestSubscriber(endpoints.mode_pub, MODE_TOPIC)
+        health_pub = ZmqPublisher(endpoints.health_pub)
+        tick_s = 1.0 / policy_hz
+        seq = 0
+        last_health_s = 0.0
+        mocap_active = False
+
+        def _publish(sample_time_s: float, *, frame_valid: bool = True) -> Float64Array | None:
+            nonlocal seq
+            start_s = time.monotonic()
+            sampled = offline_reference.sample(sample_time_s)
+            if sampled is None:
+                return None
+            reference_window = None
+            if reference_window_builder.requires_timeline:
+                reference_window = build_offline_reference_window(
+                    offline_reference,
+                    sample_time_s,
+                    reference_window_builder,
+                    policy_hz,
+                )
+            qpos = np.asarray(sampled.qpos, dtype=np.float64).copy()
+            ref_pub.publish(
+                REFERENCE_TOPIC,
+                ReferencePacket(
+                    qpos=qpos,
+                    timestamp_s=time.monotonic(),
+                    seq=seq,
+                    source_timestamp_s=float(sample_time_s),
+                    source_seq=int(sampled.frame_idx0),
+                    frame_valid=frame_valid,
+                    reference_window=reference_window,
+                    retarget_elapsed_s=time.monotonic() - start_s,
+                    playback_paused=playback.paused,
+                    playback_finished=playback.finished,
+                ),
+            )
+            seq += 1
+            return qpos
+
+        try:
+            while not stop_event.is_set():
+                t0 = time.monotonic()
+                command = command_sub.recv_latest()
+                if isinstance(command, CommandPacket):
+                    if command.command == "shutdown":
+                        stop_event.set()
+                        break
+                reference_command = reference_command_sub.recv_latest()
+                if isinstance(reference_command, CommandPacket):
+                    command = reference_command
+                    if command.command == "pause_mocap":
+                        playback.pause()
+                    elif command.command == "resume_mocap":
+                        if not playback.finished:
+                            playback.resume()
+                    elif command.command == "replay_mocap":
+                        playback.replay()
+                mode_packet = mode_sub.recv_latest()
+                if isinstance(mode_packet, ModeStatePacket):
+                    mocap_active = bool(mode_packet.mocap_active)
+
+                qpos = _publish(playback.current_time_s)
+                if qpos is None:
+                    playback.finish()
+                    _publish(playback.current_time_s)
+                elif mocap_active:
+                    playback.advance()
+
+                now = time.monotonic()
+                if now - last_health_s >= 1.0:
+                    health_pub.publish(
+                        HEALTH_TOPIC,
+                        HealthPacket(
+                            worker="reference",
+                            timestamp_s=now,
+                            metrics={
+                                "source": "bvh",
+                                "seq": seq,
+                                "playback_time_s": float(playback.current_time_s),
+                                "paused": int(playback.paused),
+                                "finished": int(playback.finished),
+                            },
+                        ),
+                    )
+                    last_health_s = now
+                elapsed = time.monotonic() - t0
+                if elapsed < tick_s:
+                    time.sleep(tick_s - elapsed)
+        finally:
+            command_sub.close()
+            reference_command_sub.close()
+            mode_sub.close()
+            ref_pub.close()
+            health_pub.close()
+
+    _worker_loop("reference", _main)
 
 
 class _RobotControlWorker:
@@ -503,6 +779,7 @@ class _RobotControlWorker:
         self.cfg = cfg
         self.endpoints = endpoints
         self.stop_event = stop_event
+        self.provider_kind = _input_provider_kind(cfg)
         self.mode = RobotMode.IDLE
         self.policy_hz = float(cfg_get(cfg, "policy_hz", 50.0))
         self.dt = 1.0 / self.policy_hz
@@ -556,6 +833,7 @@ class _RobotControlWorker:
         self._reference_sub = LatestSubscriber(endpoints.reference_pub, REFERENCE_TOPIC)
         self._events_sub = LatestSubscriber(endpoints.control_events_pub, CONTROL_EVENTS_TOPIC)
         self._command_sub = LatestSubscriber(endpoints.command_pub, COMMAND_TOPIC)
+        self._reference_command_pub = ZmqPublisher(endpoints.reference_command_pub)
         self._mode_pub = ZmqPublisher(endpoints.mode_pub)
 
         viewers = _parse_sim2real_viewers(cfg)
@@ -613,6 +891,7 @@ class _RobotControlWorker:
         self._reference_sub.close()
         self._events_sub.close()
         self._command_sub.close()
+        self._reference_command_pub.close()
         self._mode_pub.close()
         self.robot.close()
 
@@ -657,12 +936,19 @@ class _RobotControlWorker:
                 else:
                     logger.warning("Cannot switch to MOCAP -- no fresh retarget reference")
         elif self.mode == RobotMode.MOCAP:
+            if self.provider_kind == "bvh" and self.remote.B.on_pressed:
+                logger.info("B pressed -> replaying BVH motion from start")
+                self._send_reference_command("replay_mocap")
+                self._resume_paused_mocap_if_needed()
+                return
             if self.remote.A.on_pressed:
                 if self._mocap_session.state == MocapSessionState.PAUSED:
                     logger.info("A pressed -> resuming playback")
+                    self._send_reference_command("resume_mocap")
                     self._resume_paused_mocap()
                 else:
                     logger.info("A pressed -> pausing playback")
+                    self._send_reference_command("pause_mocap")
                     self._pause_active_mocap()
                 return
             if self.remote.X.on_pressed:
@@ -808,6 +1094,8 @@ class _RobotControlWorker:
             return False
         if not self._latest_reference.frame_valid:
             return False
+        if self.provider_kind == "bvh":
+            return True
         if age_s > self._max_reference_age_s:
             return False
         if self._consecutive_valid_references < self._check_frames:
@@ -827,8 +1115,14 @@ class _RobotControlWorker:
         self._last_retarget_qpos = None
         self._last_commanded_motion_qpos = resume_qpos.copy()
         self._ref_proc.reset_alignment(target_qpos=resume_qpos)
+        if self.provider_kind == "bvh":
+            self._send_reference_command("replay_mocap")
         self.mode = RobotMode.MOCAP
         logger.info("Mode -> MOCAP (tracking multiprocess retarget reference)")
+
+    def _resume_paused_mocap_if_needed(self) -> None:
+        if self._mocap_session.state == MocapSessionState.PAUSED:
+            self._resume_paused_mocap()
 
     def _enter_damping(self) -> None:
         if self.mode in (RobotMode.STANDING, RobotMode.MOCAP):
@@ -836,7 +1130,7 @@ class _RobotControlWorker:
             self.robot.set_damping()
             time.sleep(0.5)
             logger.info("DAMPING: exiting debug mode...")
-            self.robot.exit_debug_mode()
+        self.robot.exit_debug_mode()
         self.mode = RobotMode.DAMPING
         self._ref_proc.last_reference_qpos = None
         self._mocap_reentry_armed = False
@@ -927,6 +1221,12 @@ class _RobotControlWorker:
         self._ref_proc.reset_alignment(target_qpos=resume_qpos)
         logger.info("Mocap session -> ACTIVE (multiprocess episode-reset + reference realignment)")
 
+    def _send_reference_command(self, command: str) -> None:
+        self._reference_command_pub.publish(
+            COMMAND_TOPIC,
+            CommandPacket(command=command, timestamp_s=time.monotonic()),
+        )
+
     def _resolve_mocap_hold_qpos(self) -> Float64Array:
         if self._last_commanded_motion_qpos is not None:
             return self._last_commanded_motion_qpos.copy()
@@ -1010,6 +1310,13 @@ class _RobotControlWorker:
             return
         self._last_reference_seq = int(reference.seq)
         self._latest_reference = reference
+        if (
+            self.provider_kind == "bvh"
+            and bool(getattr(reference, "playback_paused", False))
+            and self.mode == RobotMode.MOCAP
+            and self._mocap_session.state == MocapSessionState.ACTIVE
+        ):
+            self._pause_active_mocap()
         if not reference.frame_valid:
             self._consecutive_valid_references = 0
             return
@@ -1055,7 +1362,7 @@ def _run_hand_worker(
 ) -> None:
     def _main() -> None:
         proxy = _HandSnapshotProxy()
-        runtime = build_linkerhand_runtime(cfg, proxy)
+        runtime = build_hand_runtime(cfg)
         hand_sub = LatestSubscriber(endpoints.hand_pub, HAND_TOPIC)
         controller_sub = LatestSubscriber(endpoints.controller_pub, CONTROLLER_TOPIC)
         mode_sub = LatestSubscriber(endpoints.mode_pub, MODE_TOPIC)
@@ -1063,8 +1370,8 @@ def _run_hand_worker(
         active = False
         hz = float(cfg_get(_mp_cfg(cfg), "hand_worker_hz", 120.0))
         sleep_s = 1.0 / max(hz, 1.0)
-        runtime.start()
         try:
+            runtime.start()
             while not stop_event.is_set():
                 command = command_sub.recv_latest()
                 if isinstance(command, CommandPacket) and command.command == "shutdown":
@@ -1080,7 +1387,11 @@ def _run_hand_worker(
                 if isinstance(mode_packet, ModeStatePacket):
                     active = bool(mode_packet.mocap_active)
                 try:
-                    runtime.tick(active=active)
+                    runtime.tick(
+                        controller_snapshot=proxy.controller_snapshot,
+                        hand_snapshot=proxy.hand_snapshot,
+                        active=active,
+                    )
                 except Exception:
                     logger.exception("Dexterous hand worker tick failed; hand control continues")
                 time.sleep(sleep_s)

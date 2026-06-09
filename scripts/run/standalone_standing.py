@@ -2,7 +2,7 @@
 """Standalone G1 standing script with RL policy -- no Teleopit/Pico dependency.
 
 Uses ONNX RL policy inference to maintain balanced standing, matching the
-STANDING mode in Sim2RealController. Only depends on:
+STANDING mode used by the sim2real robot-control runtime. Only depends on:
   - g1_bridge_sdk (C++ DDS bridge)
   - onnxruntime
   - mujoco
@@ -355,7 +355,7 @@ class PolicyInference:
 # =====================================================================
 
 class StandingController:
-    """RL-policy-based standing controller matching Sim2RealController.STANDING."""
+    """RL-policy-based standing controller matching sim2real STANDING behavior."""
 
     def __init__(self, network_interface: str, policy_path: str,
                  no_policy: bool = False,
@@ -675,7 +675,7 @@ class StandingController:
             return True
         return False
 
-    # ---- Standing step (matches Sim2RealController._standing_step) ----
+    # ---- Standing step (matches sim2real robot-control standing step) ----
 
     def _standing_step(self) -> np.ndarray:
         """One step of RL policy standing inference. Returns target joint positions."""

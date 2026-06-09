@@ -120,32 +120,29 @@ Realtime Pico resume re-centers heading and ground-plane position before trackin
 
 ### Dexterous Hand (Pico sim2real)
 
-`dexterous_hand.mode=gripper` or `dexterous_hand.mode=vr_hand_pose` requires
-`input.provider=pico4` and the optional `dexhand` extra. Control is active only
-in `MOCAP`; inactive modes send the open pose. In `vr_hand_pose`, missing hand
-pose holds the last command for that side. `gripper` uses the configured
-`dexterous_hand.speed`; `vr_hand_pose` always sets LinkerHand L6 speed to the
-maximum. The default `vr_hand_pose` path favors low latency: it runs in a
-background thread at `dexterous_hand.somehand.rate` and disables most somehand
-input/output smoothing, which can make finger motion noisier.
+`hands.enabled=true` requires `input.provider=pico4` and the optional `dexhand`
+extra. Control is active only in `MOCAP`; inactive modes send the open pose. In
+`vr_hand_pose`, missing hand pose holds the last command for that side.
+`gripper` uses the configured `hands.linkerhand_l6.speed`; `vr_hand_pose`
+always sets LinkerHand L6 speed to the maximum. Teleopit converts Pico hand
+state to 21 landmarks and embeds somehand 0.2.0 through `somehand.api` only.
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `dexterous_hand.mode` | `off`, `gripper`, or `vr_hand_pose` | `off` |
-| `dexterous_hand.hand_type` | Controlled side: `left`, `right`, or `both`; `vr_hand_pose` requires `both` | `both` |
-| `dexterous_hand.left_can` / `right_can` | CAN channels for each hand | `can0` / `can1` |
-| `dexterous_hand.rate` | Maximum gripper command rate in Hz | `30.0` |
-| `dexterous_hand.frame_timeout` | Gripper controller timeout, or VR hand-pose staleness threshold | `0.3` |
-| `dexterous_hand.speed` | L6 speed used by `gripper`; `vr_hand_pose` overrides this to maximum speed | see config |
-| `dexterous_hand.deadman_threshold` | Minimum grip value required to enable a side | `0.5` |
-| `dexterous_hand.trigger_deadzone` | Trigger deadzone at both ends | `0.05` |
-| `dexterous_hand.open_pose` / `close_pose` | Six-value L6 open/closed poses | see config |
-| `dexterous_hand.somehand.config_path` | somehand bi-hand L6 config used by `vr_hand_pose` | see config |
-| `dexterous_hand.somehand.rate` | Low-latency `vr_hand_pose` command rate in Hz | `60.0` |
-| `dexterous_hand.somehand.threaded` | Run `vr_hand_pose` hand retargeting outside the robot control loop | `true` |
-| `dexterous_hand.somehand.max_iterations` | somehand solver iteration cap for `vr_hand_pose` | `12` |
-| `dexterous_hand.somehand.temporal_filter_alpha` | somehand input landmark smoothing alpha; `1.0` disables smoothing delay | `1.0` |
-| `dexterous_hand.somehand.output_alpha` | somehand qpos output smoothing alpha; `1.0` disables smoothing delay | `1.0` |
+| `hands.enabled` | Enable optional hand worker | `false` |
+| `hands.driver` | Hand driver plugin | `linkerhand_l6` |
+| `hands.mode` | `gripper` or `vr_hand_pose` | `gripper` |
+| `hands.sides` | Controlled sides | `[left, right]` |
+| `hands.rate_hz` | Maximum gripper command rate in Hz | `30.0` |
+| `hands.frame_timeout_s` | Controller or hand-pose staleness threshold | `0.3` |
+| `hands.linkerhand_l6.left_can` / `right_can` | CAN channels for each hand | `can0` / `can1` |
+| `hands.linkerhand_l6.speed` | L6 speed used by `gripper`; `vr_hand_pose` overrides this to maximum speed | see config |
+| `hands.linkerhand_l6.open_pose` / `close_pose` | Six-value L6 open/closed poses | see config |
+| `hands.somehand.config_path` | Official somehand 0.2.0 bi-hand L6 config used by `vr_hand_pose` | see config |
+| `hands.somehand.rate_hz` | Low-latency `vr_hand_pose` command rate in Hz | `60.0` |
+| `hands.somehand.max_iterations` | somehand solver iteration cap for `vr_hand_pose` | `12` |
+| `hands.somehand.temporal_filter_alpha` | somehand input landmark smoothing alpha; `1.0` disables smoothing delay | `1.0` |
+| `hands.somehand.output_alpha` | somehand qpos output smoothing alpha; `1.0` disables smoothing delay | `1.0` |
 
 ## Critical: `default_dof_pos`
 

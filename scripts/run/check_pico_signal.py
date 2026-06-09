@@ -197,7 +197,7 @@ def main(cfg: DictConfig) -> None:
     input_cfg = cfg_get(cfg, "input", {}) or {}
     video_cfg = parse_pico_video_config(input_cfg)
     diag_cfg = cfg_get(cfg, "diagnostic", {}) or {}
-    poll_hz = float(cfg_get(diag_cfg, "poll_hz", cfg_get(cfg_get(cfg, "multiprocess", {}) or {}, "pico_io_hz", 120.0)))
+    poll_hz = float(cfg_get(diag_cfg, "poll_hz", cfg_get(cfg_get(cfg, "runtime", {}) or {}, "pico_input_hz", 120.0)))
     summary_interval_s = float(cfg_get(diag_cfg, "summary_interval_s", 1.0))
     duration_s = float(cfg_get(diag_cfg, "duration_s", 0.0))
 

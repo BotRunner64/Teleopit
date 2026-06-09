@@ -23,12 +23,7 @@ if SOMEHAND_SRC_PATH.exists():
 from teleopit.inputs.pico4_provider import (  # noqa: E402
     Pico4InputProvider,
 )
-from teleopit.sim2real.dexterous_hand import (  # noqa: E402
-    LinkerHandConfig,
-    LinkerHandRuntime,
-    SomeHandPoseRuntime,
-    VR_HAND_POSE_SPEED,
-)
+from teleopit.sim2real.hands.linkerhand_l6 import VR_HAND_POSE_SPEED, build_linkerhand_l6  # noqa: E402
 
 
 THUMB_YAW_DEFAULT = 10
@@ -74,7 +69,8 @@ def parse_args() -> argparse.Namespace:
         default="open_close",
         help=(
             "open_close sends fixed poses directly; gripper reads real Pico controller "
-            "grip/trigger input; vr_hand_pose reads real Pico hand pose input through somehand."
+            "grip/trigger input; vr_hand_pose reads real Pico hand pose input through Teleopit "
+            "and uses somehand only for hand retargeting."
         ),
     )
     parser.add_argument("--hand-type", choices=["left", "right", "both"], default="both")
@@ -138,34 +134,38 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def make_config(args: argparse.Namespace, *, mode: str) -> LinkerHandConfig:
+def make_config(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
     speed = VR_HAND_POSE_SPEED if mode == "vr_hand_pose" else args.speed
-    vr_hand_pose = mode == "vr_hand_pose"
-    return LinkerHandConfig(
-        mode=mode,
-        enabled=True,
-        hand_joint="L6",
-        hand_type=args.hand_type,
-        left_can=args.left_can,
-        right_can=args.right_can,
-        modbus=args.modbus,
-        rate=args.rate,
-        frame_timeout=args.frame_timeout,
-        trigger_deadzone=args.trigger_deadzone,
-        deadman_threshold=args.deadman_threshold,
-        thumb_yaw_center=args.thumb_yaw_center,
-        speed=tuple(speed),
-        open_pose=tuple(args.open_pose),
-        close_pose=tuple(args.close_pose),
-        print_input=args.print_input,
-        somehand_config_path=args.somehand_config_path,
-        somehand_sdk_root=args.somehand_sdk_root,
-        somehand_rate=args.rate if vr_hand_pose else None,
-        somehand_threaded=False,
-        somehand_max_iterations=12 if vr_hand_pose else None,
-        somehand_temporal_filter_alpha=1.0 if vr_hand_pose else None,
-        somehand_output_alpha=1.0 if vr_hand_pose else None,
-    )
+    return {
+        "input": {"provider": "pico4"},
+        "hands": {
+            "enabled": True,
+            "driver": "linkerhand_l6",
+            "mode": mode,
+            "sides": list(selected_hand_types(args.hand_type)),
+            "rate_hz": args.rate,
+            "frame_timeout_s": args.frame_timeout,
+            "linkerhand_l6": {
+                "left_can": args.left_can,
+                "right_can": args.right_can,
+                "modbus": args.modbus,
+                "trigger_deadzone": args.trigger_deadzone,
+                "deadman_threshold": args.deadman_threshold,
+                "thumb_yaw_center": args.thumb_yaw_center,
+                "speed": list(speed),
+                "open_pose": list(args.open_pose),
+                "close_pose": list(args.close_pose),
+                "print_input": args.print_input,
+            },
+            "somehand": {
+                "config_path": args.somehand_config_path,
+                "rate_hz": args.rate,
+                "max_iterations": 12,
+                "temporal_filter_alpha": 1.0,
+                "output_alpha": 1.0,
+            },
+        },
+    }
 
 
 def send_all(hands: dict[str, object], pose: Sequence[int], *, label: str) -> None:
@@ -173,19 +173,6 @@ def send_all(hands: dict[str, object], pose: Sequence[int], *, label: str) -> No
     for hand_type, hand in hands.items():
         print(f"  {hand_type}", flush=True)
         hand.finger_move(pose=list(pose))
-
-
-def wait_runtime_idle(runtime: object, *, timeout_s: float = 2.0) -> None:
-    sender = getattr(runtime, "_sender", None)
-    wait_idle = getattr(sender, "wait_idle", None)
-    if callable(wait_idle) and not wait_idle(timeout_s=timeout_s):
-        raise RuntimeError("Timed out waiting for LinkerHand sender to become idle")
-
-
-def assert_runtime_started(runtime: object) -> None:
-    sender = getattr(runtime, "_sender", None)
-    if not bool(getattr(sender, "started", False)):
-        raise RuntimeError("LinkerHand sender failed to start; check the log above for SDK/CAN errors")
 
 
 def make_pico_provider(args: argparse.Namespace) -> Pico4InputProvider:
@@ -203,29 +190,32 @@ def make_pico_provider(args: argparse.Namespace) -> Pico4InputProvider:
 
 
 def run_live_until_done(
-    runtime: LinkerHandRuntime | SomeHandPoseRuntime,
+    runtime: object,
     *,
     provider: Pico4InputProvider,
     duration_s: float,
     mode_label: str,
+    rate_hz: float,
 ) -> None:
     deadline = time.monotonic() + duration_s
     last_seq: int | None = None
     print(f"Running {mode_label} for {duration_s:.1f}s; press Ctrl-C to stop early.", flush=True)
     while time.monotonic() < deadline:
         now_s = time.monotonic()
-        runtime.tick(active=True, now_s=now_s)
-        snapshot = (
-            provider.get_controller_snapshot()
-            if isinstance(runtime, LinkerHandRuntime)
-            else provider.get_hand_snapshot()
+        controller_snapshot = provider.get_controller_snapshot()
+        hand_snapshot = provider.get_hand_snapshot()
+        runtime.tick(
+            controller_snapshot=controller_snapshot,
+            hand_snapshot=hand_snapshot,
+            active=True,
+            now_s=now_s,
         )
+        snapshot = controller_snapshot if mode_label == "gripper" else hand_snapshot
         if snapshot is not None and snapshot.seq != last_seq:
             last_seq = snapshot.seq
             age_ms = max((now_s - snapshot.timestamp_s) * 1000.0, 0.0)
             print(f"  pico seq={snapshot.seq} age={age_ms:.1f}ms", flush=True)
-        wait_runtime_idle(runtime)
-        time.sleep(max(1.0 / runtime.config.rate, 0.001))
+        time.sleep(max(1.0 / rate_hz, 0.001))
 
 
 def run_open_close(args: argparse.Namespace) -> None:
@@ -283,50 +273,48 @@ def run_open_close(args: argparse.Namespace) -> None:
 def run_gripper(args: argparse.Namespace) -> None:
     config = make_config(args, mode="gripper")
     provider = make_pico_provider(args)
-    runtime = LinkerHandRuntime(config, provider)
+    device, mapper = build_linkerhand_l6(config)
+    from teleopit.sim2real.hands.worker import HandRuntime
+    runtime = HandRuntime(device, mapper)
 
     print(
-        "Testing dexterous_hand.mode=gripper with real Pico controller input. "
+        "Testing hands.mode=gripper with real Pico controller input. "
         "Hold grip above the deadman threshold, then use trigger to close/open.",
         flush=True,
     )
     try:
         runtime.start()
-        wait_runtime_idle(runtime)
-        assert_runtime_started(runtime)
-        run_live_until_done(runtime, provider=provider, duration_s=args.duration_s, mode_label="gripper")
+        run_live_until_done(runtime, provider=provider, duration_s=args.duration_s, mode_label="gripper", rate_hz=args.rate)
     except KeyboardInterrupt:
         print("Interrupted; opening hands before exit", flush=True)
     finally:
-        runtime.tick(active=False)
-        wait_runtime_idle(runtime)
+        runtime.tick(controller_snapshot=None, hand_snapshot=None, active=False)
         runtime.close()
         provider.close()
 
 
 def run_vr_hand_pose(args: argparse.Namespace) -> None:
     if args.hand_type != "both":
-        raise SystemExit("dexterous_hand.mode=vr_hand_pose currently requires --hand-type both")
+        raise SystemExit("hands.mode=vr_hand_pose currently requires --hand-type both")
 
     config = make_config(args, mode="vr_hand_pose")
     provider = make_pico_provider(args)
-    runtime = SomeHandPoseRuntime(config, provider)
+    device, mapper = build_linkerhand_l6(config)
+    from teleopit.sim2real.hands.worker import HandRuntime
+    runtime = HandRuntime(device, mapper)
 
     print(
-        "Testing dexterous_hand.mode=vr_hand_pose with real Pico hand-pose input. "
+        "Testing hands.mode=vr_hand_pose with real Pico hand-pose input. "
         "Enable Pico hand tracking and move both hands; start with the robot clear of contacts.",
         flush=True,
     )
     try:
         runtime.start()
-        wait_runtime_idle(runtime)
-        assert_runtime_started(runtime)
-        run_live_until_done(runtime, provider=provider, duration_s=args.duration_s, mode_label="vr_hand_pose")
+        run_live_until_done(runtime, provider=provider, duration_s=args.duration_s, mode_label="vr_hand_pose", rate_hz=args.rate)
     except KeyboardInterrupt:
         print("Interrupted; opening hands before exit", flush=True)
     finally:
-        runtime.tick(active=False)
-        wait_runtime_idle(runtime)
+        runtime.tick(controller_snapshot=None, hand_snapshot=None, active=False)
         runtime.close()
         provider.close()
 

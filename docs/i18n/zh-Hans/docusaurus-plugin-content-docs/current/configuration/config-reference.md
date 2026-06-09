@@ -139,28 +139,30 @@ MuJoCo 窗口显示重定向参考；`sim2sim`、`mocap`、`camera` 和 `all`
 
 ### 灵巧手（Pico sim2real）
 
-`dexterous_hand.mode=gripper` 或 `dexterous_hand.mode=vr_hand_pose` 要求
-`input.provider=pico4`，并安装可选的 `dexhand` extra。控制只在 `MOCAP`
-中生效；非活动模式会发送张开姿态。在 `vr_hand_pose` 中，手部 pose 消失时，
-对应侧会保持上一条命令。`gripper` 使用配置的 `dexterous_hand.speed`；
-`vr_hand_pose` 始终将 LinkerHand L6 速度设为最大值。默认的 `vr_hand_pose`
-路径优先降低延时：它会按 `dexterous_hand.somehand.rate` 在后台线程运行，并关闭
-大部分 somehand 输入/输出平滑，因此手指运动可能更抖。
+`hands.mode=gripper` 或 `hands.mode=vr_hand_pose` 要求 `input.provider=pico4`，
+并安装可选的 `dexhand` extra。控制只在 `MOCAP` 中生效；非活动模式会发送张开姿态。
+在 `vr_hand_pose` 中，Teleopit 将 Pico 手部 pose 适配成 somehand 0.2.0 的
+landmark 输入，只调用公开的 `somehand.api`；手部 pose 消失时，对应侧会保持上一条命令。
+`gripper` 使用配置的 `hands.linkerhand_l6.speed`；`vr_hand_pose` 始终将
+LinkerHand L6 速度设为最大值。默认的 `vr_hand_pose` 路径优先降低延时：它会按
+`hands.somehand.rate` 在后台线程运行，并关闭大部分 somehand 输入/输出平滑，因此手指运动可能更抖。
 
 | 字段 | 说明 | 默认值 |
 |---|---|---|
-| `dexterous_hand.mode` | `off`、`gripper` 或 `vr_hand_pose` | `off` |
-| `dexterous_hand.hand_type` | 控制侧：`left`、`right` 或 `both`；`vr_hand_pose` 要求 `both` | `both` |
-| `dexterous_hand.left_can` / `right_can` | 左右手 CAN 通道 | `can0` / `can1` |
-| `dexterous_hand.rate` | gripper 最大命令频率（Hz） | `30.0` |
-| `dexterous_hand.frame_timeout` | gripper 手柄超时或 VR 手部 pose 过期阈值 | `0.3` |
-| `dexterous_hand.speed` | `gripper` 使用的 L6 速度；`vr_hand_pose` 会覆盖为最大速度 | 见配置 |
-| `dexterous_hand.deadman_threshold` | 启用单侧控制所需的最小 grip 值 | `0.5` |
-| `dexterous_hand.trigger_deadzone` | trigger 两端死区 | `0.05` |
-| `dexterous_hand.open_pose` / `close_pose` | L6 的 6 维张开/闭合姿态 | 见配置 |
-| `dexterous_hand.somehand.config_path` | `vr_hand_pose` 使用的 somehand 双手 L6 配置 | 见配置 |
-| `dexterous_hand.somehand.rate` | 低延时 `vr_hand_pose` 命令频率（Hz） | `60.0` |
-| `dexterous_hand.somehand.threaded` | 在机器人控制循环外运行 `vr_hand_pose` 手部重定向 | `true` |
-| `dexterous_hand.somehand.max_iterations` | `vr_hand_pose` 的 somehand solver 迭代上限 | `12` |
-| `dexterous_hand.somehand.temporal_filter_alpha` | somehand 输入 landmarks 平滑 alpha；`1.0` 表示关闭平滑延时 | `1.0` |
-| `dexterous_hand.somehand.output_alpha` | somehand qpos 输出平滑 alpha；`1.0` 表示关闭平滑延时 | `1.0` |
+| `hands.enabled` | 启用可选手部运行时 | `false` |
+| `hands.mode` | `off`、`gripper` 或 `vr_hand_pose` | `off` |
+| `hands.driver` | 手部设备驱动；当前支持 `linkerhand_l6` | `linkerhand_l6` |
+| `hands.linkerhand_l6.hand_type` | 控制侧：`left`、`right` 或 `both`；`vr_hand_pose` 要求 `both` | `both` |
+| `hands.linkerhand_l6.left_can` / `right_can` | 左右手 CAN 通道 | `can0` / `can1` |
+| `hands.linkerhand_l6.rate` | gripper 最大命令频率（Hz） | `30.0` |
+| `hands.linkerhand_l6.frame_timeout` | gripper 手柄超时或 VR 手部 pose 过期阈值 | `0.3` |
+| `hands.linkerhand_l6.speed` | `gripper` 使用的 L6 速度；`vr_hand_pose` 会覆盖为最大速度 | 见配置 |
+| `hands.linkerhand_l6.deadman_threshold` | 启用单侧控制所需的最小 grip 值 | `0.5` |
+| `hands.linkerhand_l6.trigger_deadzone` | trigger 两端死区 | `0.05` |
+| `hands.linkerhand_l6.open_pose` / `close_pose` | L6 的 6 维张开/闭合姿态 | 见配置 |
+| `hands.somehand.config_path` | `vr_hand_pose` 使用的 somehand 双手 L6 配置 | 见配置 |
+| `hands.somehand.rate` | 低延时 `vr_hand_pose` 命令频率（Hz） | `60.0` |
+| `hands.somehand.threaded` | 在机器人控制循环外运行 `vr_hand_pose` 手部重定向 | `true` |
+| `hands.somehand.max_iterations` | `vr_hand_pose` 的 somehand solver 迭代上限 | `12` |
+| `hands.somehand.temporal_filter_alpha` | somehand 输入 landmarks 平滑 alpha；`1.0` 表示关闭平滑延时 | `1.0` |
+| `hands.somehand.output_alpha` | somehand qpos 输出平滑 alpha；`1.0` 表示关闭平滑延时 | `1.0` |

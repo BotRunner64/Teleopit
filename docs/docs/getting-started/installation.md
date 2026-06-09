@@ -71,8 +71,7 @@ pip install -e '.[dexhand]'
 scripts/setup/download_somehand_l6_assets.sh
 ```
 
-This extra is only required when `dexterous_hand.mode=gripper` or
-`dexterous_hand.mode=vr_hand_pose`.
+This extra is only required when `hands.enabled=true`.
 
 ## Verify Installation
 

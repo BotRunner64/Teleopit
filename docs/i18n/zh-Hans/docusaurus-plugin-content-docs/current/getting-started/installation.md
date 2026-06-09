@@ -70,8 +70,7 @@ pip install -e '.[dexhand]'
 scripts/setup/download_somehand_l6_assets.sh
 ```
 
-只有在 `dexterous_hand.mode=gripper` 或
-`dexterous_hand.mode=vr_hand_pose` 时才需要安装这个 extra。
+只有在 `hands.mode=gripper` 或 `hands.mode=vr_hand_pose` 时才需要安装这个 extra。
 
 ## 验证安装
 
