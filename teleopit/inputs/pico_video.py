@@ -152,6 +152,9 @@ class _VideoProducer:
 
 
 class _RealSenseVideoProducer(_VideoProducer):
+    _FRAME_WAIT_TIMEOUT_MS = 100
+    _FRAME_TIMEOUT_LOG_INTERVAL_S = 2.0
+
     def __init__(self, provider: Any, config: PicoVideoConfig) -> None:
         self._provider = provider
         self._config = config
@@ -199,9 +202,19 @@ class _RealSenseVideoProducer(_VideoProducer):
             )
             pipeline.start(config)
             self._ready_event.set()
+            last_timeout_log_s = 0.0
             try:
                 while not self._stop_event.is_set():
-                    frames = pipeline.wait_for_frames()
+                    frames = self._wait_for_frames(pipeline)
+                    if frames is None:
+                        now = time.monotonic()
+                        if now - last_timeout_log_s >= self._FRAME_TIMEOUT_LOG_INTERVAL_S:
+                            last_timeout_log_s = now
+                            logger.warning(
+                                "RealSense Pico video has no new color frame yet | pushed_frames=%d",
+                                self._pushed_frames,
+                            )
+                        continue
                     color_frame = frames.get_color_frame()
                     if not color_frame:
                         continue
@@ -213,6 +226,25 @@ class _RealSenseVideoProducer(_VideoProducer):
             self._error = exc
             self._ready_event.set()
             logger.exception("RealSense Pico video producer failed")
+
+    def _wait_for_frames(self, pipeline: Any) -> Any | None:
+        try_wait_for_frames = getattr(pipeline, "try_wait_for_frames", None)
+        if callable(try_wait_for_frames):
+            result = try_wait_for_frames(timeout_ms=self._FRAME_WAIT_TIMEOUT_MS)
+            if isinstance(result, tuple):
+                ok = bool(result[0]) if result else False
+                return result[1] if ok and len(result) > 1 else None
+            return result if result else None
+
+        try:
+            return pipeline.wait_for_frames(timeout_ms=self._FRAME_WAIT_TIMEOUT_MS)
+        except TypeError:
+            return pipeline.wait_for_frames()
+        except RuntimeError as exc:
+            message = str(exc).lower()
+            if "timeout" in message or "timed out" in message or "frame didn't arrive" in message:
+                return None
+            raise
 
 
 class _MujocoCameraVideoProducer(_VideoProducer):
