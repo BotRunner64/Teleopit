@@ -179,6 +179,37 @@ def test_multiprocess_run_cleans_up_after_start_failure(monkeypatch) -> None:
     assert controller._processes == []
 
 
+def test_pico_video_does_not_spawn_separate_video_worker() -> None:
+    started_names: list[str] = []
+
+    class FakeProcess:
+        def __init__(self, *, name: str, target: object, args: tuple[object, ...]) -> None:
+            del target, args
+            self.name = name
+            self.exitcode = 0
+
+        def start(self) -> None:
+            started_names.append(self.name)
+
+    class FakeContext:
+        def Event(self) -> object:
+            return SimpleNamespace(set=lambda: None, is_set=lambda: False)
+
+        def Process(self, *, name: str, target: object, args: tuple[object, ...]) -> FakeProcess:
+            return FakeProcess(name=name, target=target, args=args)
+
+    cfg = {
+        "input": {"provider": "pico4", "video": {"enabled": True, "source": "realsense"}},
+        "runtime": {"shutdown_timeout_s": 0.01},
+    }
+    runtime = Sim2RealRuntime(cfg)
+    runtime._ctx = FakeContext()  # type: ignore[assignment]
+
+    runtime._start_processes()
+
+    assert started_names == ["pico_input", "reference", "robot_control"]
+
+
 def test_human_frame_validation_rejects_bad_inputs() -> None:
     valid_frame = {
         "Pelvis": (np.zeros(3, dtype=np.float64), np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)),

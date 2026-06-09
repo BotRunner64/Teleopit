@@ -46,7 +46,6 @@ from teleopit.sim2real.mp.ipc import (
     HEALTH_TOPIC,
     MODE_TOPIC,
     REFERENCE_TOPIC,
-    VIDEO_TOPIC,
     LatestSubscriber,
     Sim2RealIpcEndpoints,
     ZmqPublisher,
@@ -59,10 +58,8 @@ from teleopit.sim2real.mp.messages import (
     HealthPacket,
     ModeStatePacket,
     ReferencePacket,
-    SharedFrameDescriptor,
     SnapshotPacket,
 )
-from teleopit.sim2real.mp.shm import SharedFrameRingWriter
 from teleopit.sim2real.reference_processor import Sim2RealReferenceProcessor
 from teleopit.sim2real.remote import UnitreeRemote
 from teleopit.sim2real.safety import Sim2RealSafetyManager
@@ -1425,62 +1422,3 @@ def _run_hand_worker(
                 command_sub.close()
 
     _worker_loop("hand_worker", _main)
-
-
-def _run_video_worker(
-    cfg: dict[str, Any],
-    endpoints: Sim2RealIpcEndpoints,
-    stop_event: MpEvent,
-) -> None:
-    def _main() -> None:
-        input_cfg = cfg_get(cfg, "input", {}) or {}
-        video_cfg = parse_pico_video_config(input_cfg)
-        if not video_cfg.enabled:
-            return
-        if video_cfg.source not in ("realsense",):
-            logger.warning("Multiprocess video worker supports source=realsense; got %s", video_cfg.source)
-            return
-
-        writer = SharedFrameRingWriter(
-            shape=(video_cfg.height, video_cfg.width, 3),
-            dtype=np.uint8,
-            slots=int(cfg_get(_mp_cfg(cfg), "video_slots", 3)),
-        )
-        video_pub = ZmqPublisher(endpoints.video_pub)
-        command_sub = LatestSubscriber(endpoints.command_pub, COMMAND_TOPIC)
-        try:
-            import pyrealsense2 as rs
-
-            pipeline = rs.pipeline()
-            rs_config = rs.config()
-            if video_cfg.device is not None:
-                rs_config.enable_device(video_cfg.device)
-            rs_config.enable_stream(
-                rs.stream.color,
-                video_cfg.width,
-                video_cfg.height,
-                rs.format.rgb8,
-                video_cfg.fps,
-            )
-            pipeline.start(rs_config)
-            try:
-                while not stop_event.is_set():
-                    command = command_sub.recv_latest()
-                    if isinstance(command, CommandPacket) and command.command == "shutdown":
-                        stop_event.set()
-                        break
-                    frames = pipeline.wait_for_frames()
-                    color_frame = frames.get_color_frame()
-                    if not color_frame:
-                        continue
-                    rgb = np.ascontiguousarray(np.asanyarray(color_frame.get_data()), dtype=np.uint8)
-                    descriptor = writer.write(rgb, timestamp_s=time.monotonic())
-                    video_pub.publish(VIDEO_TOPIC, descriptor)
-            finally:
-                pipeline.stop()
-        finally:
-            command_sub.close()
-            video_pub.close()
-            writer.close(unlink=True)
-
-    _worker_loop("video_worker", _main)
