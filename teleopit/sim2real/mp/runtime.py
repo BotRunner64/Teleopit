@@ -89,24 +89,36 @@ class RobotMode(Enum):
 
 
 class _LoopTimingReporter:
-    def __init__(self, *, target_period_s: float, log_interval_s: float = 1.0) -> None:
+    def __init__(
+        self,
+        *,
+        target_period_s: float,
+        log_interval_s: float = 1.0,
+        deadline_miss_tolerance_s: float = 0.001,
+    ) -> None:
         self._target_period_s = float(target_period_s)
         self._log_interval_s = float(log_interval_s)
+        self._deadline_miss_tolerance_s = float(deadline_miss_tolerance_s)
         self._window_start_s: float | None = None
         self._loop_ms: list[float] = []
+        self._late_ms: list[float] = []
         self._work_ms: list[float] = []
         self._pico_age_ms: list[float] = []
-        self._overrun_count = 0
+        self._deadline_miss_count = 0
+        self._work_overrun_count = 0
 
     def record(self, *, loop_start_s: float, work_elapsed_s: float, cycle_elapsed_s: float, pico_age_s: float | None) -> None:
         if self._window_start_s is None:
             self._window_start_s = float(loop_start_s)
         self._loop_ms.append(float(cycle_elapsed_s) * 1000.0)
+        self._late_ms.append(max(0.0, float(cycle_elapsed_s) - self._target_period_s) * 1000.0)
         self._work_ms.append(float(work_elapsed_s) * 1000.0)
         if pico_age_s is not None:
             self._pico_age_ms.append(float(pico_age_s) * 1000.0)
-        if cycle_elapsed_s > self._target_period_s + 1e-9:
-            self._overrun_count += 1
+        if cycle_elapsed_s > self._target_period_s + self._deadline_miss_tolerance_s:
+            self._deadline_miss_count += 1
+        if work_elapsed_s > self._target_period_s + 1e-9:
+            self._work_overrun_count += 1
         if loop_start_s - self._window_start_s >= self._log_interval_s:
             self._emit(loop_start_s)
 
@@ -116,19 +128,25 @@ class _LoopTimingReporter:
             self._reset(end_s)
             return
         loop_summary = self._summarize(self._loop_ms)
+        late_summary = self._summarize(self._late_ms)
         work_summary = self._summarize(self._work_ms)
         message = (
             "Timing stats | samples=%d window=%.1fs | "
-            "loop_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f overrun=%d/%d | "
-            "work_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f"
+            "loop_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f | "
+            "late_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f deadline_miss(>%.2fms)=%d/%d | "
+            "work_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f work_overrun=%d/%d"
         )
         args: list[object] = [
             sample_count,
             end_s - float(self._window_start_s),
             *loop_summary,
-            self._overrun_count,
+            *late_summary,
+            self._deadline_miss_tolerance_s * 1000.0,
+            self._deadline_miss_count,
             sample_count,
             *work_summary,
+            self._work_overrun_count,
+            sample_count,
         ]
         if self._pico_age_ms:
             message += " | reference_age_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f"
@@ -139,9 +157,11 @@ class _LoopTimingReporter:
     def _reset(self, window_start_s: float) -> None:
         self._window_start_s = float(window_start_s)
         self._loop_ms.clear()
+        self._late_ms.clear()
         self._work_ms.clear()
         self._pico_age_ms.clear()
-        self._overrun_count = 0
+        self._deadline_miss_count = 0
+        self._work_overrun_count = 0
 
     @staticmethod
     def _summarize(samples: list[float]) -> tuple[float, float, float, float]:

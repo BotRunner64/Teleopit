@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,8 +11,28 @@ import pytest
 from teleopit.runtime.mocap_session import MocapSessionState
 from teleopit.sim2real.mp.ipc import HEALTH_TOPIC, LatestSubscriber, ZmqPublisher
 from teleopit.sim2real.mp.messages import ReferencePacket, SharedFrameDescriptor
-from teleopit.sim2real.mp.runtime import RobotMode, Sim2RealRuntime, _RobotControlWorker, _human_frame_is_valid
+from teleopit.sim2real.mp.runtime import (
+    RobotMode,
+    Sim2RealRuntime,
+    _LoopTimingReporter,
+    _RobotControlWorker,
+    _human_frame_is_valid,
+)
 from teleopit.sim2real.mp.shm import SharedFrameRingReader, SharedFrameRingWriter
+
+
+def test_loop_timing_reporter_separates_late_sleep_from_work_overrun(caplog) -> None:
+    reporter = _LoopTimingReporter(target_period_s=0.02, log_interval_s=1.0, deadline_miss_tolerance_s=0.001)
+
+    with caplog.at_level(logging.INFO, logger="teleopit.sim2real.mp.runtime"):
+        reporter.record(loop_start_s=0.0, work_elapsed_s=0.0004, cycle_elapsed_s=0.02006, pico_age_s=None)
+        reporter.record(loop_start_s=1.0, work_elapsed_s=0.021, cycle_elapsed_s=0.0212, pico_age_s=None)
+
+    message = caplog.messages[-1]
+    assert "late_ms" in message
+    assert "deadline_miss(>1.00ms)=1/2" in message
+    assert "work_overrun=1/2" in message
+    assert " overrun=" not in message
 
 
 def test_sim2real_runtime_rejects_legacy_runtime_keys() -> None:
