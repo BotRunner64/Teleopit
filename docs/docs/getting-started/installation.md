@@ -32,7 +32,7 @@ This is sufficient for offline BVH playback and MuJoCo simulation.
 pip install -e '.[train]'
 ```
 
-Adds `rsl-rl-lib`, `mjlab`, `wandb`, and training dependencies.
+Adds `rsl-rl-lib`, `mjlab`, `wandb`, `swanlab`, and training dependencies.
 
 ### Sim2Real (Hardware Deployment)
 

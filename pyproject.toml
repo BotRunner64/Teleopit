@@ -46,6 +46,7 @@ train = [
     "rsl-rl-lib",
     "mjlab>=1.2.0",
     "wandb>=0.15.0",
+    "swanlab",
     "tqdm>=4.65.0",
 ]
 pico4 = [

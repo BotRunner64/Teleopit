@@ -73,7 +73,7 @@ torchrun \
 **Notes:**
 - `--num_envs` is per-GPU in multi-GPU mode
 - `--num_envs` is also per-process in multi-node mode, so total environments scale with `world_size`
-- Default logger is TensorBoard; pass `--wandb_project <name>` to enable W&B
+- Default logger is TensorBoard. Use `--logger wandb` or `--logger swanlab` to select W&B or SwanLab; the project name defaults to `experiment_name`
 - `--motion_file` accepts only shard directories (containing `shard_*.npz` files)
 - `--max_iterations` means additional iterations; resuming from `model_12000.pt` with `--max_iterations 18000` trains to `model_30000.pt`
 

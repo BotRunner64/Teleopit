@@ -73,7 +73,7 @@ torchrun \
 **注意事项：**
 - 多卡模式下 `--num_envs` 为每张 GPU 的环境数量
 - 多机模式下 `--num_envs` 也按每个进程计算，因此总环境数会随 `world_size` 线性增长
-- 默认日志工具为 TensorBoard；传入 `--wandb_project <name>` 可启用 W&B
+- 默认日志工具为 TensorBoard。使用 `--logger wandb` 或 `--logger swanlab` 可选择 W&B 或 SwanLab；项目名默认使用 `experiment_name`
 - `--motion_file` 仅接受分片目录（包含 `shard_*.npz` 文件的目录）
 - `--max_iterations` 表示追加迭代次数；例如从 `model_12000.pt` 恢复训练并设置 `--max_iterations 18000`，最终将训练到 `model_30000.pt`
 

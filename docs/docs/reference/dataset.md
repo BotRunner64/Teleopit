@@ -20,6 +20,33 @@ For custom dataset construction, read on.
 
 ---
 
+## Record Pico Clips
+
+Use the interactive Pico recorder to create training-ready NPZ clips from live
+body tracking:
+
+```bash
+pip install -e '.[pico4]'
+python scripts/run/record_pico_motion.py
+```
+
+The recorder starts the Pico receiver and live `Retarget` viewer before waiting
+for clip names, so preview keeps running while the terminal is idle. Enter a
+semantic clip name, then use `R` to start, `S` to save, `D` to discard, `N` to
+enter a new name, and `Q` to quit. Saved clips go to
+`data/pico_motion/clips/` as `<semantic_label>_<timestamp>.npz`; no per-clip
+JSON is written, so clips can be renamed or deleted manually.
+
+Build all recorded clips into the standard shard dataset:
+
+```bash
+python train_mimic/scripts/data/build_dataset.py \
+    --spec data/pico_motion/pico_recorded.yaml --force
+```
+
+Record at least two clips before building so both train and validation splits
+can be populated.
+
 ## Custom Dataset Construction
 
 Data pipeline: `typed source YAML -> preprocess/filter -> shard-only training data`
@@ -57,7 +84,7 @@ val_percent: 5
 hash_salt: ""
 preprocess:
   normalize_root_xy: true
-  ground_align: clip_min_foot
+  ground_align: first_frame_foot
 sources:
   - name: OMOMO_g1_GMR
     type: pkl
@@ -77,7 +104,7 @@ sources:
 | `val_percent` | Validation split percentage (hash-based on clip_id) |
 | `hash_salt` | Optional split salt |
 | `preprocess.normalize_root_xy` | Normalize root body first-frame xy to origin |
-| `preprocess.ground_align` | `none` / `clip_min_foot` |
+| `preprocess.ground_align` | `none` / `first_frame_foot` |
 | `preprocess.min_frames` | Minimum clip length |
 | `preprocess.max_root_lin_vel` | Root linear velocity filter threshold |
 | `preprocess.min_peak_body_height` | Minimum peak body height |

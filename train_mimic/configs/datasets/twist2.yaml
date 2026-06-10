@@ -4,7 +4,7 @@ val_percent: 5
 hash_salt: ""
 preprocess:
   normalize_root_xy: true
-  ground_align: clip_min_foot
+  ground_align: first_frame_foot
 sources:
   - name: OMOMO_g1_GMR
     type: pkl

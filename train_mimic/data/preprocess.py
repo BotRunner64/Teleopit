@@ -9,7 +9,7 @@ import numpy as np
 
 from train_mimic.data.dataset_lib import inspect_clip_dict
 
-GROUND_ALIGN_MODES = {"none", "clip_min_foot"}
+GROUND_ALIGN_MODES = {"none", "first_frame_foot"}
 
 
 @dataclass(frozen=True)
@@ -169,10 +169,10 @@ def preprocess_clip_dict(
                 f"{spec.max_feet_off_ground_s:.3f}s"
             )
 
-    if spec.ground_align == "clip_min_foot":
+    if spec.ground_align == "first_frame_foot":
         assert foot_indices is not None
         foot_z = body_pos_w[:, foot_indices, 2]
-        body_pos_w[..., 2] -= float(np.min(foot_z))
+        body_pos_w[..., 2] -= float(np.min(foot_z[0]))
 
     if spec.min_peak_body_height is not None:
         peak_height = float(np.max(body_pos_w[:, :, 2]))

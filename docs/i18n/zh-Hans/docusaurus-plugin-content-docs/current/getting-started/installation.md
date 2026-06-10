@@ -32,7 +32,7 @@ pip install -e .
 pip install -e '.[train]'
 ```
 
-额外安装 `rsl-rl-lib`、`mjlab`、`wandb` 等训练相关依赖。
+额外安装 `rsl-rl-lib`、`mjlab`、`wandb`、`swanlab` 等训练相关依赖。
 
 ### Sim2Real（硬件部署）
 

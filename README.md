@@ -57,6 +57,29 @@ python scripts/run/run_sim.py \
 For sim2real, viewers are disabled by default. Add `viewers=retarget` to show
 the retargeted reference in an optional MuJoCo window.
 
+## Pico Motion Recording
+
+Record many Pico clips as training-ready G1 motion NPZ files:
+
+```bash
+pip install -e '.[pico4]'
+python scripts/run/record_pico_motion.py
+```
+
+The recorder starts the Pico receiver and live Retarget viewer before waiting
+for clip names, so preview keeps running while the terminal is idle. Enter a
+semantic clip name, then use `R` to start, `S` to save, `D` to discard, `N` for
+a new name, and `Q` to quit. Saved clips are written to
+`data/pico_motion/clips/` using the semantic label in the filename, with no
+sidecar JSON.
+
+Merge recorded clips into the standard shard dataset:
+
+```bash
+python train_mimic/scripts/data/build_dataset.py \
+    --spec data/pico_motion/pico_recorded.yaml --force
+```
+
 ## Documentation
 
 Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Teleopit/)**, covering installation profiles, all tutorials, configuration reference, and architecture.
@@ -70,6 +93,7 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 - Set LinkerHand L6 `vr_hand_pose` control to maximum speed while keeping `gripper` at the configured default speed.
 - Switched default `vr_hand_pose` to a low-latency somehand path with 60 Hz hand retargeting and reduced smoothing.
 - Realtime mode switches and pause/resume now preserve GMR IK warm-starts instead of cold-starting the retargeter on each transition.
+- Added an interactive Pico motion recorder that saves retargeted G1 motion clips as training-ready NPZ files.
 
 ### v0.3.0 (2026-05-12)
 

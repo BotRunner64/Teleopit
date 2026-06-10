@@ -20,6 +20,30 @@ python train_mimic/scripts/train.py --motion_file data/datasets/seed/train
 
 ---
 
+## 录制 Pico clips
+
+使用交互式 Pico 录制脚本，从实时 body tracking 生成训练可用的 NPZ clips：
+
+```bash
+pip install -e '.[pico4]'
+python scripts/run/record_pico_motion.py
+```
+
+录制器会先启动 Pico receiver 和实时 `Retarget` viewer，再等待输入 clip 名；
+因此终端空闲时预览仍会持续运行。输入动作语义名后，用 `R` 开始录制、`S`
+保存、`D` 丢弃、`N` 输入新名字、`Q` 退出。保存的 clip 会写入
+`data/pico_motion/clips/`，文件名格式为 `<semantic_label>_<timestamp>.npz`；不会写
+每段 clip 的 JSON，因此可以手动改名或删除。
+
+将所有已录制 clips 构建为标准 shard 数据集：
+
+```bash
+python train_mimic/scripts/data/build_dataset.py \
+    --spec data/pico_motion/pico_recorded.yaml --force
+```
+
+构建前至少录制两段 clip，确保 train 和 validation split 都能生成。
+
 ## 自定义构建
 
 数据主线：`typed source YAML -> preprocess/filter -> shard-only 训练数据`
@@ -57,7 +81,7 @@ val_percent: 5
 hash_salt: ""
 preprocess:
   normalize_root_xy: true
-  ground_align: clip_min_foot
+  ground_align: first_frame_foot
 sources:
   - name: OMOMO_g1_GMR
     type: pkl
@@ -77,7 +101,7 @@ sources:
 | `val_percent` | 基于 `clip_id` hash 的验证集比例 |
 | `hash_salt` | 可选 split salt |
 | `preprocess.normalize_root_xy` | 是否把根 body 首帧 xy 平移到原点 |
-| `preprocess.ground_align` | `none` / `clip_min_foot` |
+| `preprocess.ground_align` | `none` / `first_frame_foot` |
 | `preprocess.min_frames` | clip 最短长度约束 |
 | `preprocess.max_root_lin_vel` / `min_peak_body_height` / `max_all_off_ground_s` | 基础过滤阈值 |
 | `sources[].name` | source 名称；生成 clip 中间产物时也作为 `clips/<source>/` 子目录名 |

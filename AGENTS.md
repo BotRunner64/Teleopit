@@ -57,10 +57,11 @@ teleopit/                 # Core inference package
 ├── sim2real/
 │   ├── mp/               # Process-isolated sim2real runtime and IPC
 │   └── hands/            # Optional LinkerHand L6 driver/mapper plugins
-└── recording/            # HDF5Recorder
+└── recording/            # HDF5Recorder and Pico motion NPZ recording helpers
 scripts/
-├── run_sim.py            # Offline sim2sim pipeline
-├── run_sim2real.py       # G1 sim2real control; supports offline BVH playback and Pico4
+├── run/run_sim.py        # Offline sim2sim pipeline
+├── run/run_sim2real.py   # G1 sim2real control; supports offline BVH playback and Pico4
+├── run/record_pico_motion.py # Interactive Pico recording → G1 motion NPZ clips
 ├── render_sim.py         # Render single BVH → 3 MuJoCo videos (mocap input, retarget, sim2sim)
 └── compute_ik_offsets.py # Compute IK quaternion offsets for new BVH formats
 train_mimic/              # Training package
@@ -199,11 +200,15 @@ The single supported training task is `General-Tracking-G1` (experiment name: `g
 - Final dataset outputs are shard-only: `data/datasets/<dataset>/train/shard_*.npz` and `data/datasets/<dataset>/val/shard_*.npz`
 - Each shard stores clip-aware metadata (`clip_starts`, `clip_lengths`, `clip_fps`, `clip_weights`); `MotionLib` loads only shard directories
 - `MotionLib` samples only valid center frames for the configured `window_steps`; default is `window_steps=[0]`
+- `scripts/run/record_pico_motion.py` records Pico live body tracking as retargeted G1 motion NPZ clips in `data/pico_motion/clips/`; it opens a live `Retarget` viewer, uses terminal keys `R/S/D/N/Q`, stores semantic labels in filenames, and intentionally does not write per-clip JSON
+- Build Pico-recorded clips into shards with `python train_mimic/scripts/data/build_dataset.py --spec data/pico_motion/pico_recorded.yaml --force`; at least two clips are required for non-empty train/val splits
 
 Quick reference:
 
 ```bash
 python train_mimic/scripts/data/build_dataset.py --spec train_mimic/configs/datasets/twist2.yaml
+python scripts/run/record_pico_motion.py
+python train_mimic/scripts/data/build_dataset.py --spec data/pico_motion/pico_recorded.yaml --force
 python train_mimic/scripts/train.py --motion_file data/datasets/twist2/train
 python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt --output policy.onnx --history_length 10
 ```

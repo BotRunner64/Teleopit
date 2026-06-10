@@ -11,11 +11,17 @@ Usage:
         --num_envs 64 --max_iterations 100 \
         --motion_file data/datasets/twist2/train
 
-    # With wandb logging
+    # With W&B logging
     python train_mimic/scripts/train.py \
         --num_envs 4096 --max_iterations 30000 \
         --motion_file data/datasets/twist2/train \
-        --wandb_project teleopit
+        --logger wandb
+
+    # With SwanLab logging
+    python train_mimic/scripts/train.py \
+        --num_envs 4096 --max_iterations 30000 \
+        --motion_file data/datasets/twist2/train \
+        --logger swanlab
 
     # Resume for additional iterations
     python train_mimic/scripts/train.py \
@@ -59,8 +65,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--wandb_project", type=str, default=None,
-                        help="Enable wandb and set project name (default: tensorboard)")
+    parser.add_argument(
+        "--logger",
+        type=str,
+        default="tensorboard",
+        choices=["tensorboard", "wandb", "swanlab"],
+        help="Experiment logger backend (default: tensorboard)",
+    )
     parser.add_argument("--experiment_name", type=str, default=None)
     parser.add_argument("--motion_file", type=str, default=None,
                         help="Shard directory path containing shard_*.npz files")
@@ -227,6 +238,58 @@ def _resolve_worker_seed(base_seed: int, env: dict[str, str] | None = None) -> i
     return base_seed + global_rank * 100003
 
 
+def _is_main_process(env: dict[str, str] | None = None) -> bool:
+    runtime_env = os.environ if env is None else env
+    return int(runtime_env.get("RANK", "0")) == 0
+
+
+def _configure_experiment_logger(
+    *,
+    logger_name: str,
+    agent_cfg: Any,
+    env_cfg: Any,
+    log_dir: str,
+) -> bool:
+    """Configure the training logger and return whether SwanLab was started."""
+    if logger_name == "tensorboard":
+        agent_cfg.logger = "tensorboard"
+        return False
+
+    if logger_name == "wandb":
+        agent_cfg.logger = "wandb"
+        agent_cfg.wandb_project = agent_cfg.experiment_name
+        return False
+
+    if logger_name != "swanlab":
+        raise ValueError(f"Unsupported logger '{logger_name}'")
+
+    agent_cfg.logger = "tensorboard"
+    if not _is_main_process():
+        return False
+
+    try:
+        import swanlab
+    except ModuleNotFoundError:
+        raise ModuleNotFoundError(
+            "swanlab package is required for --logger swanlab. Install it with `pip install swanlab`."
+        ) from None
+
+    swanlab.init(
+        project=agent_cfg.experiment_name,
+        name=os.path.basename(log_dir),
+        log_dir=log_dir,
+        config={
+            "experiment_name": agent_cfg.experiment_name,
+            "motion_file": env_cfg.commands["motion"].motion_file,
+            "num_envs": env_cfg.scene.num_envs,
+            "max_iterations": agent_cfg.max_iterations,
+            "sampling_mode": env_cfg.commands["motion"].sampling_mode,
+        },
+    )
+    swanlab.sync_tensorboard_torch(types=["scalar", "scalars", "image", "text"])
+    return True
+
+
 def _launch_multi_gpu(args: argparse.Namespace, argv: Sequence[str]) -> None:
     _validate_multi_gpu_args(args)
     command = _build_torchrun_command(args, argv)
@@ -294,10 +357,6 @@ def _run_worker(args: argparse.Namespace) -> None:
         load_runner_cls=load_runner_cls,
     )
 
-    # Default to tensorboard (mjlab defaults to wandb)
-    if args.wandb_project is None:
-        agent_cfg.logger = "tensorboard"
-
     # CLI overrides
     env_cfg.seed = _resolve_worker_seed(args.seed)
     if args.num_envs is not None:
@@ -311,9 +370,6 @@ def _run_worker(args: argparse.Namespace) -> None:
         agent_cfg.max_iterations = args.max_iterations
     if args.experiment_name is not None:
         agent_cfg.experiment_name = args.experiment_name
-    if args.wandb_project is not None:
-        agent_cfg.logger = "wandb"
-        agent_cfg.wandb_project = args.wandb_project
 
     device = _resolve_device(args, torch)
 
@@ -322,6 +378,12 @@ def _run_worker(args: argparse.Namespace) -> None:
     os.makedirs(log_root, exist_ok=True)
     log_dir = os.path.join(log_root, datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
     os.makedirs(log_dir, exist_ok=True)
+    swanlab_active = _configure_experiment_logger(
+        logger_name=args.logger,
+        agent_cfg=agent_cfg,
+        env_cfg=env_cfg,
+        log_dir=log_dir,
+    )
 
     # render_mode only needed for video recording
     render_mode = "rgb_array" if args.video else None
@@ -363,6 +425,11 @@ def _run_worker(args: argparse.Namespace) -> None:
         if env is not None:
             with contextlib.suppress(Exception):
                 env.close()
+        if swanlab_active:
+            with contextlib.suppress(Exception):
+                import swanlab
+
+                swanlab.finish()
         _destroy_process_group(torch)
         signal.signal(signal.SIGINT, old_sigint)
         signal.signal(signal.SIGTERM, old_sigterm)

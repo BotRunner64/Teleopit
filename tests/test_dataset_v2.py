@@ -590,7 +590,7 @@ def test_convert_source_to_npz_clips_applies_preprocess(tmp_path: Path) -> None:
         jobs=1,
         preprocess=DatasetPreprocessSpec(
             normalize_root_xy=True,
-            ground_align="clip_min_foot",
+            ground_align="first_frame_foot",
         ),
     )
     clip = np.load(output_dir_2 / "clip_a.npz", allow_pickle=True)
@@ -600,7 +600,7 @@ def test_convert_source_to_npz_clips_applies_preprocess(tmp_path: Path) -> None:
     right_idx = body_names.index("right_ankle_roll_link")
     assert np.allclose(clip["body_pos_w"][0, pelvis_idx, :2], 0.0)
     foot_z = clip["body_pos_w"][:, [left_idx, right_idx], 2]
-    assert np.isclose(float(np.min(foot_z)), 0.0)
+    assert np.isclose(float(np.min(foot_z[0])), 0.0)
 
 
 def test_convert_source_to_npz_clips_skips_all_off_ground_clips_before_ground_align(tmp_path: Path) -> None:
@@ -630,7 +630,7 @@ def test_convert_source_to_npz_clips_skips_all_off_ground_clips_before_ground_al
         output_dir,
         jobs=1,
         preprocess=dataset_builder.DatasetPreprocessSpec(
-            ground_align="clip_min_foot",
+            ground_align="first_frame_foot",
             max_all_off_ground_s=0.05,
             off_ground_height=0.08,
         ),
@@ -652,7 +652,7 @@ def test_convert_source_to_npz_clips_skips_all_off_ground_clips_before_ground_al
             output_dir,
             jobs=1,
             preprocess=dataset_builder.DatasetPreprocessSpec(
-                ground_align="clip_min_foot",
+                ground_align="first_frame_foot",
                 max_all_off_ground_s=0.05,
                 off_ground_height=0.08,
             ),
@@ -788,7 +788,7 @@ def test_batch_convert_chunk_skips_filtered_short_clips(
         "train",
         preprocess=dataset_builder.DatasetPreprocessSpec(
             normalize_root_xy=True,
-            ground_align="clip_min_foot",
+            ground_align="first_frame_foot",
             min_frames=22,
         ),
     )

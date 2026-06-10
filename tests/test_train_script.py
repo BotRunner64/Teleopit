@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -27,7 +29,7 @@ def _args(**overrides: object) -> argparse.Namespace:
         "num_envs": 1024,
         "max_iterations": 10,
         "seed": 42,
-        "wandb_project": None,
+        "logger": "tensorboard",
         "experiment_name": None,
         "motion_file": "data/datasets/twist2/train",
         "resume": None,
@@ -43,6 +45,18 @@ def _args(**overrides: object) -> argparse.Namespace:
 
 
 class TestTrainLauncherHelpers:
+    def test_parse_args_defaults_to_tensorboard_logger(self) -> None:
+        args = train.parse_args([])
+        assert args.logger == "tensorboard"
+
+    def test_parse_args_accepts_logger_choice(self) -> None:
+        args = train.parse_args(["--logger", "swanlab"])
+        assert args.logger == "swanlab"
+
+    def test_parse_args_rejects_removed_wandb_project(self) -> None:
+        with pytest.raises(SystemExit):
+            train.parse_args(["--wandb_project", "teleopit"])
+
     def test_parse_args_with_gpu_ids(self) -> None:
         args = train.parse_args(["--gpu_ids", "0", "2", "3", "--master_port", "29600"])
         assert args.gpu_ids == [0, 2, 3]
@@ -113,6 +127,77 @@ class TestTrainLauncherHelpers:
 
     def test_resolve_worker_seed_ignores_rank_outside_distributed_mode(self) -> None:
         assert train._resolve_worker_seed(42, env={"WORLD_SIZE": "1", "RANK": "3"}) == 42
+
+    def test_configure_tensorboard_logger(self) -> None:
+        agent_cfg = types.SimpleNamespace(logger="wandb", experiment_name="exp")
+        env_cfg = types.SimpleNamespace()
+
+        active = train._configure_experiment_logger(
+            logger_name="tensorboard",
+            agent_cfg=agent_cfg,
+            env_cfg=env_cfg,
+            log_dir="/tmp/run",
+        )
+
+        assert active is False
+        assert agent_cfg.logger == "tensorboard"
+
+    def test_configure_wandb_logger_uses_experiment_name_as_project(self) -> None:
+        agent_cfg = types.SimpleNamespace(logger="tensorboard", experiment_name="exp")
+        env_cfg = types.SimpleNamespace()
+
+        active = train._configure_experiment_logger(
+            logger_name="wandb",
+            agent_cfg=agent_cfg,
+            env_cfg=env_cfg,
+            log_dir="/tmp/run",
+        )
+
+        assert active is False
+        assert agent_cfg.logger == "wandb"
+        assert agent_cfg.wandb_project == "exp"
+
+    def test_configure_swanlab_logger_syncs_tensorboard(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[tuple[str, object]] = []
+        fake_swanlab = types.SimpleNamespace(
+            init=lambda **kwargs: calls.append(("init", kwargs)),
+            sync_tensorboard_torch=lambda **kwargs: calls.append(("sync", kwargs)),
+        )
+        monkeypatch.setitem(sys.modules, "swanlab", fake_swanlab)
+        monkeypatch.setenv("RANK", "0")
+        agent_cfg = types.SimpleNamespace(logger="wandb", experiment_name="exp", max_iterations=10)
+        env_cfg = types.SimpleNamespace(
+            commands={"motion": types.SimpleNamespace(motion_file="data/train", sampling_mode="uniform")},
+            scene=types.SimpleNamespace(num_envs=64),
+        )
+
+        active = train._configure_experiment_logger(
+            logger_name="swanlab",
+            agent_cfg=agent_cfg,
+            env_cfg=env_cfg,
+            log_dir="/tmp/2026-01-01_00-00-00",
+        )
+
+        assert active is True
+        assert agent_cfg.logger == "tensorboard"
+        assert calls == [
+            (
+                "init",
+                {
+                    "project": "exp",
+                    "name": "2026-01-01_00-00-00",
+                    "log_dir": "/tmp/2026-01-01_00-00-00",
+                    "config": {
+                        "experiment_name": "exp",
+                        "motion_file": "data/train",
+                        "num_envs": 64,
+                        "max_iterations": 10,
+                        "sampling_mode": "uniform",
+                    },
+                },
+            ),
+            ("sync", {"types": ["scalar", "scalars", "image", "text"]}),
+        ]
 
     def test_main_uses_launcher_branch(self, monkeypatch: pytest.MonkeyPatch) -> None:
         called: dict[str, object] = {}

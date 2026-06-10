@@ -1,0 +1,24 @@
+defaults:
+  - input: pico4
+  - _self_
+
+input:
+  # Recording does not need aggressive realtime timeline reset warnings.
+  pico4_timestamp_gap_reset_s: 0.5
+
+record:
+  output_dir: data/pico_motion/clips
+  target_fps: 30
+  min_frames: 30
+  dataset_name: pico_recorded
+  dataset_spec_path: data/pico_motion/pico_recorded.yaml
+  write_dataset_spec: true
+  overwrite_dataset_spec: false
+  viewer_enabled: true
+  quiet_logs: true
+  # Optional safety cap in seconds. 0 means record until S/D/Q.
+  max_duration_s: 0.0
+
+hydra:
+  run:
+    dir: .
