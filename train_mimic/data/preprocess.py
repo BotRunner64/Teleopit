@@ -23,6 +23,8 @@ class DatasetPreprocessSpec:
     min_peak_body_height: float | None = None
     max_all_off_ground_s: float | None = None
     off_ground_height: float = 0.2
+    max_feet_off_ground_s: float | None = None
+    foot_off_ground_height: float = 0.08
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -54,6 +56,16 @@ def validate_preprocess_spec(spec: DatasetPreprocessSpec) -> DatasetPreprocessSp
     if spec.off_ground_height < 0.0:
         raise ValueError(
             f"preprocess.off_ground_height must be >= 0, got {spec.off_ground_height}"
+        )
+    if spec.max_feet_off_ground_s is not None and spec.max_feet_off_ground_s <= 0.0:
+        raise ValueError(
+            "preprocess.max_feet_off_ground_s must be > 0, "
+            f"got {spec.max_feet_off_ground_s}"
+        )
+    if spec.foot_off_ground_height < 0.0:
+        raise ValueError(
+            "preprocess.foot_off_ground_height must be >= 0, "
+            f"got {spec.foot_off_ground_height}"
         )
     return spec
 
@@ -120,16 +132,6 @@ def preprocess_clip_dict(
         body_pos_w[..., 0] -= offset_xy[0]
         body_pos_w[..., 1] -= offset_xy[1]
 
-    foot_indices: tuple[int, int] | None = None
-    if spec.ground_align != "none":
-        foot_indices = (
-            _body_index(body_names, spec.foot_body_names[0], label="foot"),
-            _body_index(body_names, spec.foot_body_names[1], label="foot"),
-        )
-        foot_z = body_pos_w[:, foot_indices, 2]
-        if spec.ground_align == "clip_min_foot":
-            body_pos_w[..., 2] -= float(np.min(foot_z))
-
     if spec.max_root_lin_vel is not None:
         assert root_index is not None
         peak_root_lin_vel = float(np.max(np.abs(body_lin_vel_w[:, root_index, :])))
@@ -148,6 +150,29 @@ def preprocess_clip_dict(
                 f"{clip_label}: all bodies off ground for {longest_run / fps:.3f}s, exceeds "
                 f"{spec.max_all_off_ground_s:.3f}s"
             )
+
+    foot_indices: tuple[int, int] | None = None
+    if spec.ground_align != "none" or spec.max_feet_off_ground_s is not None:
+        foot_indices = (
+            _body_index(body_names, spec.foot_body_names[0], label="foot"),
+            _body_index(body_names, spec.foot_body_names[1], label="foot"),
+        )
+
+    if spec.max_feet_off_ground_s is not None:
+        assert foot_indices is not None
+        foot_z = body_pos_w[:, foot_indices, 2]
+        both_feet_off = np.all(foot_z > spec.foot_off_ground_height, axis=1)
+        longest_run = _longest_true_run(both_feet_off)
+        if longest_run > int(round(spec.max_feet_off_ground_s * fps)):
+            raise ValueError(
+                f"{clip_label}: both feet off ground for {longest_run / fps:.3f}s, exceeds "
+                f"{spec.max_feet_off_ground_s:.3f}s"
+            )
+
+    if spec.ground_align == "clip_min_foot":
+        assert foot_indices is not None
+        foot_z = body_pos_w[:, foot_indices, 2]
+        body_pos_w[..., 2] -= float(np.min(foot_z))
 
     if spec.min_peak_body_height is not None:
         peak_height = float(np.max(body_pos_w[:, :, 2]))

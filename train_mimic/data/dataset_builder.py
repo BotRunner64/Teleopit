@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import fnmatch
+import json
 import os
 import shutil
 import multiprocessing
@@ -88,6 +90,7 @@ class DatasetSourceSpec:
     metadata_csv: str | None = None
     filters: dict[str, list] | None = None
     seed_filter_preset: str | None = None
+    exclude_patterns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -148,6 +151,15 @@ class ConversionTask:
     max_frames: int = 0
     mocap_xml: str | None = None
     preprocess: DatasetPreprocessSpec = field(default_factory=DatasetPreprocessSpec)
+
+
+@dataclass(frozen=True)
+class FilteredClipResult:
+    input_path: str
+    reason: str
+
+
+_FILTERED_MARKER_SUFFIX = ".filtered.json"
 
 
 @dataclass(frozen=True)
@@ -256,8 +268,29 @@ def _load_preprocess_spec(raw: object, spec_path: Path) -> DatasetPreprocessSpec
             else float(raw["max_all_off_ground_s"])
         ),
         off_ground_height=float(raw.get("off_ground_height", 0.2)),
+        max_feet_off_ground_s=(
+            None
+            if raw.get("max_feet_off_ground_s") in (None, "", "null")
+            else float(raw["max_feet_off_ground_s"])
+        ),
+        foot_off_ground_height=float(raw.get("foot_off_ground_height", 0.08)),
     )
     return validate_preprocess_spec(spec)
+
+
+def _load_exclude_patterns(raw: object, spec_path: Path, source_name: str) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"source {source_name!r} exclude_patterns must be a list in {spec_path}"
+        )
+    patterns = tuple(str(item).strip() for item in raw if str(item).strip())
+    if not patterns:
+        raise ValueError(
+            f"source {source_name!r} exclude_patterns must contain at least one non-empty pattern"
+        )
+    return patterns
 
 
 def load_dataset_spec(path: str | Path) -> DatasetSpec:
@@ -339,6 +372,11 @@ def load_dataset_spec(path: str | Path) -> DatasetSpec:
             spec_path=spec_path,
             source_name=source_name,
         )
+        exclude_patterns = _load_exclude_patterns(
+            raw.get("exclude_patterns"),
+            spec_path,
+            source_name,
+        )
 
         sources.append(
             DatasetSourceSpec(
@@ -352,6 +390,7 @@ def load_dataset_spec(path: str | Path) -> DatasetSpec:
                 metadata_csv=metadata_csv,
                 filters=filters,
                 seed_filter_preset=seed_filter_preset,
+                exclude_patterns=exclude_patterns,
             )
         )
 
@@ -422,20 +461,25 @@ def _filter_seed_csv_by_metadata(
     input_dir: Path,
     *,
     quiet: bool = False,
+    report: dict[str, Any] | None = None,
 ) -> tuple[list[SourceInputFile], dict[str, Any]]:
     """Filter seed_csv files using metadata_csv + filters from the source spec."""
-    report: dict[str, Any] = {
-        "source": source.name,
-        "type": source.type,
-        "metadata_csv": source.metadata_csv,
-        "seed_filter_preset": source.seed_filter_preset,
-        "scanned_files": len(all_files),
-        "metadata_rows_matched": len(all_files),
-        "preset_rejected_rows": 0,
-        "kept_files": len(all_files),
-        "filtered_files": 0,
-        "preset_reject_reasons": {},
-    }
+    if report is None:
+        report = {
+            "source": source.name,
+            "type": source.type,
+            "metadata_csv": source.metadata_csv,
+            "seed_filter_preset": source.seed_filter_preset,
+            "exclude_patterns": list(source.exclude_patterns),
+            "scanned_files": len(all_files),
+            "metadata_rows_matched": len(all_files),
+            "preset_rejected_rows": 0,
+            "path_rejected_files": 0,
+            "kept_files": len(all_files),
+            "filtered_files": 0,
+            "preset_reject_reasons": {},
+            "path_reject_reasons": {},
+        }
     if source.metadata_csv is None or (source.filters is None and source.seed_filter_preset is None):
         return all_files, report
 
@@ -513,7 +557,7 @@ def _filter_seed_csv_by_metadata(
 
     filtered = [f for f in all_files if f.rel_no_suffix.as_posix() in allowed_rels]
     report["kept_files"] = len(filtered)
-    report["filtered_files"] = len(all_files) - len(filtered)
+    report["filtered_files"] = int(report.get("scanned_files", len(all_files))) - len(filtered)
     if not quiet:
         print(
             f"[FILTER] source={source.name}: {len(filtered)}/{len(all_files)} files "
@@ -537,24 +581,75 @@ def _collect_source_files_with_report(
     _ensure_not_dataset_root_npz_input(source, input_path)
     suffix = _SOURCE_SUFFIXES[source.type]
 
+    def _base_report(items_count: int) -> dict[str, Any]:
+        return {
+            "source": source.name,
+            "type": source.type,
+            "metadata_csv": source.metadata_csv,
+            "seed_filter_preset": source.seed_filter_preset,
+            "exclude_patterns": list(source.exclude_patterns),
+            "scanned_files": items_count,
+            "metadata_rows_matched": items_count,
+            "preset_rejected_rows": 0,
+            "path_rejected_files": 0,
+            "kept_files": items_count,
+            "filtered_files": 0,
+            "preset_reject_reasons": {},
+            "path_reject_reasons": {},
+        }
+
+    def _matches_exclude(item: SourceInputFile) -> str | None:
+        rel_no_suffix = item.rel_no_suffix.as_posix()
+        candidates = (
+            rel_no_suffix,
+            f"{rel_no_suffix}{suffix}",
+            item.path.name,
+            item.path.stem,
+        )
+        for pattern in source.exclude_patterns:
+            pat = pattern.lower()
+            for candidate in candidates:
+                if fnmatch.fnmatchcase(candidate.lower(), pat):
+                    return pattern
+        return None
+
+    def _apply_path_excludes(
+        items: list[SourceInputFile],
+        report: dict[str, Any],
+    ) -> list[SourceInputFile]:
+        if not source.exclude_patterns:
+            return items
+        reject_counts: Counter[str] = Counter()
+        kept: list[SourceInputFile] = []
+        for item in items:
+            reason = _matches_exclude(item)
+            if reason is None:
+                kept.append(item)
+            else:
+                reject_counts[reason] += 1
+        report["path_rejected_files"] = len(items) - len(kept)
+        report["path_reject_reasons"] = dict(sorted(reject_counts.items()))
+        report["kept_files"] = len(kept)
+        report["filtered_files"] = len(items) - len(kept)
+        if not quiet and report["path_rejected_files"] > 0:
+            print(
+                f"[FILTER] source={source.name}: path_excludes rejected="
+                f"{report['path_rejected_files']} reasons={report['path_reject_reasons']}"
+            )
+        if not kept:
+            raise ValueError(
+                f"no files remain after path exclude filtering for source {source.name}: {input_path}"
+            )
+        return kept
+
     if input_path.is_file():
         if input_path.suffix.lower() != suffix:
             raise ValueError(
                 f"source {source.name} expected {suffix} input, got file {input_path.name}"
             )
         items = [SourceInputFile(path=input_path, rel_no_suffix=Path(input_path.stem))]
-        report: dict[str, Any] = {
-            "source": source.name,
-            "type": source.type,
-            "metadata_csv": source.metadata_csv,
-            "seed_filter_preset": source.seed_filter_preset,
-            "scanned_files": len(items),
-            "metadata_rows_matched": len(items),
-            "preset_rejected_rows": 0,
-            "kept_files": len(items),
-            "filtered_files": 0,
-            "preset_reject_reasons": {},
-        }
+        report = _base_report(len(items))
+        items = _apply_path_excludes(items, report)
         return items, input_path.parent, report
 
     if not input_path.is_dir():
@@ -573,22 +668,18 @@ def _collect_source_files_with_report(
         for path in files
     ]
 
-    report: dict[str, Any] = {
-        "source": source.name,
-        "type": source.type,
-        "metadata_csv": source.metadata_csv,
-        "seed_filter_preset": source.seed_filter_preset,
-        "scanned_files": len(items),
-        "metadata_rows_matched": len(items),
-        "preset_rejected_rows": 0,
-        "kept_files": len(items),
-        "filtered_files": 0,
-        "preset_reject_reasons": {},
-    }
+    report = _base_report(len(items))
+    items = _apply_path_excludes(items, report)
 
     # Apply metadata filtering for seed_csv sources
     if source.type == "seed_csv" and source.metadata_csv is not None:
-        items, report = _filter_seed_csv_by_metadata(source, items, input_path, quiet=quiet)
+        items, report = _filter_seed_csv_by_metadata(
+            source,
+            items,
+            input_path,
+            quiet=quiet,
+            report=report,
+        )
         if not items:
             raise ValueError(
                 f"no files remain after metadata filtering for source {source.name}: {input_path}"
@@ -641,12 +732,94 @@ def build_source_conversion_tasks(
     return tasks
 
 
-def _source_has_cached_npz(out_dir: Path) -> bool:
-    return out_dir.is_dir() and any(out_dir.rglob("*.npz"))
+def _filtered_marker_path(output_path: Path) -> Path:
+    return output_path.with_name(f"{output_path.name}{_FILTERED_MARKER_SUFFIX}")
+
+
+def _conversion_task_signature(task: ConversionTask) -> dict[str, Any]:
+    input_path = Path(task.input_path)
+    stat = input_path.stat()
+    signature = {
+        "source_name": task.source_name,
+        "source_type": task.source_type,
+        "input_path": str(input_path),
+        "input_size": int(stat.st_size),
+        "input_mtime_ns": int(stat.st_mtime_ns),
+        "bvh_format": task.bvh_format,
+        "robot_name": task.robot_name,
+        "max_frames": int(task.max_frames),
+        "mocap_xml": task.mocap_xml,
+        "preprocess": task.preprocess.to_dict(),
+    }
+    return json.loads(json.dumps(signature, sort_keys=True))
+
+
+def _filtered_marker_matches(task: ConversionTask) -> bool:
+    marker_path = _filtered_marker_path(Path(task.output_path))
+    if not marker_path.is_file():
+        return False
+    try:
+        payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        marker_path.unlink(missing_ok=True)
+        return False
+    if payload.get("signature") == _conversion_task_signature(task):
+        return True
+    marker_path.unlink(missing_ok=True)
+    return False
+
+
+def _write_filtered_marker(task: ConversionTask, reason: str) -> None:
+    marker_path = _filtered_marker_path(Path(task.output_path))
+    write_json(
+        marker_path,
+        {
+            "filtered": True,
+            "reason": reason,
+            "signature": _conversion_task_signature(task),
+        },
+    )
+
+
+def _clear_filtered_marker(output_path: Path) -> None:
+    _filtered_marker_path(output_path).unlink(missing_ok=True)
+
+
+def _prune_unexpected_source_outputs(out_dir: Path, tasks: list[ConversionTask]) -> None:
+    if not out_dir.is_dir():
+        return
+    expected = {Path(task.output_path).resolve() for task in tasks}
+    for npz_path in sorted(out_dir.rglob("*.npz")):
+        if npz_path.resolve() not in expected:
+            npz_path.unlink()
+            _clear_filtered_marker(npz_path)
+    for marker_path in sorted(out_dir.rglob(f"*.npz{_FILTERED_MARKER_SUFFIX}")):
+        output_path = Path(str(marker_path)[: -len(_FILTERED_MARKER_SUFFIX)])
+        if output_path.resolve() not in expected:
+            marker_path.unlink(missing_ok=True)
+
+
+def _current_source_npz_files(source: DatasetSourceSpec, source_dir: Path) -> list[Path]:
+    items, _scan_root, _report = _collect_source_files_with_report(source, quiet=True)
+    allowed_rels = {item.rel_no_suffix.as_posix() for item in items}
+    return [
+        npz_path
+        for npz_path in sorted(source_dir.rglob("*.npz"))
+        if npz_path.relative_to(source_dir).with_suffix("").as_posix() in allowed_rels
+    ]
 
 
 def _pending_tasks(tasks: list[ConversionTask]) -> list[ConversionTask]:
-    return [task for task in tasks if not Path(task.output_path).is_file()]
+    pending: list[ConversionTask] = []
+    for task in tasks:
+        output_path = Path(task.output_path)
+        if output_path.is_file():
+            _clear_filtered_marker(output_path)
+            continue
+        if _filtered_marker_matches(task):
+            continue
+        pending.append(task)
+    return pending
 
 
 def _build_source_filter_reports(spec: DatasetSpec) -> list[dict[str, Any]]:
@@ -699,7 +872,7 @@ def _maybe_preprocess_npz_file(
     np.savez(npz_path, **processed)
 
 
-def _convert_task(task: ConversionTask) -> str:
+def _convert_task(task: ConversionTask) -> str | FilteredClipResult:
     input_path = Path(task.input_path)
     output_path = Path(task.output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -708,36 +881,42 @@ def _convert_task(task: ConversionTask) -> str:
         if task.source_type == "npz":
             payload = np.load(input_path, allow_pickle=True)
             clip_dict = {key: payload[key] for key in payload.files}
+            clip_label = f"{task.source_name}:{input_path.name}"
             processed = _maybe_preprocess_clip_dict(
                 clip_dict,
                 preprocess=task.preprocess,
-                clip_label=f"{task.source_name}:{input_path.name}",
+                clip_label=clip_label,
             )
             np.savez(output_path, **processed)
             inspect_npz(output_path)
+            _clear_filtered_marker(output_path)
             return str(output_path)
 
         extractor = _get_fk_extractor()
         if task.source_type == "pkl":
             convert_pkl_to_npz(str(input_path), str(output_path), extractor=extractor)
+            clip_label = f"{task.source_name}:{input_path.name}"
             _maybe_preprocess_npz_file(
                 output_path,
                 preprocess=task.preprocess,
-                clip_label=f"{task.source_name}:{input_path.name}",
+                clip_label=clip_label,
             )
             inspect_npz(output_path)
+            _clear_filtered_marker(output_path)
             return str(output_path)
 
         if task.source_type == "seed_csv":
             arrays = convert_seed_csv_to_arrays(str(input_path), extractor=extractor)
+            clip_label = f"{task.source_name}:{input_path.name}"
             arrays = _maybe_preprocess_clip_dict(
                 arrays,
                 preprocess=task.preprocess,
-                clip_label=f"{task.source_name}:{input_path.name}",
+                clip_label=clip_label,
             )
             output_path.parent.mkdir(parents=True, exist_ok=True)
             np.savez(str(output_path), **arrays)
             inspect_npz(output_path)
+            _clear_filtered_marker(output_path)
             return str(output_path)
 
         if task.source_type == "bvh":
@@ -755,15 +934,26 @@ def _convert_task(task: ConversionTask) -> str:
                     model,
                 )
                 convert_pkl_to_npz(str(tmp_pkl), str(output_path), extractor=extractor)
+            clip_label = f"{task.source_name}:{input_path.name}"
             _maybe_preprocess_npz_file(
                 output_path,
                 preprocess=task.preprocess,
-                clip_label=f"{task.source_name}:{input_path.name}",
+                clip_label=clip_label,
             )
             inspect_npz(output_path)
+            _clear_filtered_marker(output_path)
             return str(output_path)
 
         raise ValueError(f"unsupported source type: {task.source_type}")
+    except ValueError as exc:
+        clip_label = f"{task.source_name}:{input_path.name}"
+        if str(exc).startswith(f"{clip_label}:"):
+            output_path.unlink(missing_ok=True)
+            _write_filtered_marker(task, str(exc))
+            return FilteredClipResult(input_path=str(input_path), reason=str(exc))
+        raise RuntimeError(
+            f"failed converting source={task.source_name} input={input_path}: {exc}"
+        ) from exc
     except Exception as exc:
         raise RuntimeError(
             f"failed converting source={task.source_name} input={input_path}: {exc}"
@@ -773,7 +963,10 @@ def _convert_task(task: ConversionTask) -> str:
 def _run_conversion_tasks_serial(tasks: list[ConversionTask]) -> None:
     total = len(tasks)
     for idx, task in enumerate(tasks, start=1):
-        _convert_task(task)
+        result = _convert_task(task)
+        if isinstance(result, FilteredClipResult):
+            print(f"[FILTER] {result.reason}")
+            continue
         print(f"[CONVERT] {idx}/{total} source={task.source_name} -> {_display_path(Path(task.output_path))}")
 
 
@@ -797,12 +990,15 @@ def run_conversion_tasks(tasks: list[ConversionTask], *, jobs: int = DEFAULT_JOB
             try:
                 for future in as_completed(future_map):
                     task = future_map[future]
-                    future.result()
+                    result = future.result()
                     completed += 1
-                    print(
-                        f"[CONVERT] {completed}/{total} "
-                        f"source={task.source_name} -> {_display_path(Path(task.output_path))}"
-                    )
+                    if isinstance(result, FilteredClipResult):
+                        print(f"[FILTER] {result.reason}")
+                    else:
+                        print(
+                            f"[CONVERT] {completed}/{total} "
+                            f"source={task.source_name} -> {_display_path(Path(task.output_path))}"
+                        )
             except Exception:
                 for future in future_map:
                     future.cancel()
@@ -823,14 +1019,15 @@ def convert_source_to_npz_clips(
     if force and output_dir.exists():
         shutil.rmtree(output_dir)
     tasks = build_source_conversion_tasks(source, output_dir, preprocess=preprocess)
+    _prune_unexpected_source_outputs(output_dir, tasks)
     pending = _pending_tasks(tasks)
-    if tasks and not pending and _source_has_cached_npz(output_dir):
+    if tasks and not pending:
         print(f"[CACHE] reusing source={source.name} clips: {_display_path(output_dir)}")
     else:
         output_dir.mkdir(parents=True, exist_ok=True)
-        run_conversion_tasks(pending or tasks, jobs=jobs)
+        run_conversion_tasks(pending, jobs=jobs)
 
-    npz_files = sorted(output_dir.rglob("*.npz"))
+    npz_files = _current_source_npz_files(source, output_dir)
     if not npz_files:
         raise ValueError(f"no converted npz clips found for source {source.name}: {output_dir}")
     return {
@@ -859,12 +1056,13 @@ def convert_sources_to_npz(
     for source in spec.sources:
         out_dir = source_out_dirs[source.name]
         tasks = build_source_conversion_tasks(source, out_dir, preprocess=spec.preprocess)
+        _prune_unexpected_source_outputs(out_dir, tasks)
         pending = _pending_tasks(tasks)
-        if tasks and not pending and _source_has_cached_npz(out_dir):
+        if tasks and not pending:
             print(f"[CACHE] reusing source={source.name} clips: {_display_path(out_dir)}")
             continue
         out_dir.mkdir(parents=True, exist_ok=True)
-        pending_tasks.extend(pending or tasks)
+        pending_tasks.extend(pending)
 
     run_conversion_tasks(pending_tasks, jobs=jobs)
     return source_out_dirs
@@ -876,7 +1074,7 @@ def collect_clip_rows(spec: DatasetSpec, *, paths: DatasetPaths) -> list[Dataset
         source_dir = paths.clips_root / source.name
         if not source_dir.is_dir():
             raise FileNotFoundError(f"expected converted npz dir for {source.name}: {source_dir}")
-        npz_files = sorted(source_dir.rglob("*.npz"))
+        npz_files = _current_source_npz_files(source, source_dir)
         if not npz_files:
             raise ValueError(f"no converted npz clips found for source {source.name}: {source_dir}")
         for npz_path in npz_files:

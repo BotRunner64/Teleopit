@@ -4,9 +4,13 @@ val_percent: 5
 hash_salt: ""
 preprocess:
   normalize_root_xy: true
-  ground_align: clip_min_foot
+  ground_align: none
+  max_all_off_ground_s: 2.0
+  off_ground_height: 0.2
 sources:
   - name: lafan1
     type: bvh
     input: data/lafan1_bvh
     bvh_format: lafan1
+    exclude_patterns:
+      - "*obstacle*"

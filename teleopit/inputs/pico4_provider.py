@@ -121,7 +121,7 @@ def _has_non_degenerate_positions(positions: NDArray[np.float64]) -> bool:
     return extent > 1e-6
 
 
-def _compute_ground_lift_offset(positions: NDArray[np.float64]) -> float:
+def _compute_ground_alignment_offset(positions: NDArray[np.float64]) -> float:
     pos = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
     if pos.size == 0:
         return 0.0
@@ -129,7 +129,7 @@ def _compute_ground_lift_offset(positions: NDArray[np.float64]) -> float:
     if not np.any(finite_mask):
         return 0.0
     min_z = float(np.min(pos[finite_mask, 2]))
-    return max(-min_z, 0.0)
+    return -min_z
 
 
 def _bridge_accepts_video_enabled(bridge_cls: type[Any]) -> bool:
@@ -233,7 +233,7 @@ class Pico4InputProvider(RealtimeInputProvider):
         self._last_source_seq: int | None = None
         self._controller_snapshot: PicoControllerSnapshot | None = None
         self._hand_snapshot: PicoHandSnapshot | None = None
-        self._ground_lift_offset: float | None = None
+        self._ground_alignment_offset: float | None = None
         self._bridge = bridge_cls(
             host=bridge_host,
             port=int(bridge_port),
@@ -415,7 +415,7 @@ class Pico4InputProvider(RealtimeInputProvider):
                 and timestamp - self._last_frame_timestamp > self._timestamp_gap_reset_s
             ):
                 self._frame_cache.clear()
-                self._ground_lift_offset = None
+                self._ground_alignment_offset = None
                 logger.warning(
                     "Pico4InputProvider timestamp-gap reset | gap=%.4fs",
                     timestamp - self._last_frame_timestamp,
@@ -423,7 +423,7 @@ class Pico4InputProvider(RealtimeInputProvider):
             if self._last_frame_timestamp is not None and timestamp <= self._last_frame_timestamp + 1e-9:
                 timestamp = self._last_frame_timestamp + 1e-6
 
-            human_frame = self._apply_ground_lift(human_frame)
+            human_frame = self._apply_ground_alignment(human_frame)
             self._frame_cache.append(human_frame, timestamp, fps_timestamp=timestamp)
             self._last_raw_body_joints = body_joints.copy()
             self._last_frame_timestamp = timestamp
@@ -534,17 +534,17 @@ class Pico4InputProvider(RealtimeInputProvider):
             result[name] = (np.asarray(pos, dtype=np.float64), np.asarray(quat, dtype=np.float64))
         return result
 
-    def _apply_ground_lift(self, human_frame: HumanFrame) -> HumanFrame:
-        """Apply one fixed Z lift so the initial Pico skeleton sits on the floor."""
-        if self._ground_lift_offset is None:
+    def _apply_ground_alignment(self, human_frame: HumanFrame) -> HumanFrame:
+        """Apply one fixed Z offset so the initial Pico skeleton sits on the floor."""
+        if self._ground_alignment_offset is None:
             positions = np.asarray([value[0] for value in human_frame.values()], dtype=np.float64)
             if _has_non_degenerate_positions(positions):
-                self._ground_lift_offset = _compute_ground_lift_offset(positions)
+                self._ground_alignment_offset = _compute_ground_alignment_offset(positions)
             else:
                 return human_frame
 
-        offset = float(self._ground_lift_offset)
-        if offset <= 0.0:
+        offset = float(self._ground_alignment_offset)
+        if abs(offset) <= 1e-12:
             return human_frame
 
         z_offset = np.array([0.0, 0.0, offset], dtype=np.float64)

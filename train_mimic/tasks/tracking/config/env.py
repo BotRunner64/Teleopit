@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-import mujoco
 from mjlab.asset_zoo.robots import G1_ACTION_SCALE, get_g1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
@@ -14,7 +13,6 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
-from teleopit.runtime.assets import UNITREE_G1_MJLAB_PAYLOAD_XML
 from train_mimic.tasks.tracking import mdp
 from train_mimic.tasks.tracking.config.constants import DEFAULT_TRAIN_MOTION_FILE
 from train_mimic.tasks.tracking.mdp import MotionCommandCfg
@@ -43,10 +41,6 @@ _TRAIN_ONLY_EVENTS = (
     "add_joint_default_pos",
     "physics_material",
     "randomize_rigid_body_mass",
-    "randomize_dexhand_payload_mass",
-    "randomize_gimbal_payload_mass",
-    "randomize_dexhand_payload_pos",
-    "randomize_gimbal_payload_pos",
 )
 
 
@@ -118,16 +112,6 @@ _VELCMD_CRITIC_TERMS: dict[str, ObservationTermCfg] = {
 }
 
 
-def _payload_g1_spec() -> mujoco.MjSpec:
-    return mujoco.MjSpec.from_file(str(UNITREE_G1_MJLAB_PAYLOAD_XML))
-
-
-def _payload_g1_robot_cfg():
-    robot_cfg = get_g1_robot_cfg()
-    robot_cfg.spec_fn = _payload_g1_spec
-    return robot_cfg
-
-
 def _configure_self_collision_reward(cfg: ManagerBasedRlEnvCfg) -> None:
     excluded_body_names = (
         "left_wrist_yaw_link",
@@ -171,31 +155,13 @@ def _configure_feet_acc_reward(cfg: ManagerBasedRlEnvCfg) -> None:
     )
 
 
-def _configure_payload_randomization(cfg: ManagerBasedRlEnvCfg) -> None:
-    cfg.events["randomize_rigid_body_mass"].params[
-        "asset_cfg"
-    ].body_names = "torso_link"
-    cfg.events["randomize_dexhand_payload_mass"].params[
-        "asset_cfg"
-    ].body_names = ("left_dexhand_payload", "right_dexhand_payload")
-    cfg.events["randomize_gimbal_payload_mass"].params[
-        "asset_cfg"
-    ].body_names = ("head_gimbal_payload",)
-    cfg.events["randomize_dexhand_payload_pos"].params[
-        "asset_cfg"
-    ].body_names = ("left_dexhand_payload", "right_dexhand_payload")
-    cfg.events["randomize_gimbal_payload_pos"].params[
-        "asset_cfg"
-    ].body_names = ("head_gimbal_payload",)
-
-
 def make_general_tracking_env_cfg(
     *, play: bool = False,
 ) -> ManagerBasedRlEnvCfg:
     """Create the General-Tracking-G1 training env."""
     cfg = make_tracking_env_cfg()
 
-    cfg.scene.entities = {"robot": _payload_g1_robot_cfg()}
+    cfg.scene.entities = {"robot": get_g1_robot_cfg()}
 
     joint_pos_action = cfg.actions["joint_pos"]
     assert isinstance(joint_pos_action, JointPositionActionCfg)
@@ -213,7 +179,9 @@ def make_general_tracking_env_cfg(
         "asset_cfg"
     ].geom_names = r".*_collision$"
     cfg.events["base_com"].params["asset_cfg"].body_names = ("torso_link",)
-    _configure_payload_randomization(cfg)
+    cfg.events["randomize_rigid_body_mass"].params[
+        "asset_cfg"
+    ].body_names = "torso_link"
     _configure_self_collision_reward(cfg)
     _configure_feet_acc_reward(cfg)
     cfg.terminations["ee_body_pos"].params["body_names"] = (

@@ -6,7 +6,6 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GMR_ASSETS_ROOT = PROJECT_ROOT / "teleopit" / "retargeting" / "gmr" / "assets"
 UNITREE_G1_MJLAB_XML = GMR_ASSETS_ROOT / "unitree_g1" / "g1_mjlab.xml"
-UNITREE_G1_MJLAB_PAYLOAD_XML = GMR_ASSETS_ROOT / "unitree_g1" / "g1_mjlab_payload.xml"
 
 
 def missing_gmr_assets_message(path: str | Path, *, label: str = "Required asset") -> str:

@@ -33,22 +33,6 @@ VELOCITY_RANGE = {
     "yaw": (-0.78, 0.78),
 }
 
-_DEXHAND_PAYLOAD_MASS_ALPHA_RANGE = (-1, 0)
-_GIMBAL_PAYLOAD_MASS_ALPHA_RANGE = (-1, 0)
-_DEXHAND_PAYLOAD_POS_RANGES_MM = {
-    0: (55, 95),
-    1: (-20, 20),
-    2: (-20, 20),
-}
-_GIMBAL_PAYLOAD_POS_RANGES_MM = {
-    0: (50, 90),
-    1: (-20, 20),
-    2: (430, 470),
-}
-
-
-def _mm_ranges_to_m(ranges_mm: dict[int, tuple[int, int]]) -> dict[int, tuple[float, float]]:
-    return {axis: (lower / 1000.0, upper / 1000.0) for axis, (lower, upper) in ranges_mm.items()}
 
 def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
     """Create base tracking task configuration."""
@@ -219,42 +203,6 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
             params={
                 "asset_cfg": SceneEntityCfg("robot", body_names=()),  # Set per-robot.
                 "alpha_range": (-0.1, 0.45),
-            },
-        ),
-        "randomize_dexhand_payload_mass": EventTermCfg(
-            mode="startup",
-            func=dr.pseudo_inertia,
-            params={
-                "asset_cfg": SceneEntityCfg("robot", body_names=()),  # Set per-robot.
-                # Nominal is 0.5 kg per hand. Keep a tighter ~0.37-1.0x band.
-                "alpha_range": _DEXHAND_PAYLOAD_MASS_ALPHA_RANGE,
-            },
-        ),
-        "randomize_gimbal_payload_mass": EventTermCfg(
-            mode="startup",
-            func=dr.pseudo_inertia,
-            params={
-                "asset_cfg": SceneEntityCfg("robot", body_names=()),  # Set per-robot.
-                # Nominal is 0.25 kg. Keep a tighter ~0.37-1.0x band.
-                "alpha_range": _GIMBAL_PAYLOAD_MASS_ALPHA_RANGE,
-            },
-        ),
-        "randomize_dexhand_payload_pos": EventTermCfg(
-            mode="startup",
-            func=dr.body_pos,
-            params={
-                "asset_cfg": SceneEntityCfg("robot", body_names=()),  # Set per-robot.
-                "operation": "abs",
-                "ranges": _mm_ranges_to_m(_DEXHAND_PAYLOAD_POS_RANGES_MM),
-            },
-        ),
-        "randomize_gimbal_payload_pos": EventTermCfg(
-            mode="startup",
-            func=dr.body_pos,
-            params={
-                "asset_cfg": SceneEntityCfg("robot", body_names=()),  # Set per-robot.
-                "operation": "abs",
-                "ranges": _mm_ranges_to_m(_GIMBAL_PAYLOAD_POS_RANGES_MM),
             },
         ),
     }

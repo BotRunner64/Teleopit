@@ -19,10 +19,6 @@ def test_general_tracking_domain_randomization_matches_gr00t_active_set() -> Non
         "add_joint_default_pos",
         "physics_material",
         "randomize_rigid_body_mass",
-        "randomize_dexhand_payload_mass",
-        "randomize_gimbal_payload_mass",
-        "randomize_dexhand_payload_pos",
-        "randomize_gimbal_payload_pos",
     }
 
     push_robot = events["push_robot"]
@@ -69,46 +65,6 @@ def test_general_tracking_domain_randomization_matches_gr00t_active_set() -> Non
     assert mass.params["asset_cfg"].body_names == "torso_link"
     assert mass.params["alpha_range"] == (-0.1, 0.45)
 
-    dexhand_mass = events["randomize_dexhand_payload_mass"]
-    assert dexhand_mass.func is dr.pseudo_inertia
-    assert dexhand_mass.mode == "startup"
-    assert dexhand_mass.params["asset_cfg"].body_names == (
-        "left_dexhand_payload",
-        "right_dexhand_payload",
-    )
-    assert dexhand_mass.params["alpha_range"] == (-1, 0)
-
-    gimbal_mass = events["randomize_gimbal_payload_mass"]
-    assert gimbal_mass.func is dr.pseudo_inertia
-    assert gimbal_mass.mode == "startup"
-    assert gimbal_mass.params["asset_cfg"].body_names == ("head_gimbal_payload",)
-    assert gimbal_mass.params["alpha_range"] == (-1, 0)
-
-    dexhand_pos = events["randomize_dexhand_payload_pos"]
-    assert dexhand_pos.func is dr.body_pos
-    assert dexhand_pos.mode == "startup"
-    assert dexhand_pos.params["asset_cfg"].body_names == (
-        "left_dexhand_payload",
-        "right_dexhand_payload",
-    )
-    assert dexhand_pos.params["operation"] == "abs"
-    assert dexhand_pos.params["ranges"] == {
-        0: (0.055, 0.095),
-        1: (-0.02, 0.02),
-        2: (-0.02, 0.02),
-    }
-
-    gimbal_pos = events["randomize_gimbal_payload_pos"]
-    assert gimbal_pos.func is dr.body_pos
-    assert gimbal_pos.mode == "startup"
-    assert gimbal_pos.params["asset_cfg"].body_names == ("head_gimbal_payload",)
-    assert gimbal_pos.params["operation"] == "abs"
-    assert gimbal_pos.params["ranges"] == {
-        0: (0.05, 0.09),
-        1: (-0.02, 0.02),
-        2: (0.43, 0.47),
-    }
-
 
 def test_play_env_disables_training_only_domain_randomization() -> None:
     import mjlab.tasks  # noqa: F401
@@ -122,8 +78,4 @@ def test_play_env_disables_training_only_domain_randomization() -> None:
     assert "add_joint_default_pos" not in play_cfg.events
     assert "physics_material" not in play_cfg.events
     assert "randomize_rigid_body_mass" not in play_cfg.events
-    assert "randomize_dexhand_payload_mass" not in play_cfg.events
-    assert "randomize_gimbal_payload_mass" not in play_cfg.events
-    assert "randomize_dexhand_payload_pos" not in play_cfg.events
-    assert "randomize_gimbal_payload_pos" not in play_cfg.events
     assert play_cfg.events == {}

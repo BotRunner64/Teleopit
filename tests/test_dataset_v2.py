@@ -131,20 +131,26 @@ val_percent: 5
 hash_salt: ""
 preprocess:
   normalize_root_xy: true
-  ground_align: clip_min_foot
+  ground_align: none
   min_frames: 10
+  max_all_off_ground_s: 0.5
+  off_ground_height: 0.08
 sources:
   - name: clips
     type: npz
     input: {tmp_path / 'npz_source'}
+    exclude_patterns: ["*obstacle*"]
 """,
         encoding="utf-8",
     )
 
     spec = load_dataset_spec(spec_path)
     assert spec.preprocess.normalize_root_xy is True
-    assert spec.preprocess.ground_align == "clip_min_foot"
+    assert spec.preprocess.ground_align == "none"
     assert spec.preprocess.min_frames == 10
+    assert spec.preprocess.max_all_off_ground_s == 0.5
+    assert spec.preprocess.off_ground_height == 0.08
+    assert spec.sources[0].exclude_patterns == ("*obstacle*",)
 
 
 def test_load_dataset_spec_parses_seed_filter_preset(tmp_path: Path) -> None:
@@ -428,6 +434,71 @@ def test_collect_source_files_with_report_handles_single_file_source(tmp_path: P
     assert [item.rel_no_suffix.as_posix() for item in legacy_items] == ["clip_a"]
 
 
+def test_collect_source_files_with_report_applies_exclude_patterns(tmp_path: Path) -> None:
+    input_root = tmp_path / "lafan1"
+    input_root.mkdir(parents=True, exist_ok=True)
+    (input_root / "walk1.bvh").write_text("placeholder", encoding="utf-8")
+    (input_root / "obstacle_run.bvh").write_text("placeholder", encoding="utf-8")
+    nested = input_root / "subject1"
+    nested.mkdir()
+    (nested / "obstacle_jump.bvh").write_text("placeholder", encoding="utf-8")
+
+    source = DatasetSourceSpec(
+        name="lafan1",
+        type="bvh",
+        input=str(input_root),
+        bvh_format="lafan1",
+        exclude_patterns=("*obstacle*",),
+    )
+
+    items, _scan_root, report = dataset_builder._collect_source_files_with_report(
+        source,
+        quiet=True,
+    )
+
+    assert [item.rel_no_suffix.as_posix() for item in items] == ["walk1"]
+    assert report["scanned_files"] == 3
+    assert report["path_rejected_files"] == 2
+    assert report["kept_files"] == 1
+    assert report["filtered_files"] == 2
+    assert report["path_reject_reasons"] == {"*obstacle*": 2}
+
+
+def test_collect_source_files_with_report_preserves_path_excludes_with_metadata(tmp_path: Path) -> None:
+    input_root = tmp_path / "seed_source" / "g1" / "csv"
+    input_root.mkdir(parents=True, exist_ok=True)
+    for name in ("walk_a.csv", "walk_b.csv", "obstacle_walk.csv"):
+        (input_root / name).write_text("placeholder", encoding="utf-8")
+
+    metadata_csv = tmp_path / "metadata.csv"
+    with metadata_csv.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["move_g1_path", "is_mirror"])
+        writer.writeheader()
+        for name in ("walk_a.csv", "walk_b.csv", "obstacle_walk.csv"):
+            writer.writerow({"move_g1_path": f"g1/csv/{name}", "is_mirror": "False"})
+
+    source = DatasetSourceSpec(
+        name="seed",
+        type="seed_csv",
+        input=str(input_root),
+        metadata_csv=str(metadata_csv),
+        filters={"is_mirror": [False]},
+        exclude_patterns=("*obstacle*",),
+    )
+
+    items, _scan_root, report = dataset_builder._collect_source_files_with_report(
+        source,
+        quiet=True,
+    )
+
+    assert [item.rel_no_suffix.as_posix() for item in items] == ["walk_a", "walk_b"]
+    assert report["scanned_files"] == 3
+    assert report["path_rejected_files"] == 1
+    assert report["kept_files"] == 2
+    assert report["filtered_files"] == 1
+    assert report["path_reject_reasons"] == {"*obstacle*": 1}
+
+
 def test_build_dataset_from_spec_writes_shard_directories(tmp_path: Path) -> None:
     npz_input = tmp_path / "npz_source"
     _write_npz_from_pkl(npz_input / "clip_a.npz")
@@ -458,6 +529,35 @@ def test_build_dataset_from_spec_writes_shard_directories(tmp_path: Path) -> Non
     train_data = np.load(dataset_dir / "train" / "shard_000.npz", allow_pickle=True)
     assert "clip_starts" in train_data.files
     assert "clip_lengths" in train_data.files
+
+
+def test_collect_clip_rows_ignores_stale_excluded_cached_npz(tmp_path: Path) -> None:
+    npz_input = tmp_path / "npz_source"
+    for name in ("keep_a.npz", "keep_b.npz", "obstacle_old.npz"):
+        _write_npz_from_pkl(npz_input / name)
+
+    spec = DatasetSpec(
+        name="demo_dataset",
+        target_fps=30,
+        val_percent=5,
+        hash_salt="",
+        sources=[
+            DatasetSourceSpec(
+                name="npz_src",
+                type="npz",
+                input=str(npz_input),
+                exclude_patterns=("*obstacle*",),
+            )
+        ],
+    )
+    paths = dataset_builder.resolve_dataset_paths(spec, output_root=tmp_path / "datasets")
+    source_dir = paths.clips_root / "npz_src"
+    for name in ("keep_a.npz", "keep_b.npz", "obstacle_old.npz"):
+        _write_npz_from_pkl(source_dir / name)
+
+    rows = dataset_builder.collect_clip_rows(spec, paths=paths)
+
+    assert sorted(row.clip_id for row in rows) == ["npz_src:keep_a", "npz_src:keep_b"]
 
 
 def test_convert_source_to_npz_clips_applies_preprocess(tmp_path: Path) -> None:
@@ -501,6 +601,66 @@ def test_convert_source_to_npz_clips_applies_preprocess(tmp_path: Path) -> None:
     assert np.allclose(clip["body_pos_w"][0, pelvis_idx, :2], 0.0)
     foot_z = clip["body_pos_w"][:, [left_idx, right_idx], 2]
     assert np.isclose(float(np.min(foot_z)), 0.0)
+
+
+def test_convert_source_to_npz_clips_skips_all_off_ground_clips_before_ground_align(tmp_path: Path) -> None:
+    npz_input = tmp_path / "npz_source"
+    _write_npz_from_pkl(npz_input / "keep.npz")
+    _write_npz_from_pkl(npz_input / "float.npz")
+
+    for name, floating in (("keep.npz", False), ("float.npz", True)):
+        path = npz_input / name
+        clip = dict(np.load(path, allow_pickle=True))
+        body_names = [str(body_name) for body_name in clip["body_names"].tolist()]
+        left_idx = body_names.index("left_ankle_roll_link")
+        right_idx = body_names.index("right_ankle_roll_link")
+        body_pos_w = np.asarray(clip["body_pos_w"]).copy()
+        if floating:
+            body_pos_w[..., 2] = np.maximum(body_pos_w[..., 2], 0.3)
+        else:
+            body_pos_w[:, left_idx, 2] = 0.0
+            body_pos_w[:, right_idx, 2] = 0.3
+        clip["body_pos_w"] = body_pos_w
+        np.savez(path, **clip)
+
+    source = DatasetSourceSpec(name="npz_src", type="npz", input=str(npz_input))
+    output_dir = tmp_path / "dataset" / "clips" / "npz_src"
+    report = convert_source_to_npz_clips(
+        source,
+        output_dir,
+        jobs=1,
+        preprocess=dataset_builder.DatasetPreprocessSpec(
+            ground_align="clip_min_foot",
+            max_all_off_ground_s=0.05,
+            off_ground_height=0.08,
+        ),
+    )
+
+    assert report["clips"] == 1
+    assert (output_dir / "keep.npz").is_file()
+    assert not (output_dir / "float.npz").exists()
+    assert (output_dir / "float.npz.filtered.json").is_file()
+
+    def _unexpected_run_conversion_tasks(*_args, **_kwargs):
+        raise AssertionError("filtered clip should be skipped by marker on incremental rebuild")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(dataset_builder, "run_conversion_tasks", _unexpected_run_conversion_tasks)
+    try:
+        second_report = convert_source_to_npz_clips(
+            source,
+            output_dir,
+            jobs=1,
+            preprocess=dataset_builder.DatasetPreprocessSpec(
+                ground_align="clip_min_foot",
+                max_all_off_ground_s=0.05,
+                off_ground_height=0.08,
+            ),
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert second_report["clips"] == 1
 
 
 def test_merge_clip_dicts_rejects_inconsistent_body_names(tmp_path: Path) -> None:
