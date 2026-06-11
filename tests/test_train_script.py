@@ -167,7 +167,15 @@ class TestTrainLauncherHelpers:
         monkeypatch.setenv("RANK", "0")
         agent_cfg = types.SimpleNamespace(logger="wandb", experiment_name="exp", max_iterations=10)
         env_cfg = types.SimpleNamespace(
-            commands={"motion": types.SimpleNamespace(motion_file="data/train", sampling_mode="uniform")},
+            commands={
+                "motion": types.SimpleNamespace(
+                    motion_file="data/train",
+                    sampling_mode="uniform",
+                    rewind_prob=0.8,
+                    rewind_min_steps=25,
+                    rewind_max_steps=75,
+                )
+            },
             scene=types.SimpleNamespace(num_envs=64),
         )
 
@@ -193,6 +201,9 @@ class TestTrainLauncherHelpers:
                         "num_envs": 64,
                         "max_iterations": 10,
                         "sampling_mode": "uniform",
+                        "rewind_prob": 0.8,
+                        "rewind_min_steps": 25,
+                        "rewind_max_steps": 75,
                     },
                 },
             ),

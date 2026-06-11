@@ -589,12 +589,28 @@ class MotionLib:
 MotionLoader = MotionLib
 
 
+def _validate_rewind_sampling_cfg(cfg: Any) -> None:
+    if cfg.rewind_min_steps < 0:
+        raise ValueError(
+            f"rewind_min_steps must be non-negative, got {cfg.rewind_min_steps}"
+        )
+    if cfg.rewind_max_steps < cfg.rewind_min_steps:
+        raise ValueError(
+            "rewind_max_steps must be >= rewind_min_steps, got "
+            f"{cfg.rewind_max_steps} < {cfg.rewind_min_steps}"
+        )
+    if not 0.0 <= cfg.rewind_prob <= 1.0:
+        raise ValueError(f"rewind_prob must be in [0, 1], got {cfg.rewind_prob}")
+
+
 class MotionCommand(CommandTerm):
     cfg: MotionCommandCfg
     _env: ManagerBasedRlEnv
 
     def __init__(self, cfg: MotionCommandCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
+        if self.cfg.sampling_mode == "rewind":
+            _validate_rewind_sampling_cfg(self.cfg)
 
         self.robot: Entity = env.scene[cfg.entity_name]
         self.robot_anchor_body_index = self.robot.body_names.index(
@@ -966,6 +982,41 @@ class MotionCommand(CommandTerm):
 
         self._update_adaptive_sampling_metrics(sampling_probabilities)
 
+    def _rewind_sampling(self, env_ids: torch.Tensor) -> None:
+        _validate_rewind_sampling_cfg(self.cfg)
+
+        previous_motion_ids = self.motion_ids[env_ids].clone()
+        previous_motion_times = self.motion_times[env_ids].clone()
+        self._uniform_sampling(env_ids)
+        if env_ids.numel() == 0 or self.cfg.rewind_prob <= 0.0:
+            return
+
+        episode_failed = self._env.termination_manager.terminated[env_ids]
+        use_rewind = episode_failed & (
+            torch.rand(env_ids.numel(), device=self.device) < self.cfg.rewind_prob
+        )
+        if not torch.any(use_rewind):
+            return
+
+        rewind_env_ids = env_ids[use_rewind]
+        rewind_steps = torch.randint(
+            self.cfg.rewind_min_steps,
+            self.cfg.rewind_max_steps + 1,
+            (rewind_env_ids.numel(),),
+            device=self.device,
+            dtype=torch.long,
+        )
+        rewind_s = rewind_steps.to(dtype=self.motion_times.dtype) * float(self._step_dt)
+        motion_ids = previous_motion_ids[use_rewind]
+        rewind_times = previous_motion_times[use_rewind] - rewind_s
+        rewind_times = torch.maximum(
+            rewind_times,
+            self.motion.clip_sample_start_s[motion_ids],
+        )
+
+        self.motion_ids[rewind_env_ids] = motion_ids
+        self.motion_times[rewind_env_ids] = rewind_times
+
     def _resample_command(self, env_ids: torch.Tensor):
         if self.cfg.sampling_mode == "start":
             self.motion_ids[env_ids] = self.motion.sample_motion_ids(len(env_ids))
@@ -974,10 +1025,12 @@ class MotionCommand(CommandTerm):
             self._uniform_sampling(env_ids)
         elif self.cfg.sampling_mode == "adaptive":
             self._adaptive_sampling(env_ids)
+        elif self.cfg.sampling_mode == "rewind":
+            self._rewind_sampling(env_ids)
         else:
             raise ValueError(
                 f"Unsupported motion sampling_mode={self.cfg.sampling_mode!r}. "
-                "Supported modes are 'uniform', 'start', and 'adaptive'."
+                "Supported modes are 'uniform', 'start', 'adaptive', and 'rewind'."
             )
 
         if env_ids.numel() == 0:
@@ -1236,11 +1289,14 @@ class MotionCommandCfg(CommandTermCfg):
     pose_range: dict[str, tuple[float, float]] = field(default_factory=dict)
     velocity_range: dict[str, tuple[float, float]] = field(default_factory=dict)
     joint_position_range: tuple[float, float] = (-0.52, 0.52)
-    sampling_mode: Literal["uniform", "start", "adaptive"] = "uniform"
+    sampling_mode: Literal["uniform", "start", "adaptive", "rewind"] = "uniform"
     window_steps: tuple[int, ...] = (0,)
     adaptive_bin_size_frames: int = 10
     adaptive_uniform_ratio: float = 0.1
     adaptive_alpha: float = 0.001
+    rewind_prob: float = 0.8
+    rewind_min_steps: int = 25
+    rewind_max_steps: int = 75
     feet_body_names: tuple[str, ...] = ()
     feet_standing_z_threshold: float = 0.18
     feet_standing_vxy_threshold: float = 0.2

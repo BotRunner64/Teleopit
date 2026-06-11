@@ -85,8 +85,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--sampling_mode", type=str, default=None,
-                        choices=["uniform", "start", "adaptive"],
+                        choices=["uniform", "start", "adaptive", "rewind"],
                         help="Motion sampling mode (default: from task config)")
+    parser.add_argument("--rewind_prob", type=float, default=None,
+                        help="Rewind sampling probability for failed episodes")
+    parser.add_argument("--rewind_min_steps", type=int, default=None,
+                        help="Minimum policy steps to rewind for rewind sampling")
+    parser.add_argument("--rewind_max_steps", type=int, default=None,
+                        help="Maximum policy steps to rewind for rewind sampling")
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument(
         "--gpu_ids",
@@ -284,6 +290,9 @@ def _configure_experiment_logger(
             "num_envs": env_cfg.scene.num_envs,
             "max_iterations": agent_cfg.max_iterations,
             "sampling_mode": env_cfg.commands["motion"].sampling_mode,
+            "rewind_prob": env_cfg.commands["motion"].rewind_prob,
+            "rewind_min_steps": env_cfg.commands["motion"].rewind_min_steps,
+            "rewind_max_steps": env_cfg.commands["motion"].rewind_max_steps,
         },
     )
     swanlab.sync_tensorboard_torch(types=["scalar", "scalars", "image", "text"])
@@ -366,6 +375,12 @@ def _run_worker(args: argparse.Namespace) -> None:
     validate_motion_file(env_cfg.commands["motion"].motion_file)
     if args.sampling_mode is not None:
         env_cfg.commands["motion"].sampling_mode = args.sampling_mode
+    if args.rewind_prob is not None:
+        env_cfg.commands["motion"].rewind_prob = args.rewind_prob
+    if args.rewind_min_steps is not None:
+        env_cfg.commands["motion"].rewind_min_steps = args.rewind_min_steps
+    if args.rewind_max_steps is not None:
+        env_cfg.commands["motion"].rewind_max_steps = args.rewind_max_steps
     if args.max_iterations is not None:
         agent_cfg.max_iterations = args.max_iterations
     if args.experiment_name is not None:

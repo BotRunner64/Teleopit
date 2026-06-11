@@ -60,6 +60,10 @@ teleopit/
 | 实机通信 | DDS（Cyclone DDS） |
 | 支持的机器人 | 宇树 G1 |
 | 输入源 | BVH 文件、Pico 4 VR 头显 |
+| 训练任务 | `General-Tracking-G1` |
+| 推理观测 | `velcmd_history`（166D） |
+| 训练采样 | 默认 `uniform`；也支持 `adaptive` 和 `rewind`；播放/评估使用 `start` |
+| 训练 `window_steps` | `[0]` |
 
 ## 约束
 

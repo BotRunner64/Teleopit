@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 from train_mimic.data.dataset_lib import merge_clip_dicts
@@ -221,3 +222,78 @@ def test_motion_command_adaptive_sampling_state_round_trips() -> None:
         target._current_adaptive_bin_failed,
         source._current_adaptive_bin_failed,
     )
+
+
+class _FakeMotion:
+    def __init__(self) -> None:
+        self.clip_sample_start_s = torch.tensor([0.0, 1.0, 2.0])
+
+    def sample_motion_ids(self, n: int) -> torch.Tensor:
+        return torch.full((n,), 2, dtype=torch.long)
+
+    def sample_times(self, motion_ids: torch.Tensor) -> torch.Tensor:
+        return torch.full_like(motion_ids, 9.0, dtype=torch.float32)
+
+
+def test_motion_command_rewind_sampling_uses_failed_env_previous_time() -> None:
+    command = MotionCommand.__new__(MotionCommand)
+    command.cfg = SimpleNamespace(
+        sampling_mode="rewind",
+        rewind_prob=1.0,
+        rewind_min_steps=2,
+        rewind_max_steps=2,
+    )
+    command._env = SimpleNamespace(
+        device="cpu",
+        termination_manager=SimpleNamespace(
+            terminated=torch.tensor([True, False, True])
+        ),
+    )
+    command.motion = _FakeMotion()
+    command.motion_ids = torch.tensor([0, 1, 1], dtype=torch.long)
+    command.motion_times = torch.tensor([5.0, 6.0, 1.25], dtype=torch.float32)
+    command._step_dt = 0.5
+
+    command._rewind_sampling(torch.tensor([0, 1, 2], dtype=torch.long))
+
+    assert torch.equal(command.motion_ids, torch.tensor([0, 2, 1]))
+    assert torch.allclose(command.motion_times, torch.tensor([4.0, 9.0, 1.0]))
+
+
+def test_motion_command_rewind_sampling_falls_back_to_uniform_when_disabled() -> None:
+    command = MotionCommand.__new__(MotionCommand)
+    command.cfg = SimpleNamespace(
+        sampling_mode="rewind",
+        rewind_prob=0.0,
+        rewind_min_steps=2,
+        rewind_max_steps=2,
+    )
+    command._env = SimpleNamespace(
+        device="cpu",
+        termination_manager=SimpleNamespace(terminated=torch.tensor([True])),
+    )
+    command.motion = _FakeMotion()
+    command.motion_ids = torch.tensor([0], dtype=torch.long)
+    command.motion_times = torch.tensor([5.0], dtype=torch.float32)
+    command._step_dt = 0.5
+
+    command._rewind_sampling(torch.tensor([0], dtype=torch.long))
+
+    assert torch.equal(command.motion_ids, torch.tensor([2]))
+    assert torch.allclose(command.motion_times, torch.tensor([9.0]))
+
+
+def test_motion_command_rewind_sampling_rejects_invalid_step_range() -> None:
+    command = MotionCommand.__new__(MotionCommand)
+    command.cfg = SimpleNamespace(
+        sampling_mode="rewind",
+        rewind_prob=1.0,
+        rewind_min_steps=3,
+        rewind_max_steps=2,
+    )
+    command.motion_ids = torch.tensor([0], dtype=torch.long)
+    command.motion_times = torch.tensor([5.0], dtype=torch.float32)
+    command.motion = _FakeMotion()
+
+    with pytest.raises(ValueError, match="rewind_max_steps"):
+        command._rewind_sampling(torch.tensor([0], dtype=torch.long))
