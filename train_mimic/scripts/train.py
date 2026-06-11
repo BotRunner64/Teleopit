@@ -85,7 +85,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--sampling_mode", type=str, default=None,
-                        choices=["uniform", "start"],
+                        choices=["uniform", "start", "adaptive"],
                         help="Motion sampling mode (default: from task config)")
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument(
