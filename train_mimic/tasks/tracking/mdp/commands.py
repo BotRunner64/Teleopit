@@ -665,7 +665,7 @@ class MotionCommand(CommandTerm):
         self.metrics["error_joint_vel"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["sampling_entropy"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["sampling_top1_prob"] = torch.zeros(self.num_envs, device=self.device)
-        self.metrics["sampling_top1_bin"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["sampling_failed_bin_mean"] = torch.zeros(self.num_envs, device=self.device)
 
         # Feet standing state (for feet_air_time_ref rewards)
         if self.cfg.feet_body_names:
@@ -911,6 +911,37 @@ class MotionCommand(CommandTerm):
         self.motion_ids[env_ids] = self.motion.sample_motion_ids(len(env_ids))
         self.motion_times[env_ids] = self.motion.sample_times(self.motion_ids[env_ids])
 
+    def _update_adaptive_sampling_metrics(
+        self,
+        sampling_probabilities: torch.Tensor,
+    ) -> None:
+        entropy = -(
+            sampling_probabilities * (sampling_probabilities + 1e-12).log()
+        ).sum()
+        if sampling_probabilities.numel() > 1:
+            entropy = entropy / torch.log(
+                torch.tensor(
+                    float(sampling_probabilities.numel()),
+                    dtype=torch.float32,
+                    device=self.device,
+                )
+            )
+        pmax = sampling_probabilities.max()
+        failed = self.adaptive_bin_failed_count
+        self.metrics["sampling_entropy"][:] = entropy
+        self.metrics["sampling_top1_prob"][:] = pmax
+        self.metrics["sampling_failed_bin_mean"][:] = failed.mean()
+
+    def _adaptive_sampling_probabilities(self) -> torch.Tensor:
+        sampling_probabilities = (
+            self.adaptive_bin_failed_count
+            + self.cfg.adaptive_uniform_ratio * self.motion.adaptive_bin_base_probs
+        )
+        probability_sum = sampling_probabilities.sum()
+        if probability_sum <= 0:
+            return self.motion.adaptive_bin_base_probs
+        return sampling_probabilities / probability_sum
+
     def _adaptive_sampling(self, env_ids: torch.Tensor):
         episode_failed = self._env.termination_manager.terminated[env_ids]
         if torch.any(episode_failed):
@@ -926,16 +957,7 @@ class MotionCommand(CommandTerm):
                     minlength=self.adaptive_bin_failed_count.numel(),
                 ).to(dtype=torch.float32, device=self.device)
 
-        sampling_probabilities = (
-            self.adaptive_bin_failed_count
-            + self.cfg.adaptive_uniform_ratio * self.motion.adaptive_bin_base_probs
-        )
-        probability_sum = sampling_probabilities.sum()
-        if probability_sum <= 0:
-            sampling_probabilities = self.motion.adaptive_bin_base_probs
-        else:
-            sampling_probabilities = sampling_probabilities / probability_sum
-
+        sampling_probabilities = self._adaptive_sampling_probabilities()
         motion_ids, motion_times, _sampled_bins = self.motion.sample_adaptive_times(
             sampling_probabilities,
             len(env_ids),
@@ -943,23 +965,7 @@ class MotionCommand(CommandTerm):
         self.motion_ids[env_ids] = motion_ids
         self.motion_times[env_ids] = motion_times
 
-        entropy = -(
-            sampling_probabilities * (sampling_probabilities + 1e-12).log()
-        ).sum()
-        if sampling_probabilities.numel() > 1:
-            entropy = entropy / torch.log(
-                torch.tensor(
-                    float(sampling_probabilities.numel()),
-                    dtype=torch.float32,
-                    device=self.device,
-                )
-            )
-        pmax, imax = sampling_probabilities.max(dim=0)
-        self.metrics["sampling_entropy"][:] = entropy
-        self.metrics["sampling_top1_prob"][:] = pmax
-        self.metrics["sampling_top1_bin"][:] = (
-            imax.float() / max(sampling_probabilities.numel(), 1)
-        )
+        self._update_adaptive_sampling_metrics(sampling_probabilities)
 
     def _resample_command(self, env_ids: torch.Tensor):
         if self.cfg.sampling_mode == "start":
@@ -1103,6 +1109,9 @@ class MotionCommand(CommandTerm):
                 + (1.0 - self.cfg.adaptive_alpha) * self.adaptive_bin_failed_count
             )
             self._current_adaptive_bin_failed.zero_()
+            self._update_adaptive_sampling_metrics(
+                self._adaptive_sampling_probabilities()
+            )
 
         self._refresh_body_local_cache()
         self._update_feet_standing()
