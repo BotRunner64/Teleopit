@@ -31,7 +31,7 @@ def test_general_tracking_task_is_registered() -> None:
     assert "base_lin_vel" not in actor_terms
     assert "actor_history" in env_cfg.observations
     assert "critic_history" in env_cfg.observations
-    assert env_cfg.commands["motion"].sampling_mode == "uniform"
+    assert env_cfg.commands["motion"].sampling_mode == "adaptive"
     assert env_cfg.commands["motion"].window_steps == (0,)
     reward = env_cfg.rewards["self_collisions"]
     assert reward.weight == -0.1

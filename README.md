@@ -94,6 +94,7 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 - Switched default `vr_hand_pose` to a low-latency somehand path with 60 Hz hand retargeting and reduced smoothing.
 - Realtime mode switches and pause/resume now preserve GMR IK warm-starts instead of cold-starting the retargeter on each transition.
 - Added an interactive Pico motion recorder that saves retargeted G1 motion clips as training-ready NPZ files.
+- General-Tracking-G1 training now defaults to clip-local adaptive motion sampling with checkpointed sampler state.
 
 ### v0.3.0 (2026-05-12)
 

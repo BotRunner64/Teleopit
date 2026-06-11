@@ -172,7 +172,7 @@ def make_general_tracking_env_cfg(
     motion_cmd.anchor_body_name = "torso_link"
     motion_cmd.body_names = _TRACKING_BODY_NAMES
     motion_cmd.motion_file = DEFAULT_TRAIN_MOTION_FILE
-    motion_cmd.sampling_mode = "uniform"
+    motion_cmd.sampling_mode = "adaptive"
     motion_cmd.window_steps = (0,)
 
     cfg.events["physics_material"].params[

@@ -190,7 +190,7 @@ The single supported training task is `General-Tracking-G1` (experiment name: `g
 
 - Uses TemporalCNN actor/critic with scaled dims (2048,1024,512,256,128)
 - 166D `velcmd_history` observation, dual-input ONNX export
-- Training env uses `sampling_mode="uniform"`
+- Training env uses `sampling_mode="adaptive"`
 - Playback/benchmark use `play=True`, which switches motion sampling to `start`
 - `window_steps=[0]`
 - `save_onnx.py` exports dual-input TemporalCNN ONNX
