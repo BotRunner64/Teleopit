@@ -20,7 +20,7 @@ slug: /
 ```text
 InputProvider (BVH / Pico4 VR)
     -> Retargeter (GMR)
-    -> ObservationBuilder (166D)
+    -> ObservationBuilder (167D)
     -> Controller (双输入 TemporalCNN ONNX)
     -> Robot (MuJoCo 仿真 或 Unitree G1)
 ```
@@ -31,7 +31,7 @@ InputProvider (BVH / Pico4 VR)
 |------|------|
 | 策略频率 | 50 Hz |
 | PD 控制频率 | 1000 Hz |
-| 观测维度 | 166D |
+| 观测维度 | 167D |
 | 动作维度 | 29D（G1 关节） |
 | ONNX 模型 | 双输入 TemporalCNN |
 | 运动重定向 | GMR（General Motion Retargeting） |

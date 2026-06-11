@@ -107,7 +107,7 @@ def _quat_to_rot6d_np(q: FloatVec) -> FloatVec:
 
 @final
 class _VelCmdBaseObservationBuilder:
-    """Internal base block used by the public 166D VelCmd builder."""
+    """Internal base block used by the public 167D VelCmd builder."""
 
     def __init__(self, cfg: ConfigType) -> None:
         self.num_actions: int = _as_int_scalar(cfg_get(cfg, "num_actions"), "num_actions")
@@ -215,12 +215,12 @@ class _VelCmdBaseObservationBuilder:
 
 @final
 class VelCmdObservationBuilder:
-    """166D observation builder for the only supported VelCmdHistory policy."""
+    """167D observation builder for the only supported VelCmdHistory policy."""
 
     def __init__(self, cfg: ConfigType) -> None:
         self._base = _VelCmdBaseObservationBuilder(cfg)
         self.num_actions = self._base.num_actions
-        self.total_obs_size = self._base.total_obs_size + 12
+        self.total_obs_size = self._base.total_obs_size + 13
 
     def reset(self) -> None:
         self._base.reset()
@@ -239,6 +239,7 @@ class VelCmdObservationBuilder:
         robot_quat = np.asarray(robot_state.quat, dtype=np.float32).reshape(-1)
         motion = np.asarray(motion_qpos, dtype=np.float32).reshape(-1)
         self._base._run_fk(motion[0:3], motion[3:7], motion[7:7 + self.num_actions])
+        motion_anchor_pos = self._base._get_body_pos(self._base._anchor_body_id)
         motion_anchor_quat = self._base._get_body_quat(self._base._anchor_body_id)
 
         qpos = np.asarray(robot_state.qpos, dtype=np.float32).reshape(-1)[: self.num_actions]
@@ -255,12 +256,14 @@ class VelCmdObservationBuilder:
         ref_base_lin_vel_b = _quat_rotate_np(robot_inv, ref_lin_vel_w)
         ref_base_ang_vel_b = _quat_rotate_np(robot_inv, ref_ang_vel_w)
         ref_projected_gravity_b = _quat_rotate_np(_quat_inv_np(motion_anchor_quat), _GRAVITY_UNIT_W)
+        ref_base_height = motion_anchor_pos[2:3]
 
         velcmd_obs = np.concatenate([
             projected_gravity,
             ref_base_lin_vel_b,
             ref_base_ang_vel_b,
             ref_projected_gravity_b,
+            ref_base_height,
         ], dtype=np.float32)
         obs = np.concatenate([base_obs, velcmd_obs], dtype=np.float32)
         if obs.shape[0] != self.total_obs_size:
@@ -282,4 +285,3 @@ class VelCmdObservationBuilder:
             "Use build(robot_state, motion_qpos, motion_joint_vel, last_action, "
             "motion_anchor_lin_vel_w, motion_anchor_ang_vel_w)."
         )
-

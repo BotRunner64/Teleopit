@@ -70,7 +70,7 @@ def test_rotate_motion_qpos_by_yaw_keeps_first_frame_position_with_pivot() -> No
 @requires_mujoco
 @_skip_no_xml
 class TestVelCmdObservationBuilder:
-    def test_output_dimension_is_166(self) -> None:
+    def test_output_dimension_is_167(self) -> None:
         builder = VelCmdObservationBuilder(_velcmd_cfg())
         obs = builder.build(
             _make_state(),
@@ -80,15 +80,17 @@ class TestVelCmdObservationBuilder:
             np.zeros(3, dtype=np.float32),
             np.zeros(3, dtype=np.float32),
         )
-        assert builder.total_obs_size == 166
-        assert obs.shape == (166,)
+        assert builder.total_obs_size == 167
+        assert obs.shape == (167,)
         assert obs.dtype == np.float32
+        assert obs[-1] > 0.0
 
     def test_projected_gravity_uses_root_quat_not_anchor_quat(self) -> None:
         builder = VelCmdObservationBuilder(_velcmd_cfg())
         builder._base.build = lambda *args, **kwargs: np.zeros(154, dtype=np.float32)  # type: ignore[method-assign]
         builder._base._run_fk = lambda *args, **kwargs: None  # type: ignore[method-assign]
         builder._base._anchor_body_id = 0
+        builder._base._get_body_pos = lambda _body_id: np.array([0.0, 0.0, 1.0], dtype=np.float32)  # type: ignore[method-assign]
         builder._base._get_body_quat = lambda _body_id: np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # type: ignore[method-assign]
 
         root_quat = np.array(

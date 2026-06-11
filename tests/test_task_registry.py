@@ -27,6 +27,7 @@ def test_general_tracking_task_is_registered() -> None:
         assert "ref_base_lin_vel_b" in terms
         assert "ref_base_ang_vel_b" in terms
         assert "ref_projected_gravity_b" in terms
+        assert "ref_base_height" in terms
     assert "motion_anchor_pos_b" not in actor_terms
     assert "base_lin_vel" not in actor_terms
     assert "actor_history" in env_cfg.observations

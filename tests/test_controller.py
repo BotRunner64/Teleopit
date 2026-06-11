@@ -41,11 +41,11 @@ class TestRLPolicyStaticHelpers:
 
     def test_extract_feature_dim_int(self):
         from teleopit.controllers.rl_policy import RLPolicyController
-        assert RLPolicyController._extract_feature_dim([1, 166]) == 166
+        assert RLPolicyController._extract_feature_dim([1, 167]) == 167
 
     def test_extract_feature_dim_string(self):
         from teleopit.controllers.rl_policy import RLPolicyController
-        assert RLPolicyController._extract_feature_dim(["batch", "166"]) == 166
+        assert RLPolicyController._extract_feature_dim(["batch", "167"]) == 167
 
     def test_extract_feature_dim_dynamic(self):
         from teleopit.controllers.rl_policy import RLPolicyController
@@ -105,7 +105,7 @@ class TestRLPolicyControllerInference:
     def test_compute_action_shape(self):
         from teleopit.controllers.rl_policy import RLPolicyController
 
-        obs_dim = 166
+        obs_dim = 167
         action_dim = 29
 
         # Build a controller with mocked internals
@@ -138,7 +138,7 @@ class TestRLPolicyControllerInference:
         from teleopit.controllers.rl_policy import RLPolicyController
 
         ctrl = RLPolicyController.__new__(RLPolicyController)
-        ctrl._expected_obs_dim = 166
+        ctrl._expected_obs_dim = 167
         ctrl.clip_range = (-10.0, 10.0)
         ctrl.action_scale = np.ones(29, dtype=np.float32)
         ctrl._session = MagicMock()
@@ -154,8 +154,8 @@ class TestRLPolicyControllerInference:
         ctrl = RLPolicyController.__new__(RLPolicyController)
         from collections import deque
         ctrl._history_buf = deque(maxlen=3)
-        ctrl._last_obs_input = np.zeros(166, dtype=np.float32)
-        ctrl._last_obs_history_input = np.zeros((3, 166), dtype=np.float32)
+        ctrl._last_obs_input = np.zeros(167, dtype=np.float32)
+        ctrl._last_obs_history_input = np.zeros((3, 167), dtype=np.float32)
         assert ctrl.reset() is None
         assert len(ctrl._history_buf) == 0
         assert ctrl._last_obs_input is None
@@ -165,7 +165,7 @@ class TestRLPolicyControllerInference:
         from teleopit.controllers.rl_policy import RLPolicyController
 
         ctrl = RLPolicyController.__new__(RLPolicyController)
-        ctrl._expected_obs_dim = 166
+        ctrl._expected_obs_dim = 167
         ctrl.clip_range = (-10.0, 10.0)
         ctrl.action_scale = np.ones(2, dtype=np.float32)
         ctrl.default_dof_pos = np.zeros(2, dtype=np.float32)
@@ -173,7 +173,7 @@ class TestRLPolicyControllerInference:
         ctrl._output_name = "action"
         ctrl._multi_input = True
         ctrl._history_length = 3
-        ctrl._history_obs_dim = 166
+        ctrl._history_obs_dim = 167
         from collections import deque
         ctrl._history_buf = deque(maxlen=3)
         ctrl._last_obs_input = None
@@ -182,9 +182,9 @@ class TestRLPolicyControllerInference:
         mock_session.run.return_value = [np.zeros((1, 2), dtype=np.float32)]
         ctrl._session = mock_session
 
-        obs = np.zeros(166, dtype=np.float32)
+        obs = np.zeros(167, dtype=np.float32)
         ctrl.compute_action(obs)
         debug = ctrl.get_debug_inputs()
         assert debug["obs"] is not None
         assert debug["obs_history"] is not None
-        assert debug["obs_history"].shape == (3, 166)
+        assert debug["obs_history"].shape == (3, 167)

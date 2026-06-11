@@ -93,6 +93,10 @@ _VELCMD_ACTOR_TERMS: dict[str, ObservationTermCfg] = {
         func=mdp.ref_projected_gravity_b,
         params={"command_name": "motion"},
     ),
+    "ref_base_height": ObservationTermCfg(
+        func=mdp.ref_base_height,
+        params={"command_name": "motion"},
+    ),
 }
 
 _VELCMD_CRITIC_TERMS: dict[str, ObservationTermCfg] = {
@@ -107,6 +111,10 @@ _VELCMD_CRITIC_TERMS: dict[str, ObservationTermCfg] = {
     ),
     "ref_projected_gravity_b": ObservationTermCfg(
         func=mdp.ref_projected_gravity_b,
+        params={"command_name": "motion"},
+    ),
+    "ref_base_height": ObservationTermCfg(
+        func=mdp.ref_base_height,
         params={"command_name": "motion"},
     ),
 }

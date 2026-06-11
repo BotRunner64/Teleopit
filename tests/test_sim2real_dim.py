@@ -24,7 +24,7 @@ def _cfg() -> dict[str, object]:
 
 def test_robot_worker_requires_dual_input_policy(monkeypatch) -> None:
     policy = SimpleNamespace(_multi_input=False)
-    obs_builder = SimpleNamespace(total_obs_size=166)
+    obs_builder = SimpleNamespace(total_obs_size=167)
     monkeypatch.setattr(
         "teleopit.sim2real.mp.runtime._build_policy_components",
         lambda **_kwargs: (policy, obs_builder),
@@ -37,9 +37,9 @@ def test_robot_worker_requires_dual_input_policy(monkeypatch) -> None:
         worker._build_policy_and_obs()
 
 
-def test_robot_worker_accepts_166d_dual_input_policy(monkeypatch) -> None:
+def test_robot_worker_accepts_167d_dual_input_policy(monkeypatch) -> None:
     policy = SimpleNamespace(_multi_input=True)
-    obs_builder = SimpleNamespace(total_obs_size=166)
+    obs_builder = SimpleNamespace(total_obs_size=167)
     monkeypatch.setattr(
         "teleopit.sim2real.mp.runtime._build_policy_components",
         lambda **_kwargs: (policy, obs_builder),

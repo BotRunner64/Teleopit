@@ -86,7 +86,7 @@ python train_mimic/scripts/save_onnx.py \
     --history_length 10
 ```
 
-导出的模型为双输入 ONNX（`obs` + `obs_history`）。推理端仅支持 166D 双输入 ONNX 格式。
+导出的模型为双输入 ONNX（`obs` + `obs_history`）。推理端需要与当前 `velcmd_history` 观测匹配的 167D 双输入 ONNX 策略。
 
 ## 评估
 

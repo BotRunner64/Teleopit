@@ -86,7 +86,7 @@ python train_mimic/scripts/save_onnx.py \
     --history_length 10
 ```
 
-The exported model is a dual-input ONNX (`obs` + `obs_history`). The inference side only supports 166D dual-input ONNX.
+The exported model is a dual-input ONNX (`obs` + `obs_history`). The inference side expects a 167D dual-input ONNX policy matching the current `velcmd_history` observation.
 
 ## Evaluation
 

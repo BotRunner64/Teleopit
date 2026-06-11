@@ -102,14 +102,14 @@ def ref_projected_gravity_b(env: ManagerBasedRlEnv, command_name: str) -> torch.
 
 
 def ref_base_height(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
-    """Reference anchor height (z-coordinate). (N, 1) — critic privileged."""
+    """Reference anchor height (z-coordinate). (N, 1)"""
     command = cast(MotionCommand, env.command_manager.get_term(command_name))
     return command.anchor_pos_w[:, 2:3]
 
 
 # ---------------------------------------------------------------------------
 # Yaw-only variants: use yaw_quat(robot_anchor_quat_w) to decouple
-# roll/pitch from the coordinate transform, matching the TWIST2 approach.
+# roll/pitch from the coordinate transform.
 # ---------------------------------------------------------------------------
 
 

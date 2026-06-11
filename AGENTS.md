@@ -11,7 +11,7 @@ Config: Hydra/OmegaConf YAML files in `teleopit/configs/`
 ## Architecture
 
 ```
-InputProvider (BVH file / Pico4 VR) → Retargeter (GMR) → ObservationBuilder (166D) → Controller (dual-input TemporalCNN ONNX) → Robot (MuJoCo + PD / Unitree SDK)
+InputProvider (BVH file / Pico4 VR) → Retargeter (GMR) → ObservationBuilder (167D) → Controller (dual-input TemporalCNN ONNX) → Robot (MuJoCo + PD / Unitree SDK)
 ```
 
 Module-internal isolation: all modules run in-process and communicate via `InProcessBus` (zero-copy). Core interfaces are defined as `typing.Protocol` in `teleopit/interfaces.py`.
@@ -19,7 +19,7 @@ Module-internal isolation: all modules run in-process and communicate via `InPro
 ## Supported Surface
 
 - Training task: `General-Tracking-G1`
-- Inference observation: `velcmd_history` (166D, dual-input ONNX with `obs` + `obs_history`)
+- Inference observation: `velcmd_history` (167D, dual-input ONNX with `obs` + `obs_history`)
 - TemporalCNN actor/critic with scaled dims (2048,1024,512,256,128)
 - Realtime inference uses a retargeted-reference timeline before observation build; `reference_steps=[0]` is the default production path
 
@@ -165,7 +165,7 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - Realtime Pico sim2sim can start directly in `STANDING` with keyboard mode control enabled via top-level `keyboard.enabled`
 
 ### Inference Observation
-Observation format: `velcmd_history` (166D, dual-input ONNX)
+Observation format: `velcmd_history` (167D, dual-input ONNX)
 
 ```
 command(58)
@@ -178,6 +178,7 @@ command(58)
 + ref_base_lin_vel_b(3)
 + ref_base_ang_vel_b(3)
 + ref_projected_gravity_b(3)
++ ref_base_height(1)
 ```
 
 Runtime constraints:
@@ -189,7 +190,7 @@ Runtime constraints:
 The single supported training task is `General-Tracking-G1` (experiment name: `g1_general_tracking`).
 
 - Uses TemporalCNN actor/critic with scaled dims (2048,1024,512,256,128)
-- 166D `velcmd_history` observation, dual-input ONNX export
+- 167D `velcmd_history` observation, dual-input ONNX export
 - Training env uses `sampling_mode="uniform"`
 - Supported motion sampling modes are `adaptive`, `uniform`, `start`, and `rewind`; `rewind` restarts failed environments from the same clip after stepping back `rewind_min_steps..rewind_max_steps` with probability `rewind_prob`, otherwise it falls back to uniform sampling
 - Playback/benchmark use `play=True`, which switches motion sampling to `start`

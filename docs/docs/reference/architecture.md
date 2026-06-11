@@ -11,7 +11,7 @@ System internals and technical constraints for developers.
 ```text
 InputProvider (BVH file / Pico4)
     -> Retargeter (GMR)
-    -> ObservationBuilder (166D)
+    -> ObservationBuilder (167D)
     -> Controller (dual-input TemporalCNN ONNX)
     -> Robot (MuJoCo sim or Unitree G1)
 ```
@@ -45,7 +45,7 @@ train_mimic/scripts/data
 | `teleopit/pipeline.py` | Lightweight facade for offline sim |
 | `teleopit/sim2real/mp/` | Process-isolated sim2real state machine, IPC, and robot-control loop |
 | `teleopit/controllers/observation.py` | ObservationBuilder |
-| `teleopit/controllers/rl_policy.py` | Only accepts 166D dual-input ONNX |
+| `teleopit/controllers/rl_policy.py` | Accepts dual-input ONNX whose observation dimension matches the runtime builder |
 | `train_mimic/app.py` | Shared train/play/benchmark assembly |
 | `train_mimic/tasks/tracking/config/` | Single task registration (`General-Tracking-G1`) |
 | `train_mimic/data/dataset_builder.py` | Sole official dataset construction entry |
@@ -55,8 +55,8 @@ train_mimic/scripts/data
 | Spec | Value |
 |------|-------|
 | Training task | `General-Tracking-G1` |
-| Inference observation | `velcmd_history` (166D) |
-| ONNX signature | Dual-input `obs` (166D) + `obs_history` |
+| Inference observation | `velcmd_history` (167D) |
+| ONNX signature | Dual-input `obs` (167D) + `obs_history` |
 | Actor/Critic | TemporalCNN (2048, 1024, 512, 256, 128) |
 | Training sampling | Default `uniform`; also supports `adaptive` and `rewind`; playback/benchmark use `start` |
 | Training `window_steps` | `[0]` |
@@ -68,7 +68,7 @@ train_mimic/scripts/data
 - Offline BVH runs require explicit `input.bvh_file`
 - `viewers` is the sole viewer configuration entry
 - Observation/ONNX dimension mismatch causes immediate startup error
-- sim2real also only supports 166D dual-input ONNX
+- sim2real also requires a dual-input ONNX whose observation dimension matches the runtime builder
 
 ## Public Surface
 

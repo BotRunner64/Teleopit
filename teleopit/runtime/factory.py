@@ -152,11 +152,6 @@ def _build_policy_components(
     policy_dim = getattr(controller, "_expected_obs_dim", None)
     builder_dim = getattr(obs_builder, "total_obs_size", None)
     if policy_dim is not None and builder_dim is not None and policy_dim != builder_dim:
-        if builder_dim == 166:
-            raise ValueError(
-                f"Only 166D velcmd_history ONNX policies are supported here; "
-                f"obs_builder produces 166D but policy expects {policy_dim}D."
-            )
         raise ValueError(
             f"Observation dimension mismatch at startup: obs_builder produces {builder_dim}D "
             f"but policy expects {policy_dim}D. Use a matching ONNX model."

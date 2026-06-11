@@ -184,7 +184,7 @@ def quat_to_rot6d(q):
 # =====================================================================
 
 class ObservationBuilder:
-    """166D VelCmd observation builder using MuJoCo FK."""
+    """167D VelCmd observation builder using MuJoCo FK."""
 
     def __init__(self, xml_path: str):
         self._mj_model = mujoco.MjModel.from_xml_path(xml_path)
@@ -196,10 +196,10 @@ class ObservationBuilder:
 
         # Base obs: command(29+29) + anchor_ori_b(6) + ang_vel(3) + joint_pos_rel(29) + qvel(29) + last_act(29)
         # = 154
-        # VelCmd extra: projected_gravity(3) + ref_lin_vel_b(3) + ref_ang_vel_b(3) + ref_proj_gravity(3)
-        # = 12
-        # Total = 166
-        self.total_obs_size = NUM_JOINTS * 2 + 6 + 3 + NUM_JOINTS * 3 + 12
+        # VelCmd extra: projected_gravity(3) + ref_lin_vel_b(3) + ref_ang_vel_b(3)
+        # + ref_proj_gravity(3) + ref_base_height(1) = 13
+        # Total = 167
+        self.total_obs_size = NUM_JOINTS * 2 + 6 + 3 + NUM_JOINTS * 3 + 13
 
         # Precompute motion torso offset for standing (DEFAULT_ANGLES with identity base)
         # torso_quat_world = quat_mul(base_quat, torso_offset) for constant joint angles
@@ -219,9 +219,12 @@ class ObservationBuilder:
     def _get_body_quat(self, body_id):
         return np.asarray(self._mj_data.xquat[body_id], dtype=np.float32).copy()
 
+    def _get_body_pos(self, body_id):
+        return np.asarray(self._mj_data.xpos[body_id], dtype=np.float32).copy()
+
     def build(self, robot_qpos, robot_qvel, robot_quat, robot_ang_vel,
               motion_qpos, motion_joint_vel, last_action):
-        """Build 166D observation for VelCmd policy.
+        """Build 167D observation for VelCmd policy.
 
         Args:
             robot_qpos: (29,) current joint positions
@@ -246,6 +249,8 @@ class ObservationBuilder:
 
         motion_base_quat = motion[3:7]
         motion_joint_pos = motion[7:7 + NUM_JOINTS]
+        self._run_fk(motion[0:3], motion_base_quat, motion_joint_pos)
+        motion_anchor_pos = self._get_body_pos(self._anchor_body_id)
         motion_anchor_quat = quat_mul(motion_base_quat, self._standing_torso_offset)
 
         # Base observation (154D)
@@ -263,19 +268,21 @@ class ObservationBuilder:
             last_act,           # 29
         ], dtype=np.float32)
 
-        # VelCmd extra (12D) -- standing has zero reference velocities
+        # VelCmd extra (13D) -- standing has zero reference velocities
         projected_gravity = quat_rotate(quat_inv(robot_q), GRAVITY_UNIT_W)
         robot_inv = quat_inv(robot_anchor_quat)
         # Zero reference velocities for standing
         ref_lin_vel_b = np.zeros(3, dtype=np.float32)
         ref_ang_vel_b = np.zeros(3, dtype=np.float32)
         ref_proj_gravity = quat_rotate(quat_inv(motion_anchor_quat), GRAVITY_UNIT_W)
+        ref_base_height = motion_anchor_pos[2:3]
 
         velcmd_obs = np.concatenate([
             projected_gravity,      # 3
             ref_lin_vel_b,          # 3
             ref_ang_vel_b,          # 3
             ref_proj_gravity,       # 3
+            ref_base_height,        # 1
         ], dtype=np.float32)
 
         obs = np.concatenate([base_obs, velcmd_obs], dtype=np.float32)
