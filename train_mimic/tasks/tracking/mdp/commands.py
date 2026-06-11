@@ -667,7 +667,6 @@ class MotionCommand(CommandTerm):
         self.metrics["sampling_top1_prob"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["sampling_failed_bin_mean"] = torch.zeros(self.num_envs, device=self.device)
 
-        # Feet standing state (for feet_air_time_ref rewards)
         if self.cfg.feet_body_names:
             self._feet_body_indexes = [
                 self.cfg.body_names.index(n) for n in self.cfg.feet_body_names
