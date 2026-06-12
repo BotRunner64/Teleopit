@@ -168,17 +168,18 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 Observation format: `velcmd_history` (167D, dual-input ONNX)
 
 ```
-command(58)
-+ motion_anchor_ori_b(6)
-+ base_ang_vel(3)
-+ joint_pos_rel(29)
-+ joint_vel(29)
-+ last_action(29)
-+ projected_gravity(3)
-+ ref_base_lin_vel_b(3)
-+ ref_base_ang_vel_b(3)
+ref_joint_pos(29)
++ ref_joint_vel(29)
++ ref_anchor_ori_b(6)
++ robot_base_ang_vel_b(3)
++ robot_joint_pos_rel(29)
++ robot_joint_vel(29)
++ prev_action(29)
++ robot_projected_gravity_b(3)
++ ref_anchor_lin_vel_b(3)
++ ref_anchor_ang_vel_b(3)
 + ref_projected_gravity_b(3)
-+ ref_base_height(1)
++ ref_anchor_height(1)
 ```
 
 Runtime constraints:

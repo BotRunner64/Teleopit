@@ -42,65 +42,71 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
     ##
 
     actor_terms = {
-        "command": ObservationTermCfg(
-            func=mdp.generated_commands, params={"command_name": "motion"}
+        "ref_joint_pos": ObservationTermCfg(
+            func=mdp.ref_joint_pos, params={"command_name": "motion"}
         ),
-        "motion_anchor_pos_b": ObservationTermCfg(
-            func=mdp.motion_anchor_pos_b,
+        "ref_joint_vel": ObservationTermCfg(
+            func=mdp.ref_joint_vel, params={"command_name": "motion"}
+        ),
+        "ref_anchor_pos_b": ObservationTermCfg(
+            func=mdp.ref_anchor_pos_b,
             params={"command_name": "motion"},
             noise=Unoise(n_min=-0.25, n_max=0.25),
         ),
-        "motion_anchor_ori_b": ObservationTermCfg(
-            func=mdp.motion_anchor_ori_b,
+        "ref_anchor_ori_b": ObservationTermCfg(
+            func=mdp.ref_anchor_ori_b,
             params={"command_name": "motion"},
             noise=Unoise(n_min=-0.05, n_max=0.05),
         ),
-        "base_lin_vel": ObservationTermCfg(
+        "robot_base_lin_vel_b": ObservationTermCfg(
             func=mdp.builtin_sensor,
             params={"sensor_name": "robot/imu_lin_vel"},
             noise=Unoise(n_min=-0.5, n_max=0.5),
         ),
-        "base_ang_vel": ObservationTermCfg(
+        "robot_base_ang_vel_b": ObservationTermCfg(
             func=mdp.builtin_sensor,
             params={"sensor_name": "robot/imu_ang_vel"},
             noise=Unoise(n_min=-0.2, n_max=0.2),
         ),
-        "joint_pos": ObservationTermCfg(
+        "robot_joint_pos_rel": ObservationTermCfg(
             func=mdp.joint_pos_rel,
             noise=Unoise(n_min=-0.01, n_max=0.01),
             params={"biased": True},
         ),
-        "joint_vel": ObservationTermCfg(
+        "robot_joint_vel": ObservationTermCfg(
             func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5)
         ),
-        "actions": ObservationTermCfg(func=mdp.last_action),
+        "prev_action": ObservationTermCfg(func=mdp.last_action),
     }
 
     critic_terms = {
-        "command": ObservationTermCfg(
-            func=mdp.generated_commands, params={"command_name": "motion"}
+        "ref_joint_pos": ObservationTermCfg(
+            func=mdp.ref_joint_pos, params={"command_name": "motion"}
         ),
-        "motion_anchor_pos_b": ObservationTermCfg(
-            func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}
+        "ref_joint_vel": ObservationTermCfg(
+            func=mdp.ref_joint_vel, params={"command_name": "motion"}
         ),
-        "motion_anchor_ori_b": ObservationTermCfg(
-            func=mdp.motion_anchor_ori_b, params={"command_name": "motion"}
+        "ref_anchor_pos_b": ObservationTermCfg(
+            func=mdp.ref_anchor_pos_b, params={"command_name": "motion"}
         ),
-        "body_pos": ObservationTermCfg(
-            func=mdp.robot_body_pos_b, params={"command_name": "motion"}
+        "ref_anchor_ori_b": ObservationTermCfg(
+            func=mdp.ref_anchor_ori_b, params={"command_name": "motion"}
         ),
-        "body_ori": ObservationTermCfg(
-            func=mdp.robot_body_ori_b, params={"command_name": "motion"}
+        "robot_tracking_body_pos_b": ObservationTermCfg(
+            func=mdp.robot_tracking_body_pos_b, params={"command_name": "motion"}
         ),
-        "base_lin_vel": ObservationTermCfg(
+        "robot_tracking_body_ori_b": ObservationTermCfg(
+            func=mdp.robot_tracking_body_ori_b, params={"command_name": "motion"}
+        ),
+        "robot_base_lin_vel_b": ObservationTermCfg(
             func=mdp.builtin_sensor, params={"sensor_name": "robot/imu_lin_vel"}
         ),
-        "base_ang_vel": ObservationTermCfg(
+        "robot_base_ang_vel_b": ObservationTermCfg(
             func=mdp.builtin_sensor, params={"sensor_name": "robot/imu_ang_vel"}
         ),
-        "joint_pos": ObservationTermCfg(func=mdp.joint_pos_rel),
-        "joint_vel": ObservationTermCfg(func=mdp.joint_vel_rel),
-        "actions": ObservationTermCfg(func=mdp.last_action),
+        "robot_joint_pos_rel": ObservationTermCfg(func=mdp.joint_pos_rel),
+        "robot_joint_vel": ObservationTermCfg(func=mdp.joint_vel_rel),
+        "prev_action": ObservationTermCfg(func=mdp.last_action),
     }
 
     observations = {

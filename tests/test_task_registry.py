@@ -22,14 +22,38 @@ def test_general_tracking_task_is_registered() -> None:
     critic_terms = env_cfg.observations["critic"].terms
 
     assert DEFAULT_TASK == GENERAL_TRACKING_TASK
-    for terms in (actor_terms, critic_terms):
-        assert "projected_gravity" in terms
-        assert "ref_base_lin_vel_b" in terms
-        assert "ref_base_ang_vel_b" in terms
-        assert "ref_projected_gravity_b" in terms
-        assert "ref_base_height" in terms
-    assert "motion_anchor_pos_b" not in actor_terms
-    assert "base_lin_vel" not in actor_terms
+    assert list(actor_terms) == [
+        "ref_joint_pos",
+        "ref_joint_vel",
+        "ref_anchor_ori_b",
+        "robot_base_ang_vel_b",
+        "robot_joint_pos_rel",
+        "robot_joint_vel",
+        "prev_action",
+        "robot_projected_gravity_b",
+        "ref_anchor_lin_vel_b",
+        "ref_anchor_ang_vel_b",
+        "ref_projected_gravity_b",
+        "ref_anchor_height",
+    ]
+    assert list(critic_terms) == [
+        "ref_joint_pos",
+        "ref_joint_vel",
+        "ref_anchor_pos_b",
+        "ref_anchor_ori_b",
+        "robot_tracking_body_pos_b",
+        "robot_tracking_body_ori_b",
+        "robot_base_lin_vel_b",
+        "robot_base_ang_vel_b",
+        "robot_joint_pos_rel",
+        "robot_joint_vel",
+        "prev_action",
+        "robot_projected_gravity_b",
+        "ref_anchor_lin_vel_b",
+        "ref_anchor_ang_vel_b",
+        "ref_projected_gravity_b",
+        "ref_anchor_height",
+    ]
     assert "actor_history" in env_cfg.observations
     assert "critic_history" in env_cfg.observations
     assert env_cfg.commands["motion"].sampling_mode == "uniform"

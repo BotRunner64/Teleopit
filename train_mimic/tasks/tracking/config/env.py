@@ -77,44 +77,44 @@ def _add_history_obs_groups(
 
 
 _VELCMD_ACTOR_TERMS: dict[str, ObservationTermCfg] = {
-    "projected_gravity": ObservationTermCfg(
+    "robot_projected_gravity_b": ObservationTermCfg(
         func=mdp.projected_gravity,
         noise=Unoise(n_min=-0.05, n_max=0.05),
     ),
-    "ref_base_lin_vel_b": ObservationTermCfg(
-        func=mdp.ref_base_lin_vel_b,
+    "ref_anchor_lin_vel_b": ObservationTermCfg(
+        func=mdp.ref_anchor_lin_vel_b,
         params={"command_name": "motion"},
     ),
-    "ref_base_ang_vel_b": ObservationTermCfg(
-        func=mdp.ref_base_ang_vel_b,
+    "ref_anchor_ang_vel_b": ObservationTermCfg(
+        func=mdp.ref_anchor_ang_vel_b,
         params={"command_name": "motion"},
     ),
     "ref_projected_gravity_b": ObservationTermCfg(
         func=mdp.ref_projected_gravity_b,
         params={"command_name": "motion"},
     ),
-    "ref_base_height": ObservationTermCfg(
-        func=mdp.ref_base_height,
+    "ref_anchor_height": ObservationTermCfg(
+        func=mdp.ref_anchor_height,
         params={"command_name": "motion"},
     ),
 }
 
 _VELCMD_CRITIC_TERMS: dict[str, ObservationTermCfg] = {
-    "projected_gravity": ObservationTermCfg(func=mdp.projected_gravity),
-    "ref_base_lin_vel_b": ObservationTermCfg(
-        func=mdp.ref_base_lin_vel_b,
+    "robot_projected_gravity_b": ObservationTermCfg(func=mdp.projected_gravity),
+    "ref_anchor_lin_vel_b": ObservationTermCfg(
+        func=mdp.ref_anchor_lin_vel_b,
         params={"command_name": "motion"},
     ),
-    "ref_base_ang_vel_b": ObservationTermCfg(
-        func=mdp.ref_base_ang_vel_b,
+    "ref_anchor_ang_vel_b": ObservationTermCfg(
+        func=mdp.ref_anchor_ang_vel_b,
         params={"command_name": "motion"},
     ),
     "ref_projected_gravity_b": ObservationTermCfg(
         func=mdp.ref_projected_gravity_b,
         params={"command_name": "motion"},
     ),
-    "ref_base_height": ObservationTermCfg(
-        func=mdp.ref_base_height,
+    "ref_anchor_height": ObservationTermCfg(
+        func=mdp.ref_anchor_height,
         params={"command_name": "motion"},
     ),
 }
@@ -209,7 +209,7 @@ def make_general_tracking_env_cfg(
     actor_terms = {
         key: value
         for key, value in cfg.observations["actor"].terms.items()
-        if key not in {"motion_anchor_pos_b", "base_lin_vel"}
+        if key not in {"ref_anchor_pos_b", "robot_base_lin_vel_b"}
     }
     cfg.observations["actor"] = ObservationGroupCfg(
         terms=actor_terms,
