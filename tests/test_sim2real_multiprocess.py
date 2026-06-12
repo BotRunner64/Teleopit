@@ -334,6 +334,22 @@ def test_robot_worker_replays_bvh_on_mocap_entry() -> None:
     assert commands == ["replay_mocap"]
 
 
+def test_robot_worker_standing_reference_uses_default_root_height_without_base_pos() -> None:
+    worker = object.__new__(_RobotControlWorker)
+    worker.default_angles = np.zeros(29, dtype=np.float32)
+    worker.num_actions = 29
+    worker._default_root_pos = np.array([0.0, 0.0, 0.76], dtype=np.float64)
+    worker._standing_qpos = np.zeros(36, dtype=np.float64)
+    state = SimpleNamespace(
+        quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        qpos=np.zeros(29, dtype=np.float32),
+    )
+
+    worker._set_default_standing_reference(state)
+
+    np.testing.assert_allclose(worker._standing_qpos[0:3], np.array([0.0, 0.0, 0.76]))
+
+
 def test_robot_worker_pauses_when_bvh_reference_reports_paused() -> None:
     worker = object.__new__(_RobotControlWorker)
     worker.provider_kind = "bvh"

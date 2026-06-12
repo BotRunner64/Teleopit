@@ -815,6 +815,12 @@ class _RobotControlWorker:
 
         robot_cfg = cfg_get(cfg, "robot")
         self.default_angles = np.asarray(cfg_get(robot_cfg, "default_angles"), dtype=np.float32)
+        default_root_qpos = np.asarray(
+            cfg_get(robot_cfg, "mujoco_default_qpos", [0.0, 0.0, 0.0]), dtype=np.float64
+        ).reshape(-1)
+        self._default_root_pos = np.zeros(3, dtype=np.float64)
+        if default_root_qpos.shape[0] >= 3:
+            self._default_root_pos[:] = default_root_qpos[:3]
         self.num_actions = int(cfg_get(robot_cfg, "num_actions", NUM_JOINTS))
         self._safety = Sim2RealSafetyManager(cfg, self.robot, self.policy_hz, self.num_actions)
         self._standing_return_ramp_duration = float(cfg_get(cfg, "standing_return_ramp_duration", 0.5))
@@ -1235,9 +1241,7 @@ class _RobotControlWorker:
 
     def _build_robot_state_qpos(self, state: object) -> Float64Array:
         qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
-        base_pos = getattr(state, "base_pos", None)
-        if base_pos is not None:
-            qpos[0:3] = np.asarray(base_pos, dtype=np.float64).reshape(-1)[:3]
+        qpos[0:3] = self._resolve_base_pos(state)
         qpos[3:7] = np.asarray(getattr(state, "quat"), dtype=np.float64).reshape(-1)[:4]
         qpos[ROOT_DIM:FULL_QPOS_DIM] = np.asarray(getattr(state, "qpos"), dtype=np.float64).reshape(-1)[
             : self.num_actions
@@ -1246,12 +1250,19 @@ class _RobotControlWorker:
 
     def _set_default_standing_reference(self, state: object) -> None:
         self._standing_qpos[:] = 0.0
-        base_pos = getattr(state, "base_pos", None)
-        if base_pos is not None:
-            self._standing_qpos[0:3] = np.asarray(base_pos, dtype=np.float64).reshape(-1)[:3]
+        self._standing_qpos[0:3] = self._resolve_base_pos(state)
         self._standing_qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         align_motion_qpos_yaw(np.asarray(getattr(state, "quat"), dtype=np.float32), self._standing_qpos)
         self._standing_qpos[ROOT_DIM:FULL_QPOS_DIM] = self.default_angles.astype(np.float64)
+
+    def _resolve_base_pos(self, state: object) -> Float64Array:
+        base_pos = getattr(state, "base_pos", None)
+        if base_pos is None:
+            return self._default_root_pos.copy()
+        resolved = self._default_root_pos.copy()
+        live = np.asarray(base_pos, dtype=np.float64).reshape(-1)
+        resolved[: min(3, live.shape[0])] = live[:3]
+        return resolved
 
     def _build_resume_alignment_qpos(self, hold_qpos: Float64Array | None, state: object) -> Float64Array:
         qpos = self._build_robot_state_qpos(state)
