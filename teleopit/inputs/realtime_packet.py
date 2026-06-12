@@ -16,6 +16,7 @@ HumanFrame = Dict[str, Tuple[NDArray[np.float64], NDArray[np.float64]]]
 
 class ControlEventType(str, Enum):
     TOGGLE_PAUSE = "toggle_pause"
+    TOGGLE_ARMS = "toggle_arms"
 
 
 @dataclass(frozen=True)

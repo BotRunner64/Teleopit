@@ -105,6 +105,7 @@ Keep the Unitree remote in hand. `L1+R1` is the emergency stop path into
 | Unitree remote `Start` | Enter `STANDING` |
 | Unitree remote `Y` | Enter `MOCAP` |
 | Pico/controller `A` | Pause / resume live mocap |
+| Pico/controller `B` | Toggle `MOCAP` / `ARMS` |
 | Unitree remote `X` | Return to `STANDING` |
 | Unitree remote `L1+R1` | Emergency stop (`DAMPING`) |
 
@@ -126,6 +127,11 @@ and ramps Kp without changing policy targets.
 
 When entering `MOCAP`, Teleopit resets policy/reference state and starts tracking
 the live mocap command through the realtime reference timeline.
+
+`ARMS` keeps the same live retargeting timeline running, but sends the motion
+tracker a composed reference: body, waist, and legs stay at the standing pose
+while both arms follow the live retargeted result. Entering or leaving `ARMS`
+resets policy/reference alignment and uses the same Kp ramp safety path.
 
 ## Pause / Resume
 
@@ -153,8 +159,8 @@ Pico sim2real can drive LinkerHand L6 hands in two modes:
   public `somehand.api` from somehand 0.2.0. It always sets L6 speed to the
   maximum.
 
-Hand control is active only in `MOCAP`. It sends the open pose in `STANDING`,
-`DAMPING`, paused mocap, and shutdown.
+Hand control is active in `MOCAP` and `ARMS`. It sends the open pose in
+`STANDING`, `DAMPING`, paused mocap, and shutdown.
 
 Install the dexhand extra first if it was not installed with the main Pico
 profile:

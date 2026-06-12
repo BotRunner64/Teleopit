@@ -138,10 +138,12 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - The provider applies an input-space transform to match the current retarget config
 - Do not hardcode that transform as a public coordinate-system contract; validate against actual retarget/sim2sim behavior when SDK or firmware changes
 - Pico4 realtime control uses the same retargeted-reference timeline path as the shared realtime input stack
-- Pico sim2sim supports a keyboard-driven top-level mode state machine: `STANDING → MOCAP → STANDING`
-- Default Pico sim2sim keyboard mappings are `Y` → `MOCAP`, `A` → pause/resume mocap, `X` → back to `STANDING`, `Q` → quit
+- Pico sim2sim supports a keyboard-driven top-level mode state machine: `STANDING → MOCAP ↔ ARMS`, `X` returns to `STANDING`
+- Default Pico sim2sim keyboard mappings are `Y` → `MOCAP`, `A` → pause/resume mocap, `B` → toggle `MOCAP`/`ARMS`, `X` → back to `STANDING`, `Q` → quit
 - Pico4 sim2real pause/resume is handled as a mocap-session control event (`toggle_pause`), not as a mode switch to `STANDING`
 - Default Pico pause button is `A`; resume resets policy/reference state and yaw/XY root-offset alignment while the process-isolated realtime reference worker continues its live input timeline
+- Pico4 sim2sim/sim2real support `ARMS` mode toggled from `MOCAP` with Pico/controller `B`; retargeting continues, while the control loop sends the motion tracker a composed reference with stand-pose body/legs/waist and live retargeted arms
+- `ARMS` entering/exiting/resume resets policy/reference alignment and uses Kp ramp; offline BVH sim2real does not use `ARMS`, and Unitree remote `B` remains BVH replay
 - Realtime mode switches and pause/resume use a retargeter-preserving soft reset: policy/reference state, smoothers, and reference alignment are reset, while the GMR IK warm-start is retained
 - Optional LinkerHand L6 control uses `hands.enabled=true` and `hands.mode=gripper|vr_hand_pose`; default is disabled
 - `gripper` mode reuses `Pico4InputProvider.get_controller_snapshot()` for Pico grip/trigger open-close control
@@ -149,7 +151,7 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - Teleopit owns Pico 26-joint hand-state to 21-landmark conversion; do not import `somehand.pico_input`
 - `gripper` mode uses the configured `hands.linkerhand_l6.speed` (default `[50]*6`); `vr_hand_pose` always sets LinkerHand L6 speed to `[255]*6`
 - `vr_hand_pose` defaults to a low-latency somehand path: `hands.somehand.rate_hz=60`, `max_iterations=12`, `temporal_filter_alpha=1.0`, and `output_alpha=1.0`; this prioritizes response speed over smoothing
-- LinkerHand L6 control is active only in sim2real `MOCAP`; `STANDING`, `DAMPING`, mocap pause, and shutdown must send the configured open pose
+- LinkerHand L6 control is active in sim2real `MOCAP` and `ARMS`; `STANDING`, `DAMPING`, mocap pause, and shutdown must send the configured open pose
 - In `vr_hand_pose` mode, missing/inactive hand pose holds the last commanded pose for that side instead of opening the hand
 
 ### SimulationLoop Runtime Behavior

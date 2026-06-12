@@ -71,6 +71,7 @@ enter `MOCAP`.
 |----------|--------|
 | `Y` | Enter `MOCAP` |
 | `A` | Pause / resume live mocap |
+| `B` | Toggle `MOCAP` / `ARMS` |
 | `X` | Return to `STANDING` |
 | `Q` | Quit |
 
@@ -91,6 +92,9 @@ Pico pause/resume freezes the mocap session; it is not a switch back to
 The default Pico pause button is `A`. Supported overrides include `B`, `X`, `Y`,
 `left_axis_click`, `right_axis_click`, `left_menu_button`, and
 `right_menu_button`.
+
+The default Pico arms-mode button is `B`. `ARMS` keeps body, waist, and legs at
+the standing pose while both arms follow the live retargeted result.
 
 ## Optional Headset Video Preview
 

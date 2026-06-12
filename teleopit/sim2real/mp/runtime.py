@@ -25,6 +25,11 @@ from teleopit.retargeting.core import RetargetingModule
 from teleopit.runtime.offline_playback import OfflinePlaybackController
 from teleopit.runtime.common import cfg_get, parse_viewers, require_section
 from teleopit.runtime.factory import _build_policy_components, build_simulation_cfg
+from teleopit.runtime.arm_mocap import (
+    compose_arm_reference,
+    compose_arm_reference_window,
+    parse_arm_joint_indices,
+)
 from teleopit.runtime.mocap_session import MocapSessionManager, MocapSessionState
 from teleopit.runtime.reference_config import parse_reference_config
 from teleopit.sim.reference_motion import OfflineReferenceMotion
@@ -82,6 +87,7 @@ class RobotMode(Enum):
     IDLE = "idle"
     STANDING = "standing"
     MOCAP = "mocap"
+    ARMS = "arms"
     DAMPING = "damping"
 
 
@@ -371,6 +377,8 @@ def _run_pico_io_worker(
             timestamp_gap_reset_s=float(cfg_get(input_cfg, "pico4_timestamp_gap_reset_s", 0.15)),
             pause_button=cfg_get(input_cfg, "pause_button", "A"),
             pause_debounce_s=float(cfg_get(input_cfg, "pause_debounce_s", 0.25)),
+            arms_button=cfg_get(input_cfg, "arms_button", "B"),
+            arms_debounce_s=float(cfg_get(input_cfg, "arms_debounce_s", cfg_get(input_cfg, "pause_debounce_s", 0.25))),
             bridge_host=str(cfg_get(input_cfg, "bridge_host", "0.0.0.0")),
             bridge_port=int(cfg_get(input_cfg, "bridge_port", 63901)),
             bridge_discovery=bool(cfg_get(input_cfg, "bridge_discovery", True)),
@@ -813,6 +821,7 @@ class _RobotControlWorker:
         self._standing_return_kp_ramp_floor_ratio = float(
             cfg_get(cfg, "standing_return_kp_ramp_floor_ratio", 0.5)
         )
+        self._arm_joint_indices = parse_arm_joint_indices(cfg, num_actions=self.num_actions)
 
         self._ref_cfg = parse_reference_config(cfg, provider_fps=None)
         self._reference_window_builder = ReferenceWindowBuilder(
@@ -878,7 +887,7 @@ class _RobotControlWorker:
                     self._handle_transitions()
                     if self.mode == RobotMode.STANDING:
                         self._standing_step()
-                    elif self.mode == RobotMode.MOCAP:
+                    elif self.mode in (RobotMode.MOCAP, RobotMode.ARMS):
                         self._mocap_step()
 
                 self._publish_mode_state()
@@ -894,7 +903,7 @@ class _RobotControlWorker:
             self.shutdown()
 
     def shutdown(self) -> None:
-        if self.mode in (RobotMode.STANDING, RobotMode.MOCAP):
+        if self.mode in (RobotMode.STANDING, RobotMode.MOCAP, RobotMode.ARMS):
             try:
                 self.robot.set_damping()
                 time.sleep(0.5)
@@ -952,7 +961,7 @@ class _RobotControlWorker:
                     self._transition_to_mocap()
                 else:
                     logger.warning("Cannot switch to MOCAP -- no fresh retarget reference")
-        elif self.mode == RobotMode.MOCAP:
+        elif self.mode in (RobotMode.MOCAP, RobotMode.ARMS):
             if self.provider_kind == "bvh" and self.remote.B.on_pressed:
                 logger.info("B pressed -> replaying BVH motion from start")
                 self._send_reference_command("replay_mocap")
@@ -1031,7 +1040,13 @@ class _RobotControlWorker:
         robot_state: object,
         reference_window: ReferenceWindow | None,
     ) -> None:
+        reference_window_aligned = False
         reference_qpos = self._ref_proc.align_reference_yaw(reference_qpos, robot_state=robot_state)
+        if self.mode == RobotMode.ARMS:
+            reference_qpos = self._compose_arm_reference(reference_qpos)
+            aligned_window = self._ref_proc.align_reference_window(reference_window, robot_state)
+            reference_window = self._compose_arm_reference_window(aligned_window)
+            reference_window_aligned = True
         qpos = reference_qpos.copy()
         if qpos.shape[0] < 7 + self.num_actions:
             raise ValueError(f"Retargeted qpos too short: {qpos.shape[0]} (need >= {7 + self.num_actions})")
@@ -1058,6 +1073,7 @@ class _RobotControlWorker:
             anchor_lin_vel_w=anchor_lin_vel_w,
             anchor_ang_vel_w=anchor_ang_vel_w,
             reference_window=reference_window,
+            reference_window_aligned=reference_window_aligned,
         )
         obs = self._ref_proc.validate_observation(obs)
         action = self.policy.compute_action(obs)
@@ -1070,9 +1086,25 @@ class _RobotControlWorker:
         self._last_mocap_hold_reason = None
         self._write_retarget_viewer(qpos)
 
+    def _compose_arm_reference(self, retarget_qpos: Float64Array) -> Float64Array:
+        return compose_arm_reference(
+            standing_qpos=self._standing_qpos,
+            retarget_qpos=retarget_qpos,
+            arm_joint_indices=self._arm_joint_indices,
+            num_actions=self.num_actions,
+        )
+
+    def _compose_arm_reference_window(self, reference_window: ReferenceWindow | None) -> ReferenceWindow | None:
+        return compose_arm_reference_window(
+            reference_window,
+            standing_qpos=self._standing_qpos,
+            arm_joint_indices=self._arm_joint_indices,
+            num_actions=self.num_actions,
+        )
+
     def _enter_standing(self) -> None:
         prev_mode = self.mode
-        already_in_debug = self.mode in (RobotMode.STANDING, RobotMode.MOCAP)
+        already_in_debug = self.mode in (RobotMode.STANDING, RobotMode.MOCAP, RobotMode.ARMS)
         if not already_in_debug:
             logger.info("Entering debug mode...")
             ok = self.robot.enter_debug_mode()
@@ -1082,7 +1114,7 @@ class _RobotControlWorker:
             time.sleep(0.5)
 
         state = self.robot.get_state()
-        if prev_mode != RobotMode.MOCAP:
+        if prev_mode not in (RobotMode.MOCAP, RobotMode.ARMS):
             logger.info("Locking joints to current position...")
             self.robot.lock_all_joints()
             time.sleep(0.3)
@@ -1094,14 +1126,14 @@ class _RobotControlWorker:
         self._last_commanded_motion_qpos = None
         self._set_default_standing_reference(state)
         self._reset_policy_state()
-        if prev_mode == RobotMode.MOCAP:
+        if prev_mode in (RobotMode.MOCAP, RobotMode.ARMS):
             self._safety.start_kp_ramp(
                 duration_s=self._standing_return_ramp_duration,
                 floor_ratio=self._standing_return_kp_ramp_floor_ratio,
             )
         else:
             self._safety.start_kp_ramp()
-        self._mocap_reentry_armed = prev_mode == RobotMode.MOCAP
+        self._mocap_reentry_armed = prev_mode in (RobotMode.MOCAP, RobotMode.ARMS)
         self.mode = RobotMode.STANDING
         logger.info("Mode -> STANDING (multiprocess robot control)")
 
@@ -1126,7 +1158,9 @@ class _RobotControlWorker:
 
     def _transition_to_mocap(self) -> None:
         state = self.robot.get_state()
-        resume_qpos = self._build_resume_alignment_qpos(self._standing_qpos, state)
+        last_commanded = getattr(self, "_last_commanded_motion_qpos", None)
+        hold_qpos = last_commanded if last_commanded is not None else self._standing_qpos
+        resume_qpos = self._build_resume_alignment_qpos(hold_qpos, state)
         self._mocap_reentry_armed = False
         self._reset_policy_state()
         self._last_retarget_qpos = None
@@ -1137,12 +1171,35 @@ class _RobotControlWorker:
         self.mode = RobotMode.MOCAP
         logger.info("Mode -> MOCAP (tracking multiprocess retarget reference)")
 
+    def _toggle_arms_mode(self) -> None:
+        if self.provider_kind != "pico4" or self.mode not in (RobotMode.MOCAP, RobotMode.ARMS):
+            return
+        if self._mocap_session.state == MocapSessionState.PAUSED:
+            logger.info("Ignoring Pico B mode toggle while mocap session is paused")
+            return
+
+        state = self.robot.get_state()
+        resume_qpos = self._build_resume_alignment_qpos(self._last_commanded_motion_qpos, state)
+        next_mode = RobotMode.ARMS if self.mode == RobotMode.MOCAP else RobotMode.MOCAP
+        if next_mode == RobotMode.ARMS:
+            self._set_default_standing_reference(state)
+        self._reset_policy_state()
+        self._last_retarget_qpos = None
+        self._last_commanded_motion_qpos = resume_qpos.copy()
+        self._ref_proc.reset_alignment(target_qpos=resume_qpos)
+        self._safety.start_kp_ramp(
+            duration_s=self._standing_return_ramp_duration,
+            floor_ratio=self._standing_return_kp_ramp_floor_ratio,
+        )
+        self.mode = next_mode
+        logger.info("Mode -> %s (Pico B toggle)", next_mode.value.upper())
+
     def _resume_paused_mocap_if_needed(self) -> None:
         if self._mocap_session.state == MocapSessionState.PAUSED:
             self._resume_paused_mocap()
 
     def _enter_damping(self) -> None:
-        if self.mode in (RobotMode.STANDING, RobotMode.MOCAP):
+        if self.mode in (RobotMode.STANDING, RobotMode.MOCAP, RobotMode.ARMS):
             logger.info("DAMPING: sending LowCmd damping...")
             self.robot.set_damping()
             time.sleep(0.5)
@@ -1207,14 +1264,16 @@ class _RobotControlWorker:
 
     def _handle_mocap_control_events(self, control_events: tuple[ControlEvent, ...]) -> None:
         for event in control_events:
-            if event.event_type != ControlEventType.TOGGLE_PAUSE:
+            if event.event_type == ControlEventType.TOGGLE_ARMS:
+                self._toggle_arms_mode()
                 continue
-            if self.mode != RobotMode.MOCAP:
-                continue
-            if self._mocap_session.state == MocapSessionState.PAUSED:
-                self._resume_paused_mocap()
-            else:
-                self._pause_active_mocap()
+            if event.event_type == ControlEventType.TOGGLE_PAUSE:
+                if self.mode not in (RobotMode.MOCAP, RobotMode.ARMS):
+                    continue
+                if self._mocap_session.state == MocapSessionState.PAUSED:
+                    self._resume_paused_mocap()
+                else:
+                    self._pause_active_mocap()
 
     def _pause_active_mocap(self) -> None:
         hold_qpos = self._resolve_mocap_hold_qpos()
@@ -1236,6 +1295,12 @@ class _RobotControlWorker:
         self._last_retarget_qpos = None
         self._last_commanded_motion_qpos = resume_qpos.copy()
         self._ref_proc.reset_alignment(target_qpos=resume_qpos)
+        if self.mode == RobotMode.ARMS:
+            self._set_default_standing_reference(state)
+            self._safety.start_kp_ramp(
+                duration_s=self._standing_return_ramp_duration,
+                floor_ratio=self._standing_return_kp_ramp_floor_ratio,
+            )
         logger.info("Mocap session -> ACTIVE (multiprocess episode-reset + reference realignment)")
 
     def _send_reference_command(self, command: str) -> None:
@@ -1298,8 +1363,9 @@ class _RobotControlWorker:
 
     def _publish_mode_state(self) -> None:
         self._mode_seq += 1
-        active = self.mode == RobotMode.MOCAP and self._mocap_session.state == MocapSessionState.ACTIVE
-        paused = self.mode == RobotMode.MOCAP and self._mocap_session.state == MocapSessionState.PAUSED
+        mocap_like = self.mode in (RobotMode.MOCAP, RobotMode.ARMS)
+        active = mocap_like and self._mocap_session.state == MocapSessionState.ACTIVE
+        paused = mocap_like and self._mocap_session.state == MocapSessionState.PAUSED
         self._mode_pub.publish(
             MODE_TOPIC,
             ModeStatePacket(
@@ -1330,7 +1396,7 @@ class _RobotControlWorker:
         if (
             self.provider_kind == "bvh"
             and bool(getattr(reference, "playback_paused", False))
-            and self.mode == RobotMode.MOCAP
+            and self.mode in (RobotMode.MOCAP, RobotMode.ARMS)
             and self._mocap_session.state == MocapSessionState.ACTIVE
         ):
             self._pause_active_mocap()

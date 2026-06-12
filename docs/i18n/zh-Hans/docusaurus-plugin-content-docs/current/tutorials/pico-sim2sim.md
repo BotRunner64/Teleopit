@@ -69,6 +69,7 @@ python scripts/run/run_sim.py \
 |------|------|
 | `Y` | 进入 `MOCAP` |
 | `A` | 暂停 / 恢复实时动捕 |
+| `B` | 在 `MOCAP` / `ARMS` 之间切换 |
 | `X` | 返回 `STANDING` |
 | `Q` | 退出 |
 
@@ -84,6 +85,9 @@ Pico 暂停/恢复会冻结 mocap session；它不是切回 `STANDING`。
 
 默认 Pico 暂停键是 `A`。支持的覆盖值包括 `B`、`X`、`Y`、`left_axis_click`、
 `right_axis_click`、`left_menu_button` 和 `right_menu_button`。
+
+默认 Pico 双臂模式按钮是 `B`。`ARMS` 会让身体、腰部和腿部保持站立姿态，同时双臂跟随
+实时 retarget 结果。
 
 ## 可选头显视频预览
 

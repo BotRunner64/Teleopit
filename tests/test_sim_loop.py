@@ -56,6 +56,7 @@ class _DummyController:
 class _DummyObsBuilder:
     def __init__(self) -> None:
         self.mimic_obs_calls: list[np.ndarray] = []
+        self.motion_qpos_calls: list[np.ndarray] = []
         self._base = _DummyObsBuilderBase()
 
     def reset(self) -> None:
@@ -72,6 +73,7 @@ class _DummyObsBuilder:
     ) -> np.ndarray:
         del state, motion_joint_vel, last_action, motion_anchor_lin_vel_w, motion_anchor_ang_vel_w
         self.mimic_obs_calls.append(np.asarray(motion_qpos[:1], dtype=np.float32).copy())
+        self.motion_qpos_calls.append(np.asarray(motion_qpos, dtype=np.float32).copy())
         return np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
 
 
@@ -664,6 +666,138 @@ def test_simulation_loop_realtime_keyboard_mode_transitions(monkeypatch) -> None
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[0], np.array([0.0], dtype=np.float32), atol=1e-6)
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[1], np.array([0.3], dtype=np.float32), atol=1e-6)
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[2], np.array([0.0], dtype=np.float32), atol=1e-6)
+
+
+@requires_mujoco
+def test_simulation_loop_pico_arms_mode_composes_standing_body_with_live_arm(monkeypatch) -> None:
+    from teleopit.sim.loop import SimulationLoop
+
+    class _RealtimeInputProvider:
+        fps = 1
+
+        def __init__(self) -> None:
+            self._packets = [
+                RealtimeInputPacket(
+                    frame={
+                        "Pelvis": (
+                            np.array([0.3, 0.0, 0.0], dtype=np.float32),
+                            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                        )
+                    },
+                    timestamp_s=0.0,
+                    seq=0,
+                    control_events=(),
+                ),
+                RealtimeInputPacket(
+                    frame={
+                        "Pelvis": (
+                            np.array([0.9, 0.0, 0.0], dtype=np.float32),
+                            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                        )
+                    },
+                    timestamp_s=1.0,
+                    seq=1,
+                    control_events=(),
+                ),
+                RealtimeInputPacket(
+                    frame={
+                        "Pelvis": (
+                            np.array([0.9, 0.0, 0.0], dtype=np.float32),
+                            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                        )
+                    },
+                    timestamp_s=2.0,
+                    seq=2,
+                    control_events=(ControlEvent(event_type=ControlEventType.TOGGLE_ARMS, source="pico4:test"),),
+                ),
+                RealtimeInputPacket(
+                    frame={
+                        "Pelvis": (
+                            np.array([1.2, 0.0, 0.0], dtype=np.float32),
+                            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                        )
+                    },
+                    timestamp_s=3.0,
+                    seq=3,
+                    control_events=(ControlEvent(event_type=ControlEventType.TOGGLE_ARMS, source="pico4:test"),),
+                ),
+            ]
+            self._idx = 0
+
+        def get_realtime_input_packet(self):
+            packet = self._packets[min(self._idx, len(self._packets) - 1)]
+            self._idx += 1
+            return packet
+
+    class _Retargeter:
+        def retarget(self, frame: object) -> np.ndarray:
+            pelvis = np.asarray(frame["Pelvis"][0], dtype=np.float64)
+            qpos = np.zeros(36, dtype=np.float64)
+            qpos[0] = pelvis[0]
+            qpos[3] = 1.0
+            qpos[7] = pelvis[0]
+            qpos[8] = pelvis[0] + 10.0
+            return qpos
+
+    class _KeyboardReader:
+        def __init__(self) -> None:
+            self._polls = [
+                (TerminalKeyEvent("y"),),
+                (),
+                (),
+                (),
+            ]
+            self._idx = 0
+
+        @property
+        def active(self) -> bool:
+            return True
+
+        def poll(self) -> tuple[TerminalKeyEvent, ...]:
+            if self._idx >= len(self._polls):
+                return ()
+            events = self._polls[self._idx]
+            self._idx += 1
+            return events
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("teleopit.sim.session.TerminalKeyboardReader", _KeyboardReader)
+
+    robot = _DummyRobot()
+    obs_builder = _DummyObsBuilder()
+    loop = SimulationLoop(
+        robot=robot,
+        controller=_DummyController(),
+        obs_builder=obs_builder,
+        bus=InProcessBus(),
+        cfg={
+            "policy_hz": 50.0,
+            "pd_hz": 50.0,
+            "realtime": False,
+            "retarget_buffer_enabled": False,
+            "realtime_input_delay_s": 0.0,
+            "keyboard": {"enabled": True},
+            "arm_mocap": {"controlled_joint_indices": [1]},
+        },
+        viewers=set(),
+    )
+
+    result = loop.run(
+        input_provider=_RealtimeInputProvider(),
+        retargeter=_Retargeter(),
+        num_steps=4,
+    )
+
+    assert result["steps"] == 4
+    # Step 2 is ARMS: root/non-arm stays at standing while arm index 1 follows retarget.
+    np.testing.assert_allclose(obs_builder.motion_qpos_calls[2][0], 0.0, atol=1e-6)
+    np.testing.assert_allclose(obs_builder.motion_qpos_calls[2][7], 0.5, atol=1e-6)
+    np.testing.assert_allclose(obs_builder.motion_qpos_calls[2][8], 10.9, atol=1e-6)
+    # Step 3 toggles back to full-body MOCAP; root XY is reanchored, while non-arm joints follow retarget again.
+    np.testing.assert_allclose(obs_builder.motion_qpos_calls[3][0], 0.0, atol=1e-6)
+    np.testing.assert_allclose(obs_builder.motion_qpos_calls[3][7], 1.2, atol=1e-6)
 
 
 @requires_mujoco

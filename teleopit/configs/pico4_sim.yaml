@@ -19,6 +19,8 @@ reference_velocity_smoothing_alpha: 0.35
 reference_anchor_velocity_smoothing_alpha: 0.25
 reference_steps: [0]
 reference_debug_log: false
+arm_mocap:
+  controlled_joint_indices: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
 viewers: "all"
 realtime: true
 num_steps: 0          # 0 = infinite loop until Ctrl+C or device disconnect

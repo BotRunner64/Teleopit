@@ -9,8 +9,11 @@ import numpy as np
 import pytest
 
 from teleopit.runtime.mocap_session import MocapSessionState
+from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType
+from teleopit.runtime.arm_mocap import compose_arm_reference, compose_arm_reference_window
 from teleopit.sim2real.mp.ipc import HEALTH_TOPIC, LatestSubscriber, ZmqPublisher
 from teleopit.sim2real.mp.messages import ReferencePacket, SharedFrameDescriptor
+from teleopit.sim.reference_timeline import ReferenceSample, ReferenceWindow
 from teleopit.sim2real.mp.runtime import (
     RobotMode,
     Sim2RealRuntime,
@@ -359,3 +362,103 @@ def test_robot_worker_pauses_when_bvh_reference_reports_paused() -> None:
 
     assert paused == ["pause"]
     assert worker._latest_reference is packet
+
+
+def test_robot_worker_composes_arm_reference_from_standing_pose() -> None:
+    standing_qpos = np.arange(36, dtype=np.float64)
+    retarget = np.full(36, 100.0, dtype=np.float64)
+    retarget[7 + 15:7 + 29] = np.arange(14, dtype=np.float64) + 200.0
+
+    composed = compose_arm_reference(
+        standing_qpos=standing_qpos,
+        retarget_qpos=retarget,
+        arm_joint_indices=np.arange(15, 29, dtype=np.int64),
+        num_actions=29,
+    )
+
+    np.testing.assert_allclose(composed[: 7 + 15], standing_qpos[: 7 + 15])
+    np.testing.assert_allclose(composed[7 + 15:7 + 29], retarget[7 + 15:7 + 29])
+
+
+def test_robot_worker_composes_arm_reference_window_samples() -> None:
+    standing_qpos = np.zeros(36, dtype=np.float64)
+    qpos0 = np.ones(36, dtype=np.float64)
+    qpos1 = np.full(36, 2.0, dtype=np.float64)
+    window = ReferenceWindow(
+        base_time_s=1.0,
+        policy_dt_s=0.02,
+        reference_steps=(0, 1),
+        samples=(
+            ReferenceSample(qpos=qpos0, timestamp_s=1.0, mode="a", used_fallback=False, older_timestamp_s=None, newer_timestamp_s=None, alpha=None),
+            ReferenceSample(qpos=qpos1, timestamp_s=1.02, mode="b", used_fallback=False, older_timestamp_s=None, newer_timestamp_s=None, alpha=None),
+        ),
+    )
+
+    composed = compose_arm_reference_window(
+        window,
+        standing_qpos=standing_qpos,
+        arm_joint_indices=np.arange(15, 29, dtype=np.int64),
+        num_actions=29,
+    )
+
+    assert composed is not None
+    np.testing.assert_allclose(composed.samples[0].qpos[7 + 15:7 + 29], 1.0)
+    np.testing.assert_allclose(composed.samples[1].qpos[7 + 15:7 + 29], 2.0)
+    np.testing.assert_allclose(composed.samples[0].qpos[:7 + 15], 0.0)
+    np.testing.assert_allclose(composed.samples[1].qpos[:7 + 15], 0.0)
+
+
+def test_robot_worker_pico_arms_event_toggles_mocap_and_arms() -> None:
+    worker = object.__new__(_RobotControlWorker)
+    worker.provider_kind = "pico4"
+    worker.mode = RobotMode.MOCAP
+    worker._mocap_session = SimpleNamespace(state=MocapSessionState.ACTIVE)
+    worker.robot = SimpleNamespace(get_state=lambda: SimpleNamespace(base_pos=np.zeros(3), quat=np.array([1.0, 0.0, 0.0, 0.0]), qpos=np.zeros(29)))
+    worker._last_commanded_motion_qpos = np.zeros(36, dtype=np.float64)
+    worker._build_resume_alignment_qpos = lambda _hold, _state: np.ones(36, dtype=np.float64)
+    worker._set_default_standing_reference = lambda _state: None
+    worker._reset_policy_state = lambda: None
+    worker._last_retarget_qpos = np.zeros(36, dtype=np.float64)
+    resets: list[np.ndarray] = []
+    ramps: list[str] = []
+    worker._ref_proc = SimpleNamespace(reset_alignment=lambda *, target_qpos=None: resets.append(np.asarray(target_qpos).copy()))
+    worker._standing_return_ramp_duration = 0.5
+    worker._standing_return_kp_ramp_floor_ratio = 0.5
+    worker._safety = SimpleNamespace(start_kp_ramp=lambda **_kwargs: ramps.append("ramp"))
+
+    event = ControlEvent(event_type=ControlEventType.TOGGLE_ARMS, source="test")
+    worker._handle_mocap_control_events((event,))
+    assert worker.mode == RobotMode.ARMS
+
+    worker._handle_mocap_control_events((event,))
+    assert worker.mode == RobotMode.MOCAP
+    assert len(resets) == 2
+    assert ramps == ["ramp", "ramp"]
+
+
+def test_robot_worker_bvh_ignores_pico_arms_event() -> None:
+    worker = object.__new__(_RobotControlWorker)
+    worker.provider_kind = "bvh"
+    worker.mode = RobotMode.MOCAP
+    worker._mocap_session = SimpleNamespace(state=MocapSessionState.ACTIVE)
+    worker._handle_mocap_control_events((
+        ControlEvent(event_type=ControlEventType.TOGGLE_ARMS, source="test"),
+    ))
+
+    assert worker.mode == RobotMode.MOCAP
+
+
+def test_robot_worker_mode_state_marks_arms_as_mocap_active() -> None:
+    worker = object.__new__(_RobotControlWorker)
+    worker.mode = RobotMode.ARMS
+    worker._mocap_session = SimpleNamespace(state=MocapSessionState.ACTIVE)
+    worker._mode_seq = 0
+    published: list[object] = []
+    worker._mode_pub = SimpleNamespace(publish=lambda _topic, packet: published.append(packet))
+
+    worker._publish_mode_state()
+
+    packet = published[-1]
+    assert packet.mode == "arms"
+    assert packet.mocap_active is True
+    assert packet.mocap_paused is False

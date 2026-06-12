@@ -12,10 +12,10 @@ def _print_sim_controls(cfg: DictConfig) -> None:
     if provider == "pico4":
         print("Pico sim2sim controls:")
         if bool(cfg.get("keyboard", {}).get("enabled", False)):
-            print("  Keyboard: starts in STANDING; Y mocap, A pause/resume, X standing, Q quit.")
+            print("  Keyboard: starts in STANDING; Y mocap, A pause/resume, B arms, X standing, Q quit.")
         else:
-            print("  Pico controller: A pause/resume.")
-        print("  State flow: STANDING -> MOCAP -> STANDING.")
+            print("  Pico controller: A pause/resume, B arms.")
+        print("  State flow: STANDING -> MOCAP <-> ARMS, X -> STANDING.")
         return
     if bool(cfg.get("playback", {}).get("keyboard", {}).get("enabled", False)):
         print("Offline sim2sim controls:")

@@ -88,6 +88,7 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 
 ### Unreleased
 
+- Added Pico sim2real `ARMS` mode: Pico/controller `B` toggles between whole-body `MOCAP` and stand-pose body/legs with live retargeted arms.
 - Bumped Pico input support to pico-bridge 0.2.1 and its corrected tracking pose semantics.
 - Added optional LinkerHand L6 sim2real modes under `hands.*`: `gripper` from Pico grip/trigger and `vr_hand_pose` from Pico hand pose through somehand 0.2.0 public API.
 - Set LinkerHand L6 `vr_hand_pose` control to maximum speed while keeping `gripper` at the configured default speed.

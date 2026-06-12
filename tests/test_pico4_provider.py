@@ -27,6 +27,7 @@ def _pico_frame(
     timestamp: float,
     body_active: bool = True,
     right_primary: bool = False,
+    right_secondary: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         seq=seq,
@@ -34,7 +35,7 @@ def _pico_frame(
         body=SimpleNamespace(active=body_active, joints=body_poses),
         controllers=SimpleNamespace(
             left=SimpleNamespace(buttons={}),
-            right=SimpleNamespace(buttons={"primaryButton": right_primary}),
+            right=SimpleNamespace(buttons={"primaryButton": right_primary, "secondaryButton": right_secondary}),
         ),
     )
 
@@ -54,10 +55,15 @@ def _make_provider() -> Pico4InputProvider:
     provider._timestamp_gap_reset_s = 0.15
     provider._pending_control_events = deque()
     provider._pause_button = "A"
+    provider._arms_button = "B"
     provider._pause_debounce_s = 0.0
+    provider._arms_debounce_s = 0.0
     provider._pause_button_path = provider._resolve_button_path(provider._pause_button)
+    provider._arms_button_path = provider._resolve_button_path(provider._arms_button)
     provider._last_pause_button_pressed = False
+    provider._last_arms_button_pressed = False
     provider._last_pause_toggle_timestamp = None
+    provider._last_arms_toggle_timestamp = None
     provider._last_raw_body_joints = None
     provider._last_frame_timestamp = None
     provider._last_source_seq = None
@@ -276,6 +282,20 @@ def test_pico4_provider_exposes_pause_control_events_once() -> None:
 
     packet = provider.get_realtime_input_packet()
     assert [event.event_type for event in packet.control_events] == [ControlEventType.TOGGLE_PAUSE]
+
+    packet = provider.get_realtime_input_packet()
+    assert packet.control_events == ()
+
+
+def test_pico4_provider_exposes_arms_control_events_once() -> None:
+    provider = _make_provider()
+
+    assert provider._accept_pico_frame(
+        _pico_frame(_body_poses(1.0), seq=1, timestamp=1.0, right_secondary=True)
+    ) is True
+
+    packet = provider.get_realtime_input_packet()
+    assert [event.event_type for event in packet.control_events] == [ControlEventType.TOGGLE_ARMS]
 
     packet = provider.get_realtime_input_packet()
     assert packet.control_events == ()

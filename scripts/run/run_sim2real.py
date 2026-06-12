@@ -18,10 +18,12 @@ def _print_sim2real_controls(cfg: DictConfig) -> None:
     print("  Remote L1+R1: DAMPING / estop.")
     if provider == "pico4":
         print("  Mocap pause/resume: Pico/controller A.")
+        print("  Arm-only mode: Pico/controller B toggles MOCAP <-> ARMS.")
         print("  Dexterous hand: hands.enabled=true hands.mode=gripper|vr_hand_pose.")
+        print("  State flow: IDLE -> STANDING -> MOCAP <-> ARMS, X -> STANDING, Any -> DAMPING.")
     else:
         print("  Offline playback: A pause/resume, B replay from start.")
-    print("  State flow: IDLE -> STANDING -> MOCAP -> STANDING, Any -> DAMPING.")
+        print("  State flow: IDLE -> STANDING -> MOCAP -> STANDING, Any -> DAMPING.")
 
 
 @hydra.main(version_base=None, config_path="../../teleopit/configs", config_name="sim2real")

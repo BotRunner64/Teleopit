@@ -62,6 +62,8 @@ Complete reference for all configurable fields.
 | `input.pico4_buffer_size` | Frame buffer size | `60` |
 | `input.pause_button` | Button for pause/resume | `A` |
 | `input.pause_debounce_s` | Debounce time for pause button | `0.25` |
+| `input.arms_button` | Button for Pico `MOCAP` / `ARMS` toggle | `B` |
+| `input.arms_debounce_s` | Debounce time for arms-mode button | `0.25` |
 | `input.bridge_host` | Teleopit host receiver bind host | `0.0.0.0` |
 | `input.bridge_port` | Teleopit host receiver TCP/UDP port | `63901` |
 | `input.bridge_discovery` | Enable pico-bridge discovery advertising | `true` |
@@ -101,6 +103,7 @@ and `all` are simulation-only viewer modes.
 | `startup_ramp_duration` | Kp ramp duration after entering `STANDING`; gradually increases PD gains without changing policy targets | `2.0` |
 | `joint_vel_limit` | Joint velocity limit (rad/s); triggers emergency damping if exceeded | `10.0` |
 | `mocap_switch.check_frames` | Consecutive valid frames required before switching to MOCAP | `10` |
+| `arm_mocap.controlled_joint_indices` | G1 joints driven by live retargeting in Pico `ARMS` mode | `[15..28]` |
 
 ### Real Robot
 
@@ -121,7 +124,7 @@ Realtime Pico resume re-centers heading and ground-plane position before trackin
 ### Dexterous Hand (Pico sim2real)
 
 `hands.enabled=true` requires `input.provider=pico4` and the optional `dexhand`
-extra. Control is active only in `MOCAP`; inactive modes send the open pose. In
+extra. Control is active in `MOCAP` and `ARMS`; inactive modes send the open pose. In
 `vr_hand_pose`, missing hand pose holds the last command for that side.
 `gripper` uses the configured `hands.linkerhand_l6.speed`; `vr_hand_pose`
 always sets LinkerHand L6 speed to the maximum. Teleopit converts Pico hand

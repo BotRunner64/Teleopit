@@ -10,6 +10,7 @@ from numpy.typing import NDArray
 from teleopit.constants import FULL_QPOS_DIM, ROOT_DIM
 from teleopit.controllers.observation import align_motion_qpos_yaw
 from teleopit.runtime.reference_config import parse_reference_config
+from teleopit.runtime.arm_mocap import compose_arm_reference, parse_arm_joint_indices
 from teleopit.inputs.realtime_packet import RealtimeInputPacket
 from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Recorder, Retargeter, Robot, RobotState
 from teleopit.sim.reference_timeline import (
@@ -34,6 +35,7 @@ class SimulationMode(Enum):
     IDLE = "idle"
     STANDING = "standing"
     MOCAP = "mocap"
+    ARMS = "arms"
 
 
 @final
@@ -76,6 +78,7 @@ class SimulationLoop:
         self._last_action: Float32Array = np.zeros((self._num_actions,), dtype=np.float32)
         self._last_retarget_qpos: Float64Array | None = None
         self._standing_qpos: Float64Array | None = None
+        self._arm_joint_indices = parse_arm_joint_indices(cfg, num_actions=self._num_actions)
         self._realtime: bool = bool(self._try_get_cfg("realtime") or False)
         raw_debug_trace_path = self._try_get_cfg("debug_trace_path")
         self._debug_trace_path: str | None = None
@@ -171,6 +174,17 @@ class SimulationLoop:
         standing_qpos = self._build_standing_qpos(state)
         self._standing_qpos = standing_qpos.copy()
         return standing_qpos
+
+    def _compose_arm_reference(self, retarget_qpos: Float64Array) -> Float64Array:
+        if self._standing_qpos is None:
+            self._set_standing_reference(self.robot.get_state())
+        assert self._standing_qpos is not None
+        return compose_arm_reference(
+            standing_qpos=self._standing_qpos,
+            retarget_qpos=retarget_qpos,
+            arm_joint_indices=self._arm_joint_indices,
+            num_actions=self._num_actions,
+        )
 
     @staticmethod
     def _drain_realtime_control_events(input_provider: InputProvider) -> tuple[object, ...]:

@@ -100,6 +100,7 @@ python scripts/run/run_sim2real.py \
 | Unitree remote `Start` | 进入 `STANDING` |
 | Unitree remote `Y` | 进入 `MOCAP` |
 | Pico/controller `A` | 暂停 / 恢复实时动捕 |
+| Pico/controller `B` | 在 `MOCAP` / `ARMS` 之间切换 |
 | Unitree remote `X` | 返回 `STANDING` |
 | Unitree remote `L1+R1` | 急停（`DAMPING`） |
 
@@ -119,6 +120,10 @@ Pico body frames -> retarget -> reference buffer -> observation -> policy -> G1 
 
 进入 `MOCAP` 时，Teleopit 会重置 policy/reference 状态，并通过实时参考时间线开始跟踪
 实时 mocap 命令。
+
+`ARMS` 会保持同一条实时 retargeting 时间线继续运行，但发送给 motion tracker 的参考会被组合：
+身体、腰部和腿部保持站立姿态，双臂跟随实时 retarget 结果。进入或离开 `ARMS` 时会重置
+policy/reference 对齐，并使用同一套 Kp ramp 安全路径。
 
 ## 暂停 / 恢复
 
@@ -144,7 +149,7 @@ Pico sim2real 可以用两种模式控制 LinkerHand L6：
   速度设为最大值。默认配置使用 60 Hz 的低延时 somehand 路径并减少平滑，所以响应会更快，
   但可能比标准 somehand 设置更抖。
 
-手控只在 `MOCAP` 中生效；在 `STANDING`、`DAMPING`、mocap 暂停和退出时都会发送张开姿态。
+手控在 `MOCAP` 和 `ARMS` 中生效；在 `STANDING`、`DAMPING`、mocap 暂停和退出时都会发送张开姿态。
 
 如果主 Pico profile 没有包含手控支持，先安装 dexhand extra：
 

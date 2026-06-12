@@ -165,8 +165,11 @@ class Sim2RealReferenceProcessor:
         anchor_lin_vel_w: Float32Array,
         anchor_ang_vel_w: Float32Array,
         reference_window: ReferenceWindow | None,
+        reference_window_aligned: bool = False,
     ) -> Float32Array:
-        aligned_reference_window = self.align_reference_window(reference_window, robot_state)
+        aligned_reference_window = (
+            reference_window if reference_window_aligned else self.align_reference_window(reference_window, robot_state)
+        )
         return ref_proc.dispatch_build_observation(
             self._obs_builder, robot_state, reference_window, aligned_reference_window,
             motion_qpos, motion_joint_vel, last_action,

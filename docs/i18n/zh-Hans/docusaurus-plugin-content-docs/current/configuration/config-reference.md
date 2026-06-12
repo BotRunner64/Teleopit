@@ -79,6 +79,8 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 | `pico4_buffer_size` | int | `60` | 帧缓冲区大小 |
 | `pause_button` | str | `A` | 用于暂停/恢复的手柄按钮名称 |
 | `pause_debounce_s` | float | `0.25` | 暂停按钮防抖时间 |
+| `arms_button` | str | `B` | Pico 中用于切换 `MOCAP` / `ARMS` 的按钮 |
+| `arms_debounce_s` | float | `0.25` | 双臂模式按钮防抖时间 |
 | `bridge_host` | str | `0.0.0.0` | Teleopit host receiver 绑定地址 |
 | `bridge_port` | int | `63901` | Teleopit host receiver TCP/UDP 端口 |
 | `bridge_discovery` | bool | `true` | 是否启用 pico-bridge 发现广播 |
@@ -120,6 +122,7 @@ MuJoCo 窗口显示重定向参考；`sim2sim`、`mocap`、`camera` 和 `all`
 | `startup_ramp_duration` | 进入 `STANDING` 后的 Kp ramp 时长；逐步提高 PD 增益，不改变 policy target | `2.0` |
 | `joint_vel_limit` | 关节速度限制（rad/s），超过时触发急停 | `10.0` |
 | `mocap_switch.check_frames` | 切换到 MOCAP 前所需的连续有效帧数 | `10` |
+| `arm_mocap.controlled_joint_indices` | Pico `ARMS` 模式下由实时 retargeting 驱动的 G1 关节 | `[15..28]` |
 
 ### 真机 SDK
 
@@ -140,7 +143,7 @@ MuJoCo 窗口显示重定向参考；`sim2sim`、`mocap`、`camera` 和 `all`
 ### 灵巧手（Pico sim2real）
 
 `hands.mode=gripper` 或 `hands.mode=vr_hand_pose` 要求 `input.provider=pico4`，
-并安装可选的 `dexhand` extra。控制只在 `MOCAP` 中生效；非活动模式会发送张开姿态。
+并安装可选的 `dexhand` extra。控制在 `MOCAP` 和 `ARMS` 中生效；非活动模式会发送张开姿态。
 在 `vr_hand_pose` 中，Teleopit 将 Pico 手部 pose 适配成 somehand 0.2.0 的
 landmark 输入，只调用公开的 `somehand.api`；手部 pose 消失时，对应侧会保持上一条命令。
 `gripper` 使用配置的 `hands.linkerhand_l6.speed`；`vr_hand_pose` 始终将

@@ -184,6 +184,8 @@ class Pico4InputProvider(RealtimeInputProvider):
         timestamp_gap_reset_s: float = 0.15,
         pause_button: str | None = "A",
         pause_debounce_s: float = 0.25,
+        arms_button: str | None = "B",
+        arms_debounce_s: float | None = None,
         bridge_host: str = "0.0.0.0",
         bridge_port: int = 63901,
         bridge_discovery: bool = True,
@@ -224,10 +226,15 @@ class Pico4InputProvider(RealtimeInputProvider):
         self._timestamp_gap_reset_s = float(timestamp_gap_reset_s)
         self._pending_control_events: deque[ControlEvent] = deque()
         self._pause_button = None if pause_button in (None, "", "null") else str(pause_button)
+        self._arms_button = None if arms_button in (None, "", "null") else str(arms_button)
         self._pause_debounce_s = max(float(pause_debounce_s), 0.0)
+        self._arms_debounce_s = self._pause_debounce_s if arms_debounce_s is None else max(float(arms_debounce_s), 0.0)
         self._pause_button_path = self._resolve_button_path(self._pause_button)
+        self._arms_button_path = self._resolve_button_path(self._arms_button)
         self._last_pause_button_pressed = False
+        self._last_arms_button_pressed = False
         self._last_pause_toggle_timestamp: float | None = None
+        self._last_arms_toggle_timestamp: float | None = None
         self._last_raw_body_joints: NDArray[np.float64] | None = None
         self._last_frame_timestamp: float | None = None
         self._last_source_seq: int | None = None
@@ -251,6 +258,11 @@ class Pico4InputProvider(RealtimeInputProvider):
             logger.warning(
                 "Pico4InputProvider pause button '%s' is unsupported by pico_bridge; pause events disabled",
                 self._pause_button,
+            )
+        if self._arms_button is not None and self._arms_button_path is None:
+            logger.warning(
+                "Pico4InputProvider arms button '%s' is unsupported by pico_bridge; arms events disabled",
+                self._arms_button,
             )
         logger.info("Pico4InputProvider initialized (pico_bridge)")
 
@@ -456,38 +468,73 @@ class Pico4InputProvider(RealtimeInputProvider):
             self._hand_snapshot = snapshot
 
     def _poll_control_events(self, frame: Any, *, timestamp: float) -> bool:
-        if self._pause_button_path is None:
+        emitted = False
+        emitted = self._poll_button_control_event(
+            frame,
+            timestamp=timestamp,
+            button_path=self._pause_button_path,
+            button_label=self._pause_button,
+            event_type=ControlEventType.TOGGLE_PAUSE,
+            last_pressed_attr="_last_pause_button_pressed",
+            last_toggle_attr="_last_pause_toggle_timestamp",
+            debounce_s=self._pause_debounce_s,
+        ) or emitted
+        emitted = self._poll_button_control_event(
+            frame,
+            timestamp=timestamp,
+            button_path=self._arms_button_path,
+            button_label=self._arms_button,
+            event_type=ControlEventType.TOGGLE_ARMS,
+            last_pressed_attr="_last_arms_button_pressed",
+            last_toggle_attr="_last_arms_toggle_timestamp",
+            debounce_s=self._arms_debounce_s,
+        ) or emitted
+        return emitted
+
+    def _poll_button_control_event(
+        self,
+        frame: Any,
+        *,
+        timestamp: float,
+        button_path: tuple[str, str] | None,
+        button_label: str | None,
+        event_type: ControlEventType,
+        last_pressed_attr: str,
+        last_toggle_attr: str,
+        debounce_s: float,
+    ) -> bool:
+        if button_path is None:
             return False
 
-        side, button_name = self._pause_button_path
+        side, button_name = button_path
         controllers = getattr(frame, "controllers", None)
         controller = None if controllers is None else getattr(controllers, side, None)
         buttons = {} if controller is None else getattr(controller, "buttons", {}) or {}
         pressed = bool(buttons.get(button_name, False))
+        last_pressed = bool(getattr(self, last_pressed_attr))
         emitted = False
-        if pressed and not self._last_pause_button_pressed:
-            if (
-                self._last_pause_toggle_timestamp is None
-                or timestamp - self._last_pause_toggle_timestamp >= self._pause_debounce_s - 1e-9
-            ):
+        if pressed and not last_pressed:
+            last_toggle = getattr(self, last_toggle_attr)
+            if last_toggle is None or timestamp - float(last_toggle) >= debounce_s - 1e-9:
                 with self._lock:
                     self._pending_control_events.append(
                         ControlEvent(
-                            event_type=ControlEventType.TOGGLE_PAUSE,
-                            source=f"pico4:{self._pause_button}",
+                            event_type=event_type,
+                            source=f"pico4:{button_label}",
                             timestamp_s=float(timestamp),
                         )
                     )
-                self._last_pause_toggle_timestamp = float(timestamp)
+                logger.info("Pico control event: %s from %s", event_type.value, button_label)
+                setattr(self, last_toggle_attr, float(timestamp))
                 emitted = True
-        self._last_pause_button_pressed = pressed
+        setattr(self, last_pressed_attr, pressed)
         return emitted
 
     @staticmethod
-    def _resolve_button_path(pause_button: str | None) -> tuple[str, str] | None:
-        if pause_button is None:
+    def _resolve_button_path(button: str | None) -> tuple[str, str] | None:
+        if button is None:
             return None
-        return _PAUSE_BUTTON_MAP.get(pause_button)
+        return _PAUSE_BUTTON_MAP.get(button)
 
     @staticmethod
     def _read_controller_state(controller: Any) -> PicoControllerState:

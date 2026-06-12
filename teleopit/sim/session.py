@@ -33,6 +33,7 @@ from teleopit.sim.reference_utils import (
 )
 from teleopit.sim.realtime_utils import RealtimeReferenceDiagnostics, RealtimeReferenceManager
 from teleopit.sim.runtime_components import MotionPreparation
+from teleopit.runtime.arm_mocap import compose_arm_reference_window
 from teleopit.runtime.mocap_session import MocapSessionManager, MocapSessionState
 from teleopit.runtime.offline_playback import OfflinePlaybackController
 from teleopit.runtime.terminal_keyboard import TerminalKeyboardReader
@@ -258,6 +259,30 @@ class SimLoopSession:
         self.last_commanded_motion_qpos = start_qpos.copy()
         self.simulation_mode = SimulationMode.MOCAP
 
+    def toggle_arms_mode(self) -> None:
+        from teleopit.sim.loop import SimulationMode
+        if not self.realtime_interpolated_input or self.simulation_mode not in (SimulationMode.MOCAP, SimulationMode.ARMS):
+            return
+        if self.mocap_session.state == MocapSessionState.PAUSED:
+            _logger.info("Ignoring arm-only mode toggle while mocap session is paused")
+            return
+        loop = self._loop
+        state = loop.robot.get_state()
+        resume_qpos = loop._build_resume_alignment_qpos(self.last_commanded_motion_qpos, state)
+        if self.simulation_mode == SimulationMode.MOCAP:
+            loop._set_standing_reference(state)
+            self.simulation_mode = SimulationMode.ARMS
+        else:
+            self.simulation_mode = SimulationMode.MOCAP
+        self._step_runner.reset()
+        loop.controller.reset()
+        loop.obs_builder.reset()
+        self.mocap_session.reset()
+        self.last_commanded_motion_qpos = None
+        self._step_runner.reset_reference_alignment(resume_qpos)
+        self.last_commanded_motion_qpos = resume_qpos.copy()
+        _logger.info("Simulation mode -> %s", self.simulation_mode.value.upper())
+
     def toggle_realtime_mocap_pause(self) -> None:
         loop = self._loop
         if self.mocap_session.state == MocapSessionState.PAUSED:
@@ -298,6 +323,9 @@ class SimLoopSession:
                 continue
             if key == "x":
                 self.enter_standing_mode()
+                continue
+            if key == "b":
+                self.toggle_arms_mode()
                 continue
             if key == "a":
                 self.toggle_realtime_mocap_pause()
@@ -413,9 +441,11 @@ class SimLoopSession:
         frame_timestamp = float(packet.timestamp_s)
         frame_seq = int(packet.seq)
         for control_event in packet.control_events:
-            if control_event.event_type != ControlEventType.TOGGLE_PAUSE:
+            if control_event.event_type == ControlEventType.TOGGLE_ARMS:
+                self.toggle_arms_mode()
                 continue
-            self.toggle_realtime_mocap_pause()
+            if control_event.event_type == ControlEventType.TOGGLE_PAUSE:
+                self.toggle_realtime_mocap_pause()
         new_bvh_frame = frame_seq != self.last_live_packet_seq
 
         if self.mocap_session.state == MocapSessionState.PAUSED:
@@ -499,6 +529,18 @@ class SimLoopSession:
             else:
                 self.cached_retargeted = self.latest_live_retargeted
 
+        from teleopit.sim.loop import SimulationMode
+        if self.simulation_mode == SimulationMode.ARMS:
+            self.cached_retargeted = loop._compose_arm_reference(cast(Float64Array, self.cached_retargeted))
+            if reference_window is not None:
+                assert loop._standing_qpos is not None
+                reference_window = compose_arm_reference_window(
+                    reference_window,
+                    standing_qpos=loop._standing_qpos,
+                    arm_joint_indices=loop._arm_joint_indices,
+                    num_actions=loop._num_actions,
+                )
+
         return new_bvh_frame, reference_window, realtime_reference_diag, False
 
     def _fetch_simple_bvh_input(self, frame_f: float) -> tuple[bool, bool]:
@@ -547,7 +589,7 @@ class SimLoopSession:
                         if self.playback_stop_requested:
                             break
 
-                if self.realtime_keyboard_mode_enabled and self.simulation_mode != SimulationMode.MOCAP:
+                if self.realtime_keyboard_mode_enabled and self.simulation_mode == SimulationMode.STANDING:
                     loop._drain_realtime_control_events(self._input_provider)
 
                 # --- Compute time/frame ---
