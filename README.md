@@ -96,6 +96,7 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 - Added an interactive Pico motion recorder that saves retargeted G1 motion clips as training-ready NPZ files.
 - General-Tracking-G1 training now defaults to uniform motion sampling; clip-local adaptive sampling remains available through `sampling_mode=adaptive`.
 - Added optional `sampling_mode=rewind` for training, which restarts failed episodes from the same clip after rewinding a configurable number of policy steps.
+- Added root velocity, joint tracking, and survival rewards to the General-Tracking-G1 training objective.
 
 ### v0.3.0 (2026-05-12)
 

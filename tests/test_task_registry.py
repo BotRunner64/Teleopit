@@ -34,6 +34,28 @@ def test_general_tracking_task_is_registered() -> None:
     assert "critic_history" in env_cfg.observations
     assert env_cfg.commands["motion"].sampling_mode == "uniform"
     assert env_cfg.commands["motion"].window_steps == (0,)
+    assert env_cfg.rewards["motion_global_root_lin_vel"].weight == 1.0
+    assert env_cfg.rewards["motion_global_root_lin_vel"].params == {
+        "command_name": "motion",
+        "std": 1.0,
+    }
+    assert env_cfg.rewards["motion_global_root_ang_vel"].weight == 1.0
+    assert env_cfg.rewards["motion_global_root_ang_vel"].params == {
+        "command_name": "motion",
+        "std": 3.0,
+    }
+    assert env_cfg.rewards["motion_joint_pos"].weight == 1.0
+    assert env_cfg.rewards["motion_joint_pos"].params == {
+        "command_name": "motion",
+        "std": 0.5,
+    }
+    assert env_cfg.rewards["motion_joint_vel"].weight == 0.5
+    assert env_cfg.rewards["motion_joint_vel"].params == {
+        "command_name": "motion",
+        "std": 3.0,
+    }
+    assert env_cfg.rewards["survival"].weight == 3.0
+    assert env_cfg.rewards["survival"].params == {}
     reward = env_cfg.rewards["self_collisions"]
     assert reward.weight == -0.1
     assert reward.params == {

@@ -42,6 +42,26 @@ def motion_global_anchor_orientation_error_exp(
     return torch.exp(-error / std**2)
 
 
+def motion_global_anchor_linear_velocity_error_exp(
+    env: ManagerBasedRlEnv, command_name: str, std: float
+) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    error = torch.sum(
+        torch.square(command.anchor_lin_vel_w - command.robot_anchor_lin_vel_w), dim=-1
+    )
+    return torch.exp(-error / std**2)
+
+
+def motion_global_anchor_angular_velocity_error_exp(
+    env: ManagerBasedRlEnv, command_name: str, std: float
+) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    error = torch.sum(
+        torch.square(command.anchor_ang_vel_w - command.robot_anchor_ang_vel_w), dim=-1
+    )
+    return torch.exp(-error / std**2)
+
+
 def motion_relative_body_position_error_exp(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -112,6 +132,26 @@ def motion_global_body_angular_velocity_error_exp(
         dim=-1,
     )
     return torch.exp(-error.mean(-1) / std**2)
+
+
+def motion_joint_position_error_exp(
+    env: ManagerBasedRlEnv, command_name: str, std: float
+) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    error = torch.square(command.joint_pos - command.robot_joint_pos)
+    return torch.exp(-error.mean(-1) / std**2)
+
+
+def motion_joint_velocity_error_exp(
+    env: ManagerBasedRlEnv, command_name: str, std: float
+) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    error = torch.square(command.joint_vel - command.robot_joint_vel)
+    return torch.exp(-error.mean(-1) / std**2)
+
+
+def survival(env: ManagerBasedRlEnv) -> torch.Tensor:
+    return torch.ones(env.num_envs, device=env.device)
 
 
 def self_collision_cost(

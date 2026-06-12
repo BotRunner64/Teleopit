@@ -222,6 +222,16 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
             weight=0.5,
             params={"command_name": "motion", "std": 0.4},
         ),
+        "motion_global_root_lin_vel": RewardTermCfg(
+            func=mdp.motion_global_anchor_linear_velocity_error_exp,
+            weight=1.0,
+            params={"command_name": "motion", "std": 1.0},
+        ),
+        "motion_global_root_ang_vel": RewardTermCfg(
+            func=mdp.motion_global_anchor_angular_velocity_error_exp,
+            weight=1.0,
+            params={"command_name": "motion", "std": 3.0},
+        ),
         "motion_body_pos": RewardTermCfg(
             func=mdp.motion_relative_body_position_error_exp,
             weight=1.0,
@@ -242,6 +252,17 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
             weight=1.0,
             params={"command_name": "motion", "std": 3.14},
         ),
+        "motion_joint_pos": RewardTermCfg(
+            func=mdp.motion_joint_position_error_exp,
+            weight=1.0,
+            params={"command_name": "motion", "std": 0.5},
+        ),
+        "motion_joint_vel": RewardTermCfg(
+            func=mdp.motion_joint_velocity_error_exp,
+            weight=0.5,
+            params={"command_name": "motion", "std": 3.0},
+        ),
+        "survival": RewardTermCfg(func=mdp.survival, weight=3.0),
         "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-1e-1),
         "joint_limit": RewardTermCfg(
             func=mdp.joint_pos_limits,
