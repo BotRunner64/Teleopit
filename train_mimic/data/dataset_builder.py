@@ -19,12 +19,17 @@ import yaml
 import numpy as np
 
 from train_mimic.data.dataset_lib import (
+    DEFAULT_HDF5_MAX_WINDOW_FRAMES,
+    DEFAULT_HDF5_WINDOW_OVERLAP_FRAMES,
     hash_split,
     inspect_clip_dict,
     inspect_npz,
     merge_npz_files,
     resample_along_time,
+    read_hdf5_body_names,
     utc_now_iso,
+    write_hdf5_manifest,
+    write_hdf5_motion_shard,
     write_json,
 )
 from train_mimic.data.preprocess import (
@@ -113,7 +118,7 @@ class DatasetClipRow:
     resolved_split: str
     resolved_npz_path: str
     weight: float = 1.0
-    clip_index: int = -1  # index into shard NPZ clip_starts/clip_lengths; -1 = standalone clip
+    clip_index: int = -1  # index into source clip metadata; -1 = standalone clip
 
 
 @dataclass(frozen=True)
@@ -418,7 +423,7 @@ def split_output_dir(dataset_dir: Path, split: str) -> Path:
 
 
 def shard_output_path(split_dir: Path, shard_index: int) -> Path:
-    return split_dir / f"shard_{shard_index:03d}.npz"
+    return split_dir / f"shard_{shard_index:03d}.h5"
 
 
 def resolve_source_input_path(source: DatasetSourceSpec) -> Path:
@@ -1231,7 +1236,7 @@ def _batch_convert_chunk(
     label: str,
     preprocess: DatasetPreprocessSpec,
 ) -> dict[str, Any]:
-    """Worker: convert a batch of PKL/seed_csv files and write one merged chunk NPZ.
+    """Worker: convert a batch of PKL/seed_csv files and write one HDF5 shard.
 
     Designed to run in a spawned subprocess via ProcessPoolExecutor.
     """
@@ -1309,6 +1314,7 @@ def _batch_convert_chunk(
             "fps": target_fps,
             "duration_s": 0.0,
             "clip_lengths": [],
+            "source_clip_lengths": [],
             "kept_file_paths": [],
         }
 
@@ -1326,8 +1332,12 @@ def _batch_convert_chunk(
     merged["clip_fps"] = np.full(kept, target_fps, dtype=np.int64)
     merged["clip_weights"] = np.array(clip_weights, dtype=np.float64)
 
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    np.savez(output_path, **merged)
+    shard_info = write_hdf5_motion_shard(
+        merged,
+        Path(output_path),
+        max_window_frames=DEFAULT_HDF5_MAX_WINDOW_FRAMES,
+        overlap_frames=DEFAULT_HDF5_WINDOW_OVERLAP_FRAMES,
+    )
 
     total_frames = int(merged["joint_pos"].shape[0])
     print(
@@ -1335,14 +1345,17 @@ def _batch_convert_chunk(
         f"{filtered} filtered, {total_frames} frames -> {Path(output_path).name}",
         flush=True,
     )
+    hdf5_windows = int(shard_info["clips"])
     return {
         "output": output_path,
-        "clips": kept,
-        "num_clips": kept,
+        "clips": hdf5_windows,
+        "num_clips": hdf5_windows,
+        "source_clips": kept,
         "frames": total_frames,
         "fps": target_fps,
         "duration_s": total_frames / max(target_fps, 1),
-        "clip_lengths": clip_lengths,
+        "clip_lengths": list(shard_info["clip_lengths"]),
+        "source_clip_lengths": clip_lengths,
         "kept_file_paths": kept_file_paths,
     }
 
@@ -1354,7 +1367,12 @@ def _shard_stats(
     fps: int,
 ) -> dict[str, Any]:
     total_clips = sum(len(info["clip_lengths"]) for info in shard_infos)
-    total_frames = sum(sum(int(length) for length in info["clip_lengths"]) for info in shard_infos)
+    total_frames = sum(int(info.get("frames", 0)) for info in shard_infos)
+    if total_frames <= 0:
+        total_frames = sum(
+            sum(int(length) for length in info.get("source_clip_lengths", info["clip_lengths"]))
+            for info in shard_infos
+        )
     return {
         "output": str(output_dir),
         "shards": len(shard_infos),
@@ -1392,9 +1410,14 @@ def _batch_convert_split(
             raise ValueError(f"no valid clips remain for split {split_name} after preprocessing")
         shard_infos = [{
             "path": shard_path,
+            "clips": int(stats.get("clips", 0)),
+            "frames": int(stats.get("frames", 0)),
             "clip_lengths": list(stats.pop("clip_lengths", [])),
+            "source_clip_lengths": list(stats.pop("source_clip_lengths", [])),
             "kept_file_paths": list(stats.pop("kept_file_paths", [])),
         }]
+        if body_names := read_hdf5_body_names(shard_path):
+            write_hdf5_manifest(output_dir, shard_infos=shard_infos, fps=target_fps, body_names=body_names)
         return _shard_stats(output_dir=output_dir, shard_infos=shard_infos, fps=target_fps), shard_infos
 
     # Split into chunks, one per worker
@@ -1405,7 +1428,7 @@ def _batch_convert_split(
         end = min(start + chunk_size, len(clips))
         if start >= len(clips):
             break
-        chunk_out = str(output_dir / f".{split_name}_chunk_{i}.npz")
+        chunk_out = str(output_dir / f".{split_name}_chunk_{i}.h5")
         chunk_args.append((
             file_paths[start:end],
             weights[start:end],
@@ -1446,9 +1469,14 @@ def _batch_convert_split(
             raise ValueError(f"no valid clips remain for split {split_name} after preprocessing")
         shard_infos = [{
             "path": shard_path,
+            "clips": int(stats.get("clips", 0)),
+            "frames": int(stats.get("frames", 0)),
             "clip_lengths": list(stats.pop("clip_lengths", [])),
+            "source_clip_lengths": list(stats.pop("source_clip_lengths", [])),
             "kept_file_paths": list(stats.pop("kept_file_paths", [])),
         }]
+        if body_names := read_hdf5_body_names(shard_path):
+            write_hdf5_manifest(output_dir, shard_infos=shard_infos, fps=target_fps, body_names=body_names)
         return _shard_stats(output_dir=output_dir, shard_infos=shard_infos, fps=target_fps), shard_infos
 
     shard_infos: list[dict[str, Any]] = []
@@ -1464,7 +1492,10 @@ def _batch_convert_split(
         tmp_path.replace(final_path)
         shard_infos.append({
             "path": final_path,
+            "clips": int(chunk_stat.get("clips", 0)),
+            "frames": int(chunk_stat.get("frames", 0)),
             "clip_lengths": list(chunk_stat.get("clip_lengths", [])),
+            "source_clip_lengths": list(chunk_stat.get("source_clip_lengths", [])),
             "kept_file_paths": list(chunk_stat.get("kept_file_paths", [])),
         })
 
@@ -1472,6 +1503,8 @@ def _batch_convert_split(
         raise ValueError(f"no valid clips remain for split {split_name} after preprocessing")
 
     stats = _shard_stats(output_dir=output_dir, shard_infos=shard_infos, fps=target_fps)
+    first_body_names = read_hdf5_body_names(Path(shard_infos[0]["path"]))
+    write_hdf5_manifest(output_dir, shard_infos=shard_infos, fps=target_fps, body_names=first_body_names)
     print(
         f"[SHARDS] {split_name}: {stats['shards']} shards, "
         f"{stats['clips']} clips, {stats['frames']} frames ({stats['duration_s']:.1f}s)",
@@ -1571,7 +1604,7 @@ def _build_dataset_batch(
         for shard in shard_infos:
             shard_path = Path(shard["path"])
             kept_paths = list(shard["kept_file_paths"])
-            clip_lengths = list(shard["clip_lengths"])
+            clip_lengths = list(shard.get("source_clip_lengths", shard["clip_lengths"]))
             if len(kept_paths) != len(clip_lengths):
                 raise ValueError(
                     f"kept path count mismatch for {shard_path}: {len(kept_paths)} vs {len(clip_lengths)}"
@@ -1680,27 +1713,42 @@ def build_dataset_from_spec(
     val_dir = split_output_dir(paths.dataset_dir, "val")
     train_out = shard_output_path(train_dir, 0)
     val_out = shard_output_path(val_dir, 0)
+    train_tmp_npz = train_dir / ".merged_train_tmp.npz"
+    val_tmp_npz = val_dir / ".merged_val_tmp.npz"
 
     train_stats = merge_npz_files(
         train_files,
-        train_out,
+        train_tmp_npz,
         target_fps=spec.target_fps,
         weights=train_weights,
     )
     val_stats = merge_npz_files(
         val_files,
-        val_out,
+        val_tmp_npz,
         target_fps=spec.target_fps,
         weights=val_weights,
     )
 
+    train_npz = np.load(train_tmp_npz, allow_pickle=True)
+    train_payload = {key: train_npz[key] for key in train_npz.files}
+    train_h5_info = write_hdf5_motion_shard(train_payload, train_out)
+    val_npz = np.load(val_tmp_npz, allow_pickle=True)
+    val_payload = {key: val_npz[key] for key in val_npz.files}
+    val_h5_info = write_hdf5_motion_shard(val_payload, val_out)
+    train_tmp_npz.unlink(missing_ok=True)
+    val_tmp_npz.unlink(missing_ok=True)
+
     train_stats["output"] = str(train_dir)
     train_stats["shards"] = 1
+    train_stats["clips"] = int(train_h5_info["clips"])
+    train_stats["num_clips"] = int(train_h5_info["clips"])
     val_stats["output"] = str(val_dir)
     val_stats["shards"] = 1
+    val_stats["clips"] = int(val_h5_info["clips"])
+    val_stats["num_clips"] = int(val_h5_info["clips"])
 
-    train_clip_lengths = np.load(train_out, allow_pickle=True)["clip_lengths"]
-    val_clip_lengths = np.load(val_out, allow_pickle=True)["clip_lengths"]
+    train_clip_lengths = np.asarray(train_payload["clip_lengths"])
+    val_clip_lengths = np.asarray(val_payload["clip_lengths"])
     if len(train_rows) != len(train_clip_lengths):
         raise ValueError(
             f"train row count mismatch: {len(train_rows)} vs {len(train_clip_lengths)}"
@@ -1725,6 +1773,19 @@ def build_dataset_from_spec(
                 clip_index=clip_index,
             )
         )
+
+    write_hdf5_manifest(
+        train_dir,
+        shard_infos=[train_h5_info],
+        fps=spec.target_fps,
+        body_names=np.asarray(train_payload["body_names"]),
+    )
+    write_hdf5_manifest(
+        val_dir,
+        shard_infos=[val_h5_info],
+        fps=spec.target_fps,
+        body_names=np.asarray(val_payload["body_names"]),
+    )
     for clip_index, (row, num_frames) in enumerate(zip(val_rows, val_clip_lengths)):
         updated_rows.append(
             DatasetClipRow(

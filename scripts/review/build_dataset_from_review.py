@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Rebuild train/val shard directories from a filtered manifest (review results).
+"""Rebuild train/val HDF5 shard directories from a filtered manifest.
 
 Reads filtered_manifest.csv (output of export_reviewed_manifest.py),
-verifies all NPZ files exist, and rebuilds cleaned train/val shard splits.
+verifies all referenced motion files exist, and rebuilds cleaned train/val HDF5 splits.
 
 Usage:
     python scripts/data/build_dataset_from_review.py \
@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import csv
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -23,12 +24,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from train_mimic.data.dataset_lib import (
-    extract_clip_arrays,
-    merge_clip_dicts,
-    merge_npz_files,
+    merge_clip_dicts_payload,
+    read_motion_clip,
     utc_now_iso,
+    write_hdf5_manifest,
+    write_hdf5_motion_shard,
     write_json,
 )
+from train_mimic.data.dataset_builder import DatasetClipRow, write_manifest_resolved
 
 
 def main() -> None:
@@ -87,7 +90,7 @@ def main() -> None:
         print("ERROR: filtered manifest has no data rows", file=sys.stderr)
         sys.exit(1)
 
-    # Verify all NPZ files exist
+    # Verify all referenced motion files exist
     missing = []
     for row in rows:
         p = Path(row["resolved_npz_path"])
@@ -102,7 +105,7 @@ def main() -> None:
                 missing.append(f"  line {row['line_no']}: {row['clip_id']} -> {row['resolved_npz_path']}")
 
     if missing:
-        print(f"ERROR: {len(missing)} NPZ files not found:", file=sys.stderr)
+        print(f"ERROR: {len(missing)} motion files not found:", file=sys.stderr)
         for m in missing[:20]:
             print(m, file=sys.stderr)
         if len(missing) > 20:
@@ -133,8 +136,7 @@ def main() -> None:
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Check if any rows use clip_index (batch-built dataset)
-    has_indexed_clips = any(r["clip_index"] >= 0 for r in rows)
+    all_output_rows: list[DatasetClipRow] = []
 
     def _merge_split(split_rows: list[dict], split_name: str) -> dict | None:
         if not split_rows:
@@ -142,61 +144,67 @@ def main() -> None:
         print(f"Merging {len(split_rows)} {split_name} clips...")
         split_dir = output_dir / split_name
         split_dir.mkdir(parents=True, exist_ok=True)
-        out = split_dir / "shard_000.npz"
+        out = split_dir / "shard_000.h5"
 
-        if has_indexed_clips:
-            # Extract individual clip slices from shard NPZ files
-            clip_dicts = []
-            for r in split_rows:
-                npz_path = Path(r["resolved_npz_path"])
-                ci = r["clip_index"]
-                if ci >= 0:
-                    clip_dicts.append(extract_clip_arrays(npz_path, ci))
-                else:
-                    # Standalone clip — load entire file as one clip dict
-                    d = np.load(npz_path, allow_pickle=True)
-                    clip_dicts.append({
-                        "fps": int(d["fps"]),
-                        "joint_pos": np.asarray(d["joint_pos"]),
-                        "joint_vel": np.asarray(d["joint_vel"]),
-                        "body_pos_w": np.asarray(d["body_pos_w"]),
-                        "body_quat_w": np.asarray(d["body_quat_w"]),
-                        "body_lin_vel_w": np.asarray(d["body_lin_vel_w"]),
-                        "body_ang_vel_w": np.asarray(d["body_ang_vel_w"]),
-                        "body_names": np.asarray(d["body_names"]),
-                    })
-            weights_list = [r["weight"] for r in split_rows]
-            stats = merge_clip_dicts(
-                clip_dicts, out,
-                target_fps=args.target_fps, weights=weights_list,
-            )
-        else:
-            # Legacy per-clip NPZ files — use file-based merge
-            files = [Path(r["resolved_npz_path"]) for r in split_rows]
-            weights_list = [r["weight"] for r in split_rows]
-            stats = merge_npz_files(
-                files, out,
-                target_fps=args.target_fps, weights=weights_list,
-            )
+        clip_dicts = [
+            read_motion_clip(Path(r["resolved_npz_path"]), int(r["clip_index"]))
+            for r in split_rows
+        ]
+        weights_list = [r["weight"] for r in split_rows]
+        payload = merge_clip_dicts_payload(
+            clip_dicts,
+            target_fps=args.target_fps,
+            weights=weights_list,
+        )
+        h5_info = write_hdf5_motion_shard(payload, out)
+        write_hdf5_manifest(
+            split_dir,
+            shard_infos=[h5_info],
+            fps=int(payload["fps"]),
+            body_names=np.asarray(payload["body_names"]),
+        )
 
-        stats["output"] = str(split_dir)
-        stats["shards"] = 1
+        source_lengths = np.asarray(payload["clip_lengths"], dtype=np.int64)
+        for clip_index, (r, num_frames) in enumerate(zip(split_rows, source_lengths)):
+            all_output_rows.append(DatasetClipRow(
+                clip_id=r["clip_id"],
+                source=r["source"],
+                file_rel=r["file_rel"],
+                num_frames=int(num_frames),
+                fps=int(payload["fps"]),
+                resolved_split=split_name,
+                resolved_npz_path=str(out),
+                weight=float(r["weight"]),
+                clip_index=clip_index,
+            ))
+
+        total_frames = int(np.asarray(payload["joint_pos"]).shape[0])
+        stats = {
+            "output": str(split_dir),
+            "shards": 1,
+            "clips": int(h5_info["clips"]),
+            "num_clips": int(h5_info["clips"]),
+            "source_clips": int(h5_info["source_clips"]),
+            "frames": total_frames,
+            "fps": int(payload["fps"]),
+            "duration_s": float(total_frames / max(int(payload["fps"]), 1)),
+        }
         print(f"  {split_name}/: {stats['frames']} frames, {stats['duration_s'] / 60:.1f} min")
         return stats
 
     train_stats = _merge_split(train_rows, "train")
     val_stats = _merge_split(val_rows, "val")
 
-    # Copy manifest into output dir
-    import shutil
-    shutil.copy2(manifest_path, output_dir / "manifest_resolved.csv")
+    resolved_manifest = write_manifest_resolved(all_output_rows, output_dir)
 
     # Write build info
     report = {
         "built_at_utc": utc_now_iso(),
         "source_manifest": str(manifest_path),
+        "manifest_resolved": str(resolved_manifest),
         "output_dir": str(output_dir),
         "target_fps": args.target_fps,
+        "source_rows": [asdict(row) for row in all_output_rows],
         "clip_counts": {
             "total": len(rows),
             "train": len(train_rows),

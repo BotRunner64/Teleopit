@@ -10,7 +10,7 @@ sidebar_position: 3
 python scripts/setup/download_assets.py --only data
 ```
 
-下载后直接传 shard 目录用于训练：
+下载后直接传 HDF5 shard 目录用于训练：
 
 ```bash
 python train_mimic/scripts/train.py --motion_file data/datasets/seed/train
@@ -35,7 +35,7 @@ python scripts/run/record_pico_motion.py
 `data/pico_motion/clips/`，文件名格式为 `<semantic_label>_<timestamp>.npz`；不会写
 每段 clip 的 JSON，因此可以手动改名或删除。
 
-将所有已录制 clips 构建为标准 shard 数据集：
+将所有已录制 clips 构建为标准 HDF5 shard 数据集：
 
 ```bash
 python train_mimic/scripts/data/build_dataset.py \
@@ -46,7 +46,7 @@ python train_mimic/scripts/data/build_dataset.py \
 
 ## 自定义构建
 
-数据主线：`typed source YAML -> preprocess/filter -> shard-only 训练数据`
+数据主线：`typed source YAML -> preprocess/filter -> HDF5 shard-only 训练数据`
 
 ```bash
 python train_mimic/scripts/data/build_dataset.py \
@@ -60,15 +60,18 @@ data/datasets/<dataset>/
 ├── clips/                  # 可选；仅在需要逐 clip 中间产物时存在
 │   └── <source>/...
 ├── train/
-│   └── shard_*.npz
+│   ├── manifest.json
+│   └── shard_*.h5
 ├── val/
-│   └── shard_*.npz
+│   ├── manifest.json
+│   └── shard_*.h5
 ├── manifest_resolved.csv
 └── build_info.json
 ```
 
 - 若 spec 包含 `bvh` 或 `npz` source，builder 会保留/生成 `clips/`
 - 若 spec 全部是 `pkl` 或 `seed_csv` source，直接并行产出 split 级别的 shard，默认不写中间 clip 文件
+- 训练时只从 HDF5 split 加载一个 subset cache，同时预加载下一个 cache，并在 PPO rollout barrier 处切换。
 
 ## YAML spec
 
@@ -152,14 +155,3 @@ python train_mimic/scripts/data/check_motion_npz_fk.py \
 ```
 
 推荐判据：`pos_max < 1e-3 m`、`quat_mean < 0.05 rad`、`quat_p95 < 0.10 rad`。
-
-## 重新切分 shard
-
-```bash
-python train_mimic/scripts/data/split_shards.py \
-    --input data/datasets/seed/train \
-    --output data/datasets/seed/train_small_shards \
-    --max_size_gb 2
-```
-
-每个 shard 是自包含的 merged NPZ（含完整 clip metadata），训练时直接传目录。

@@ -29,6 +29,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from mjlab.viewer.viser import ViserMujocoScene
 
 from teleopit.runtime.assets import UNITREE_G1_MJLAB_XML, missing_gmr_assets_message
+from train_mimic.data.dataset_lib import read_motion_clip
 from train_mimic.data.review_lib import (
     ReviewRow,
     ReviewStats,
@@ -42,11 +43,11 @@ DEFAULT_XML = UNITREE_G1_MJLAB_XML
 
 
 # ---------------------------------------------------------------------------
-# ClipPlayer: loads NPZ clip and drives MuJoCo qpos per frame
+# ClipPlayer: loads motion clips and drives MuJoCo qpos per frame
 # ---------------------------------------------------------------------------
 
 class ClipPlayer:
-    """Loads a single clip NPZ and sets MuJoCo qpos frame-by-frame."""
+    """Loads a single motion clip and sets MuJoCo qpos frame-by-frame."""
 
     def __init__(self, mj_model: mujoco.MjModel) -> None:
         self.model = mj_model
@@ -56,47 +57,18 @@ class ClipPlayer:
         self._pelvis_quat: np.ndarray | None = None  # (T, 4) wxyz
         self._fps: int = 30
         self._num_frames: int = 0
-        # Cache for shard NPZ: avoid re-reading large shard files on every clip switch
-        self._cached_npz_path: str | None = None
-        self._cached_npz_data: dict[str, np.ndarray] | None = None
 
-    def _get_npz_data(self, npz_path: Path) -> dict[str, np.ndarray]:
-        """Return NPZ data, using cache for shard files."""
-        path_str = str(npz_path)
-        if self._cached_npz_path == path_str and self._cached_npz_data is not None:
-            return self._cached_npz_data
-        d = dict(np.load(path_str, allow_pickle=True))
-        # Only cache shard NPZ files (those with clip_starts)
-        if "clip_starts" in d:
-            self._cached_npz_path = path_str
-            self._cached_npz_data = d
-        else:
-            self._cached_npz_path = None
-            self._cached_npz_data = None
-        return d
-
-    def load_clip(self, npz_path: Path, clip_index: int = -1) -> None:
-        """Load NPZ clip data.
+    def load_clip(self, motion_path: Path, clip_index: int = -1) -> None:
+        """Load one source clip from an HDF5 shard.
 
         Args:
-            npz_path: Path to NPZ file (standalone clip or shard file).
-            clip_index: If >= 0, extract this clip from a shard NPZ using
-                        clip_starts/clip_lengths. If -1, load the entire file
-                        as a single clip.
+            motion_path: Path to an HDF5 shard.
+            clip_index: Source-clip index for HDF5 rows.
         """
-        d = self._get_npz_data(npz_path)
-
-        if clip_index >= 0 and "clip_starts" in d and "clip_lengths" in d:
-            start = int(d["clip_starts"][clip_index])
-            length = int(d["clip_lengths"][clip_index])
-            s = slice(start, start + length)
-            self._joint_pos = np.asarray(d["joint_pos"][s])
-            body_pos_w = np.asarray(d["body_pos_w"][s])
-            body_quat_w = np.asarray(d["body_quat_w"][s])
-        else:
-            self._joint_pos = np.asarray(d["joint_pos"])
-            body_pos_w = np.asarray(d["body_pos_w"])
-            body_quat_w = np.asarray(d["body_quat_w"])
+        d = read_motion_clip(motion_path, clip_index)
+        self._joint_pos = np.asarray(d["joint_pos"])
+        body_pos_w = np.asarray(d["body_pos_w"])
+        body_quat_w = np.asarray(d["body_quat_w"])
 
         self._pelvis_pos = body_pos_w[:, 0, :]  # pelvis = body 0
         self._pelvis_quat = body_quat_w[:, 0, :]
@@ -451,13 +423,13 @@ class ReviewViewerApp:
             self._info_html.content = "<em>No clips to review</em>"
             return
 
-        # Resolve NPZ path (use resolved_npz_path which always points to .npz)
-        npz_path = Path(row.resolved_npz_path)
-        if not npz_path.is_absolute():
-            npz_path = self._project_root / npz_path
+        # CSV keeps the historical column name, but current rows point at HDF5 shards.
+        motion_path = Path(row.resolved_npz_path)
+        if not motion_path.is_absolute():
+            motion_path = self._project_root / motion_path
 
         try:
-            self._player.load_clip(npz_path, clip_index=row.clip_index)
+            self._player.load_clip(motion_path, clip_index=row.clip_index)
         except Exception as exc:
             self._info_html.content = f"<strong style='color:red'>Error loading clip:</strong><br/>{exc}"
             return

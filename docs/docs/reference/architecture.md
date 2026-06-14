@@ -60,7 +60,7 @@ train_mimic/scripts/data
 | Actor/Critic | TemporalCNN (2048, 1024, 512, 256, 128) |
 | Training sampling | Default `rewind`; also supports `uniform`; playback/benchmark use `start` |
 | Training `window_steps` | `[0]` |
-| Data format | Shard directories only (`shard_*.npz`) |
+| Data format | HDF5 shard directories (`manifest.json` + `shard_*.h5`) |
 
 ## Constraints
 
@@ -76,4 +76,4 @@ train_mimic/scripts/data
 
 **Stable training entry points:** `train.py`, `play.py`, `benchmark.py`, `save_onnx.py`
 
-**Stable data entry points:** `build_dataset.py`, `split_shards.py`
+**Stable data entry points:** `build_dataset.py`

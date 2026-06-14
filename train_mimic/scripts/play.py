@@ -44,7 +44,7 @@ from train_mimic.app import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Play trained G1 tracking policy.")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
-    parser.add_argument("--motion_file", type=str, required=True, help="Path to motion shard directory")
+    parser.add_argument("--motion_file", type=str, required=True, help="Path to HDF5 motion shard directory")
     parser.add_argument("--num_envs", type=int, default=1)
     parser.add_argument(
         "--viewer", type=str, default="native", choices=["native", "viser"],

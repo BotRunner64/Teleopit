@@ -10,7 +10,7 @@ sidebar_position: 3
 python scripts/setup/download_assets.py --only data
 ```
 
-Then train directly with the shard directory:
+Then train directly with the HDF5 shard directory:
 
 ```bash
 python train_mimic/scripts/train.py --motion_file data/datasets/seed/train
@@ -37,7 +37,7 @@ enter a new name, and `Q` to quit. Saved clips go to
 `data/pico_motion/clips/` as `<semantic_label>_<timestamp>.npz`; no per-clip
 JSON is written, so clips can be renamed or deleted manually.
 
-Build all recorded clips into the standard shard dataset:
+Build all recorded clips into the standard HDF5 shard dataset:
 
 ```bash
 python train_mimic/scripts/data/build_dataset.py \
@@ -49,7 +49,7 @@ can be populated.
 
 ## Custom Dataset Construction
 
-Data pipeline: `typed source YAML -> preprocess/filter -> shard-only training data`
+Data pipeline: `typed source YAML -> preprocess/filter -> HDF5 shard-only training data`
 
 ```bash
 python train_mimic/scripts/data/build_dataset.py \
@@ -63,15 +63,18 @@ data/datasets/<dataset>/
 ├── clips/                  # Optional; only for per-clip intermediates
 │   └── <source>/...
 ├── train/
-│   └── shard_*.npz
+│   ├── manifest.json
+│   └── shard_*.h5
 ├── val/
-│   └── shard_*.npz
+│   ├── manifest.json
+│   └── shard_*.h5
 ├── manifest_resolved.csv
 └── build_info.json
 ```
 
 - If the spec contains `bvh` or `npz` sources, the builder retains/generates `clips/`
 - If the spec is all `pkl` or `seed_csv` sources, the builder takes a batch path producing split-level shards directly
+- Training loads only a subset cache from the HDF5 split, stages the next cache, and swaps caches at the PPO rollout barrier.
 
 ## YAML Spec Format
 
@@ -167,16 +170,3 @@ python train_mimic/scripts/data/check_motion_npz_fk.py \
 ```
 
 Recommended thresholds: `pos_max < 1e-3 m`, `quat_mean < 0.05 rad`, `quat_p95 < 0.10 rad`.
-
-## Re-shard
-
-Split large shards for distribution:
-
-```bash
-python train_mimic/scripts/data/split_shards.py \
-    --input data/datasets/seed/train \
-    --output data/datasets/seed/train_small_shards \
-    --max_size_gb 2
-```
-
-Each shard is self-contained with full clip metadata.

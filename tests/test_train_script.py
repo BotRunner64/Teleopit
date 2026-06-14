@@ -33,6 +33,12 @@ def _args(**overrides: object) -> argparse.Namespace:
         "experiment_name": None,
         "motion_file": "data/datasets/twist2/train",
         "resume": None,
+        "sampling_mode": None,
+        "rewind_prob": None,
+        "rewind_min_steps": None,
+        "rewind_max_steps": None,
+        "cache_num_clips": None,
+        "cache_swap_interval_steps": None,
         "device": None,
         "gpu_ids": None,
         "master_port": 29500,
@@ -236,7 +242,11 @@ def test_tracking_runner_configs_disable_model_upload() -> None:
 
 
 def test_validate_motion_file_accepts_shard_directories(tmp_path: Path) -> None:
-    (tmp_path / "shard_000.npz").write_bytes(b"placeholder")
+    (tmp_path / "manifest.json").write_text(
+        '{"format":"teleopit_motion_hdf5","version":1,"shards":[{"path":"shard_000.h5"}]}',
+        encoding="utf-8",
+    )
+    (tmp_path / "shard_000.h5").write_bytes(b"placeholder")
     validate_motion_file(str(tmp_path))
 
 

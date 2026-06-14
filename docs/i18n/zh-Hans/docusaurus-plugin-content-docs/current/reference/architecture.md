@@ -60,7 +60,7 @@ train_mimic/scripts/data
 | Actor/Critic | TemporalCNN（2048、1024、512、256、128） |
 | 训练采样 | 默认 `rewind`；也支持 `uniform`；播放/评估使用 `start` |
 | 训练 `window_steps` | `[0]` |
-| 数据格式 | 仅 shard 目录（`shard_*.npz`） |
+| 数据格式 | HDF5 shard 目录（`manifest.json` + `shard_*.h5`） |
 
 ## 约束
 
@@ -76,4 +76,4 @@ train_mimic/scripts/data
 
 **稳定训练入口：** `train.py`、`play.py`、`benchmark.py`、`save_onnx.py`
 
-**稳定数据入口：** `build_dataset.py`、`split_shards.py`
+**稳定数据入口：** `build_dataset.py`

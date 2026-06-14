@@ -72,7 +72,7 @@ train_mimic/              # Training package
 │   ├── env.py            # General-Tracking-G1 env builder
 │   └── rl.py             # TemporalCNN PPO cfg
 ├── tasks/tracking/rl/
-│   ├── runner.py         # ONNX export wrapper for policy + motion labels
+│   ├── runner.py         # Training runner and policy ONNX export wrapper
 │   ├── conv1d_encoder.py # 1-D CNN encoder for temporal history groups
 │   └── temporal_cnn_model.py # TemporalCNN actor/critic model
 └── scripts/
@@ -203,9 +203,11 @@ The single supported training task is `General-Tracking-G1` (experiment name: `g
 
 ### Dataset Pipeline
 - Dataset build spec supports a `preprocess` section for root-xy normalization, ground alignment, and basic clip filtering
-- Final dataset outputs are shard-only: `data/datasets/<dataset>/train/shard_*.npz` and `data/datasets/<dataset>/val/shard_*.npz`
-- Each shard stores clip-aware metadata (`clip_starts`, `clip_lengths`, `clip_fps`, `clip_weights`); `MotionLib` loads only shard directories
+- Final training dataset outputs are HDF5 split directories: `data/datasets/<dataset>/train/manifest.json` + `shard_*.h5` and the same under `val/`
+- Each shard stores clip-aware window metadata (`clip_starts`, `clip_lengths`, `clip_fps`, `clip_weights`); long clips are split into overlapping bounded windows
+- `MotionLib` loads only a configurable HDF5 subset cache into CPU/GPU memory, stages the next cache, and swaps at the PPO rollout barrier
 - `MotionLib` samples only valid center frames for the configured `window_steps`; default is `window_steps=[0]`
+- Training supports `uniform` and `rewind` sampling on the active cache; in distributed training each rank sets a rank-offset `cache_seed`
 - `scripts/run/record_pico_motion.py` records Pico live body tracking as retargeted G1 motion NPZ clips in `data/pico_motion/clips/`; it opens a live `Retarget` viewer, uses terminal keys `R/S/D/N/Q`, stores semantic labels in filenames, and intentionally does not write per-clip JSON
 - Build Pico-recorded clips into shards with `python train_mimic/scripts/data/build_dataset.py --spec data/pico_motion/pico_recorded.yaml --force`; at least two clips are required for non-empty train/val splits
 

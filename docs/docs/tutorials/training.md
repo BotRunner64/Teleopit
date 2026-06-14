@@ -74,7 +74,8 @@ torchrun \
 - `--num_envs` is per-GPU in multi-GPU mode
 - `--num_envs` is also per-process in multi-node mode, so total environments scale with `world_size`
 - Default logger is TensorBoard. Use `--logger wandb` or `--logger swanlab` to select W&B or SwanLab; the project name defaults to `experiment_name`
-- `--motion_file` accepts only shard directories (containing `shard_*.npz` files)
+- `--motion_file` accepts only HDF5 shard directories containing `manifest.json` and `shard_*.h5` files
+- `--cache_num_clips` controls the active HDF5 subset size; `--cache_swap_interval_steps` controls how often the next subset is swapped in at a rollout barrier
 - `--max_iterations` means additional iterations; resuming from `model_12000.pt` with `--max_iterations 18000` trains to `model_30000.pt`
 
 ## Export ONNX

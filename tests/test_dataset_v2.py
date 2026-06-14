@@ -6,8 +6,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import h5py
 
 from train_mimic.data import dataset_builder
+from train_mimic.data.dataset_lib import write_hdf5_motion_shard
 from train_mimic.data.dataset_builder import (
     DatasetClipRow,
     SourceInputFile,
@@ -520,15 +522,17 @@ def test_build_dataset_from_spec_writes_shard_directories(tmp_path: Path) -> Non
     assert report["build_dir"] == str(dataset_dir)
     assert (dataset_dir / "clips" / "npz_src" / "clip_a.npz").is_file()
     assert (dataset_dir / "clips" / "npz_src" / "clip_b.npz").is_file()
-    assert (dataset_dir / "train" / "shard_000.npz").is_file()
-    assert (dataset_dir / "val" / "shard_000.npz").is_file()
+    assert (dataset_dir / "train" / "manifest.json").is_file()
+    assert (dataset_dir / "train" / "shard_000.h5").is_file()
+    assert (dataset_dir / "val" / "manifest.json").is_file()
+    assert (dataset_dir / "val" / "shard_000.h5").is_file()
     assert (dataset_dir / "manifest_resolved.csv").is_file()
     assert (dataset_dir / "build_info.json").is_file()
     assert report["clip_counts"]["total"] == 2
 
-    train_data = np.load(dataset_dir / "train" / "shard_000.npz", allow_pickle=True)
-    assert "clip_starts" in train_data.files
-    assert "clip_lengths" in train_data.files
+    with h5py.File(dataset_dir / "train" / "shard_000.h5", "r") as train_data:
+        assert "clip_starts" in train_data
+        assert "clip_lengths" in train_data
 
 
 def test_collect_clip_rows_ignores_stale_excluded_cached_npz(tmp_path: Path) -> None:
@@ -784,7 +788,7 @@ def test_batch_convert_chunk_skips_filtered_short_clips(
         [str(short_path), str(valid_path)],
         [1.0, 1.0],
         30,
-        str(tmp_path / "merged.npz"),
+        str(tmp_path / "merged.h5"),
         "train",
         preprocess=dataset_builder.DatasetPreprocessSpec(
             normalize_root_xy=True,
@@ -793,10 +797,27 @@ def test_batch_convert_chunk_skips_filtered_short_clips(
         ),
     )
 
-    merged = np.load(tmp_path / "merged.npz", allow_pickle=True)
     assert stats["clips"] == 1
     assert stats["kept_file_paths"] == [str(valid_path)]
-    assert merged["clip_lengths"].tolist() == [22]
+    with h5py.File(tmp_path / "merged.h5", "r") as merged:
+        assert merged["clip_lengths"][()].tolist() == [22]
+
+
+def test_shard_stats_counts_real_frames_not_overlapped_windows(tmp_path: Path) -> None:
+    stats = dataset_builder._shard_stats(
+        output_dir=tmp_path,
+        shard_infos=[{
+            "path": tmp_path / "shard_000.h5",
+            "clips": 3,
+            "frames": 1000,
+            "clip_lengths": [512, 512, 512],
+            "source_clip_lengths": [1000],
+        }],
+        fps=30,
+    )
+
+    assert stats["frames"] == 1000
+    assert stats["duration_s"] == 1000 / 30
 
 
 
@@ -845,7 +866,7 @@ def test_build_dataset_batch_manifest_skips_filtered_entries(
 
     num_bodies = len(_MJLAB_G1_BODY_NAMES)
 
-    def _write_merged(path: Path, lengths: list[int]) -> None:
+    def _write_merged(path: Path, lengths: list[int]) -> dict:
         total = sum(lengths)
         joint_pos = np.zeros((total, 29), dtype=np.float32)
         joint_vel = np.zeros_like(joint_pos)
@@ -858,29 +879,28 @@ def test_build_dataset_batch_manifest_skips_filtered_entries(
         clip_starts = np.zeros(len(lengths), dtype=np.int64)
         if len(lengths) > 1:
             clip_starts[1:] = np.cumsum(clip_lengths[:-1])
-        np.savez(
-            path,
-            fps=30,
-            joint_pos=joint_pos,
-            joint_vel=joint_vel,
-            body_pos_w=body_pos_w,
-            body_quat_w=body_quat_w,
-            body_lin_vel_w=body_lin_vel_w,
-            body_ang_vel_w=body_ang_vel_w,
-            body_names=np.asarray(_MJLAB_G1_BODY_NAMES, dtype=str),
-            clip_starts=clip_starts,
-            clip_lengths=clip_lengths,
-            clip_fps=np.full(len(lengths), 30, dtype=np.int64),
-            clip_weights=np.ones(len(lengths), dtype=np.float64),
-        )
+        return write_hdf5_motion_shard({
+            "fps": 30,
+            "joint_pos": joint_pos,
+            "joint_vel": joint_vel,
+            "body_pos_w": body_pos_w,
+            "body_quat_w": body_quat_w,
+            "body_lin_vel_w": body_lin_vel_w,
+            "body_ang_vel_w": body_ang_vel_w,
+            "body_names": np.asarray(_MJLAB_G1_BODY_NAMES, dtype=str),
+            "clip_starts": clip_starts,
+            "clip_lengths": clip_lengths,
+            "clip_fps": np.full(len(lengths), 30, dtype=np.int64),
+            "clip_weights": np.ones(len(lengths), dtype=np.float64),
+        }, path)
 
     def _batch_convert_split(clips, target_fps, output_dir, jobs, split_name, preprocess):
         _ = clips, target_fps, jobs, preprocess
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        shard_path = output_dir / "shard_000.npz"
+        shard_path = output_dir / "shard_000.h5"
         if split_name == "train":
-            _write_merged(shard_path, [22])
+            h5_info = _write_merged(shard_path, [22])
             return ({
                 "output": str(output_dir),
                 "shards": 1,
@@ -891,10 +911,12 @@ def test_build_dataset_batch_manifest_skips_filtered_entries(
                 "duration_s": 22.0 / 30.0,
             }, [{
                 "path": shard_path,
-                "clip_lengths": [22],
+                "clip_lengths": h5_info["clip_lengths"],
+                "source_clip_lengths": h5_info["source_clip_lengths"],
+                "frames": h5_info["frames"],
                 "kept_file_paths": [str(keep_train)],
             }])
-        _write_merged(shard_path, [24])
+        h5_info = _write_merged(shard_path, [24])
         return ({
             "output": str(output_dir),
             "shards": 1,
@@ -905,7 +927,9 @@ def test_build_dataset_batch_manifest_skips_filtered_entries(
             "duration_s": 24.0 / 30.0,
         }, [{
             "path": shard_path,
-            "clip_lengths": [24],
+            "clip_lengths": h5_info["clip_lengths"],
+            "source_clip_lengths": h5_info["source_clip_lengths"],
+            "frames": h5_info["frames"],
             "kept_file_paths": [str(keep_val)],
         }])
 

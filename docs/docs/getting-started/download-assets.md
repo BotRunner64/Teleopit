@@ -29,8 +29,8 @@ python scripts/setup/download_assets.py --only gmr ckpt bvh
 |-------|------|---------|
 | `track.onnx` | 4 MB | ONNX inference model |
 | `track.pt` | 27 MB | PyTorch checkpoint (for resume training) |
-| `data/datasets/seed/train/shard_*.npz` | ~25 GB | Training dataset |
-| `data/datasets/seed/val/shard_*.npz` | ~1.4 GB | Validation dataset |
+| `data/datasets/seed/train/manifest.json` + `shard_*.h5` | ~25 GB | Training dataset |
+| `data/datasets/seed/val/manifest.json` + `shard_*.h5` | ~1.4 GB | Validation dataset |
 | `data/sample_bvh/*.bvh` | 5 MB | Sample motion files |
 | `teleopit/retargeting/gmr/assets/` | ~1.2 GB | GMR retargeting robot models |
 

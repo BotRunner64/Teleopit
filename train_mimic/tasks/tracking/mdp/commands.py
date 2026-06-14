@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import copy
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+import h5py
 import mujoco
 import numpy as np
 import torch
 
-from train_mimic.data.dataset_lib import compute_clip_sample_ranges, parse_window_steps
+from train_mimic.data.dataset_lib import (
+    MOTION_ARRAY_KEYS,
+    compute_clip_sample_ranges,
+    parse_window_steps,
+    read_hdf5_body_names,
+)
 
 from mjlab.managers import CommandTerm, CommandTermCfg
 from mjlab.utils.lab_api.math import (
@@ -57,113 +64,168 @@ def _batched_quat_slerp(
     return result / result.norm(dim=-1, keepdim=True)
 
 
-def _load_shard_dir(shard_dir: Path) -> dict[str, Any]:
-    """Load and merge all shard NPZ files from a directory.
+@dataclass(frozen=True)
+class _Hdf5ClipRef:
+    shard_index: int
+    start: int
+    length: int
+    fps: int
+    weight: float
 
-    Each shard must be a self-contained merged NPZ with clip metadata.
-    This function concatenates motion arrays across shards and rebuilds the
-    clip-level metadata (``clip_starts`` offsets are adjusted).
-    """
-    shard_files = sorted(shard_dir.glob("*.npz"))
-    if not shard_files:
-        raise FileNotFoundError(f"No .npz files found in {shard_dir}")
 
-    _LOG.info("Loading %d shards from %s ...", len(shard_files), shard_dir)
+@dataclass
+class _MotionBatch:
+    tensors: dict[str, torch.Tensor]
+    lengths: torch.Tensor
+    fps: torch.Tensor
+    weights: torch.Tensor
+    sample_starts: torch.Tensor
+    sample_ends: torch.Tensor
+    global_ids: torch.Tensor
 
-    motion_keys = [
-        "joint_pos", "joint_vel", "body_pos_w", "body_quat_w",
-        "body_lin_vel_w", "body_ang_vel_w",
-    ]
-    arrays: dict[str, list[np.ndarray]] = {k: [] for k in motion_keys}
-    all_clip_lengths: list[np.ndarray] = []
-    all_clip_fps: list[np.ndarray] = []
-    all_clip_weights: list[np.ndarray] = []
-    all_clip_sample_starts: list[np.ndarray] = []
-    all_clip_sample_ends: list[np.ndarray] = []
-    window_steps: np.ndarray | None = None
-    fps = None
-    body_names: np.ndarray | None = None
 
-    for sf in shard_files:
-        d = np.load(sf, allow_pickle=True)
-        for k in motion_keys:
-            arrays[k].append(np.asarray(d[k]))
-
-        # --- validate metadata consistency across shards ---
-        cur_fps = d["fps"]
-        cur_body_names = np.asarray(d["body_names"])
-        if fps is None:
-            fps = cur_fps
-            body_names = cur_body_names
-        else:
-            if int(cur_fps) != int(fps):
-                raise ValueError(
-                    f"Inconsistent fps across shards: {sf} has {int(cur_fps)}, "
-                    f"expected {int(fps)}"
-                )
-            if not np.array_equal(cur_body_names, body_names):
-                raise ValueError(
-                    f"Inconsistent body_names across shards: {sf} differs from first shard"
-                )
-
-        if "clip_lengths" not in d or "clip_fps" not in d or "clip_weights" not in d:
-            raise ValueError(
-                f"Shard {sf} is missing required clip metadata. "
-                "Expected clip_lengths, clip_fps, and clip_weights."
+class _Hdf5MotionCache:
+    def __init__(
+        self,
+        motion_dir: Path,
+        *,
+        body_idx_np: np.ndarray,
+        device: str,
+        window_steps: tuple[int, ...],
+        cache_num_clips: int,
+        seed: int,
+    ) -> None:
+        if cache_num_clips <= 0:
+            raise ValueError(f"cache_num_clips must be positive, got {cache_num_clips}")
+        manifest_path = motion_dir / "manifest.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError(
+                f"motion_file must be an HDF5 split directory containing manifest.json, got: {motion_dir}"
             )
-        shard_clip_lengths = np.asarray(d["clip_lengths"])
-        n_clips = len(shard_clip_lengths)
-        all_clip_lengths.append(shard_clip_lengths)
-        all_clip_fps.append(np.asarray(d["clip_fps"]))
-        all_clip_weights.append(np.asarray(d["clip_weights"]))
+        with manifest_path.open("r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        if manifest.get("format") != "teleopit_motion_hdf5":
+            raise ValueError(f"Unsupported motion manifest format in {manifest_path}")
 
-        if "clip_sample_starts" in d:
-            all_clip_sample_starts.append(np.asarray(d["clip_sample_starts"]))
-        if "clip_sample_ends" in d:
-            all_clip_sample_ends.append(np.asarray(d["clip_sample_ends"]))
-        if "window_steps" in d and window_steps is None:
-            window_steps = np.asarray(d["window_steps"])
+        self.motion_dir = motion_dir
+        self.body_idx_np = body_idx_np
+        self.device = device
+        self.window_steps = window_steps
+        self.cache_num_clips = int(cache_num_clips)
+        self._rng = torch.Generator(device="cpu")
+        self._rng.manual_seed(int(seed))
+        self._shard_paths = [motion_dir / shard["path"] for shard in manifest["shards"]]
+        self.body_names = np.asarray(manifest["body_names"], dtype=str)
 
-    merged: dict[str, Any] = {k: np.concatenate(v, axis=0) for k, v in arrays.items()}
-    merged["fps"] = fps
-    merged["body_names"] = body_names
+        max_future = max((step for step in self.window_steps if step > 0), default=0)
+        max_history = -min((step for step in self.window_steps if step < 0), default=0)
+        min_clip_length = max_history + 1 + max_future + 1  # +1 for interpolation
 
-    clip_lengths = np.concatenate(all_clip_lengths)
-    clip_starts = np.zeros(len(clip_lengths), dtype=np.int64)
-    if len(clip_lengths) > 1:
-        clip_starts[1:] = np.cumsum(clip_lengths[:-1])
-    merged["clip_starts"] = clip_starts
-    merged["clip_lengths"] = clip_lengths
-    merged["clip_fps"] = np.concatenate(all_clip_fps)
-    merged["clip_weights"] = np.concatenate(all_clip_weights)
+        refs: list[_Hdf5ClipRef] = []
+        skipped_short = 0
+        for shard_index, shard_path in enumerate(self._shard_paths):
+            with h5py.File(shard_path, "r") as h5:
+                shard_body_names = read_hdf5_body_names(shard_path)
+                if shard_body_names != self.body_names.tolist():
+                    raise ValueError(
+                        f"HDF5 shard body_names mismatch for {shard_path}: "
+                        "all shards must match manifest body_names order"
+                    )
+                starts = np.asarray(h5["clip_starts"], dtype=np.int64)
+                lengths = np.asarray(h5["clip_lengths"], dtype=np.int64)
+                fps = np.asarray(h5["clip_fps"], dtype=np.int64)
+                weights = np.asarray(h5["clip_weights"], dtype=np.float64)
+                for start, length, cur_fps, weight in zip(starts, lengths, fps, weights):
+                    if int(length) < min_clip_length:
+                        skipped_short += 1
+                        continue
+                    refs.append(_Hdf5ClipRef(
+                        shard_index=shard_index,
+                        start=int(start),
+                        length=int(length),
+                        fps=int(cur_fps),
+                        weight=float(weight),
+                    ))
+        if not refs:
+            raise ValueError(f"HDF5 motion dataset is empty: {motion_dir}")
+        if skipped_short > 0:
+            _LOG.warning(
+                "Ignoring %d HDF5 motion windows shorter than %d frames (window_steps=%s)",
+                skipped_short,
+                min_clip_length,
+                list(self.window_steps),
+            )
+        self.refs = refs
+        self.global_weights = torch.tensor(
+            [max(ref.weight, 0.0) for ref in refs], dtype=torch.float32
+        )
+        if float(self.global_weights.sum()) <= 0.0:
+            raise ValueError(f"All HDF5 motion weights are zero in {motion_dir}")
+        self.generation = 0
+        self.current = self._load_random_batch()
+        self.next = self._load_random_batch()
 
-    # Propagate precomputed sample ranges if all shards had them
-    n_total_clips = len(clip_lengths)
-    if all_clip_sample_starts and sum(len(a) for a in all_clip_sample_starts) == n_total_clips:
-        merged["clip_sample_starts"] = np.concatenate(all_clip_sample_starts)
-    if all_clip_sample_ends and sum(len(a) for a in all_clip_sample_ends) == n_total_clips:
-        merged["clip_sample_ends"] = np.concatenate(all_clip_sample_ends)
-    if window_steps is not None:
-        merged["window_steps"] = window_steps
+    def _sample_global_ids(self) -> torch.Tensor:
+        probs = self.global_weights / self.global_weights.sum()
+        return torch.multinomial(
+            probs,
+            self.cache_num_clips,
+            replacement=True,
+            generator=self._rng,
+        )
 
-    _LOG.info(
-        "Loaded %d shards: %d clips, %d total frames",
-        len(shard_files), len(clip_lengths), merged["joint_pos"].shape[0],
-    )
-    return merged
+    def _load_random_batch(self) -> _MotionBatch:
+        return self._load_batch(self._sample_global_ids())
+
+    def _load_batch(self, global_ids: torch.Tensor) -> _MotionBatch:
+        ids_np = global_ids.cpu().numpy().astype(np.int64)
+        selected = [self.refs[int(idx)] for idx in ids_np]
+        max_len = max(ref.length for ref in selected)
+        arrays: dict[str, np.ndarray] = {}
+        for key in MOTION_ARRAY_KEYS:
+            sample_shape: tuple[int, ...]
+            if key in ("joint_pos", "joint_vel"):
+                sample_shape = (29,)
+            elif key == "body_quat_w":
+                sample_shape = (len(self.body_idx_np), 4)
+            else:
+                sample_shape = (len(self.body_idx_np), 3)
+            arrays[key] = np.zeros((len(selected), max_len, *sample_shape), dtype=np.float32)
+
+        for out_i, ref in enumerate(selected):
+            shard_path = self._shard_paths[ref.shard_index]
+            sl = slice(ref.start, ref.start + ref.length)
+            with h5py.File(shard_path, "r") as h5:
+                arrays["joint_pos"][out_i, :ref.length] = np.asarray(h5["joint_pos"][sl], dtype=np.float32)
+                arrays["joint_vel"][out_i, :ref.length] = np.asarray(h5["joint_vel"][sl], dtype=np.float32)
+                for key in ("body_pos_w", "body_quat_w", "body_lin_vel_w", "body_ang_vel_w"):
+                    arrays[key][out_i, :ref.length] = np.asarray(h5[key][sl], dtype=np.float32)[:, self.body_idx_np]
+
+        lengths_np = np.asarray([ref.length for ref in selected], dtype=np.int64)
+        starts_np, ends_np = compute_clip_sample_ranges(lengths_np, window_steps=self.window_steps)
+        tensors = {key: torch.from_numpy(value).to(self.device) for key, value in arrays.items()}
+        return _MotionBatch(
+            tensors=tensors,
+            lengths=torch.tensor(lengths_np, dtype=torch.long, device=self.device),
+            fps=torch.tensor([ref.fps for ref in selected], dtype=torch.float32, device=self.device),
+            weights=torch.ones(len(selected), dtype=torch.float32, device=self.device),
+            sample_starts=torch.tensor(starts_np, dtype=torch.long, device=self.device),
+            sample_ends=torch.tensor(ends_np, dtype=torch.long, device=self.device),
+            global_ids=global_ids.to(self.device),
+        )
+
+    def advance(self) -> None:
+        self.current = self.next
+        self.next = self._load_random_batch()
+        self.generation += 1
 
 
 class MotionLib:
     """Clip-aware motion library.
 
-    Loads a directory of shard NPZ files. Each shard contains flat motion arrays
-    plus per-clip metadata (``clip_starts``, ``clip_lengths``, ``clip_fps``,
-    ``clip_weights``).
-
-    Motion data is stored as GPU tensors for fast gather+lerp interpolation.
-    All indexing, lerp, and slerp run entirely on device with zero CPU
-    round-trips.  Numpy arrays are kept alongside for external consumers
-    (e.g. runner checkpoint buffers).
+    Loads a bounded subset of HDF5 motion windows into a GPU-resident cache.
+    Sampling and interpolation operate on cache-local clip ids; the next cache
+    is staged in memory and swapped at a rollout barrier by ``MotionCommand``.
     """
 
     def __init__(
@@ -173,6 +235,8 @@ class MotionLib:
         body_names: tuple[str, ...] | list[str] | None = None,
         device: str = "cpu",
         window_steps: tuple[int, ...] | list[int] | None = None,
+        cache_num_clips: int = 1024,
+        cache_seed: int = 0,
     ) -> None:
         self._device = device
         self.window_steps = parse_window_steps(window_steps)
@@ -180,13 +244,22 @@ class MotionLib:
         motion_path = Path(motion_file)
         if not motion_path.is_dir():
             raise FileNotFoundError(
-                f"motion_file must be a shard directory, got: {motion_file}"
+                f"motion_file must be an HDF5 shard directory, got: {motion_file}"
             )
-        data = _load_shard_dir(motion_path)
+        manifest_path = motion_path / "manifest.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError(
+                f"motion_file must contain manifest.json for HDF5 loading, got: {motion_file}"
+            )
+        with manifest_path.open("r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        if manifest.get("format") != "teleopit_motion_hdf5":
+            raise ValueError(f"Unsupported motion manifest format in {manifest_path}")
+
         if body_names is None:
             body_idx_np = body_indexes.cpu().numpy()
         else:
-            dataset_body_names = [str(name) for name in np.asarray(data["body_names"])]
+            dataset_body_names = [str(name) for name in manifest["body_names"]]
             dataset_body_index_by_name = {
                 name: index for index, name in enumerate(dataset_body_names)
             }
@@ -205,100 +278,43 @@ class MotionLib:
                 dtype=np.int64,
             )
 
-        self._joint_pos = np.asarray(data["joint_pos"], dtype=np.float32)  # (T, 29)
-        self._joint_vel = np.asarray(data["joint_vel"], dtype=np.float32)  # (T, 29)
-
-        # Body arrays: index by selected bodies immediately.  Accessing an
-        # NpzFile key inflates that array from the zip; the intermediate full
-        # array is released once we slice and discard the reference.
-        self._body_pos_w = np.asarray(
-            data["body_pos_w"], dtype=np.float32
-        )[:, body_idx_np]
-        self._body_quat_w = np.asarray(
-            data["body_quat_w"], dtype=np.float32
-        )[:, body_idx_np]
-        self._body_lin_vel_w = np.asarray(
-            data["body_lin_vel_w"], dtype=np.float32
-        )[:, body_idx_np]
-        self._body_ang_vel_w = np.asarray(
-            data["body_ang_vel_w"], dtype=np.float32
-        )[:, body_idx_np]
-
-        self.time_step_total = self._joint_pos.shape[0]
-
-        # GPU tensors for fast gather+lerp interpolation (zero CPU round-trips).
-        self._joint_pos_t = torch.from_numpy(self._joint_pos).to(device)
-        self._joint_vel_t = torch.from_numpy(self._joint_vel).to(device)
-        self._body_pos_w_t = torch.from_numpy(self._body_pos_w).to(device)
-        self._body_quat_w_t = torch.from_numpy(self._body_quat_w).to(device)
-        self._body_lin_vel_w_t = torch.from_numpy(self._body_lin_vel_w).to(device)
-        self._body_ang_vel_w_t = torch.from_numpy(self._body_ang_vel_w).to(device)
-
-        # --- clip-aware metadata (small — lives on GPU for sampling) ---
-        self.clip_starts = torch.tensor(data["clip_starts"], dtype=torch.long, device=device)
-        self.clip_lengths = torch.tensor(data["clip_lengths"], dtype=torch.long, device=device)
-        self.clip_weights = torch.tensor(
-            data["clip_weights"], dtype=torch.float32, device=device
+        self._cache = _Hdf5MotionCache(
+            motion_path,
+            body_idx_np=body_idx_np,
+            device=device,
+            window_steps=self.window_steps,
+            cache_num_clips=cache_num_clips,
+            seed=cache_seed,
         )
-        fps_arr = np.asarray(data["clip_fps"])
-        if fps_arr.ndim == 0:
-            self.clip_fps = torch.full(
-                (len(self.clip_starts),), float(fps_arr), dtype=torch.float32, device=device
-            )
-        else:
-            self.clip_fps = torch.tensor(fps_arr, dtype=torch.float32, device=device)
+        self._set_batch(self._cache.current)
 
-        self.num_clips = len(self.clip_starts)
+    def _set_batch(self, batch: _MotionBatch) -> None:
+        self._batch = batch
+        self._joint_pos_t = batch.tensors["joint_pos"]
+        self._joint_vel_t = batch.tensors["joint_vel"]
+        self._body_pos_w_t = batch.tensors["body_pos_w"]
+        self._body_quat_w_t = batch.tensors["body_quat_w"]
+        self._body_lin_vel_w_t = batch.tensors["body_lin_vel_w"]
+        self._body_ang_vel_w_t = batch.tensors["body_ang_vel_w"]
+
+        self.clip_lengths = batch.lengths
+        self.clip_weights = batch.weights
+        self.clip_fps = batch.fps
+        self.num_clips = int(batch.lengths.shape[0])
+        self.time_step_total = int(batch.lengths.max().item())
         self.clip_dt = 1.0 / self.clip_fps
         self.clip_duration_s = (self.clip_lengths.float() - 1.0) * self.clip_dt
-
-        # Compute minimum clip length required by the window
-        max_future = max((s for s in self.window_steps if s > 0), default=0)
-        max_history = -min((s for s in self.window_steps if s < 0), default=0)
-        min_clip_length = max_history + 1 + max_future + 1  # +1 for interpolation
-        short_mask = self.clip_lengths < min_clip_length
-        n_short = int(short_mask.sum().item())
-        if n_short > 0:
-            _LOG.warning(
-                "Disabling %d/%d clips shorter than %d frames (window_steps=%s)",
-                n_short, self.num_clips, min_clip_length, list(self.window_steps),
-            )
-            self.clip_weights = self.clip_weights.clone()
-            self.clip_weights[short_mask] = 0.0
-
-        file_window_steps = parse_window_steps(data["window_steps"]) if "window_steps" in data else (0,)
-        if (
-            "clip_sample_starts" in data
-            and "clip_sample_ends" in data
-            and file_window_steps == self.window_steps
-        ):
-            self.clip_sample_starts = torch.tensor(
-                data["clip_sample_starts"], dtype=torch.long, device=device
-            )
-            self.clip_sample_ends = torch.tensor(
-                data["clip_sample_ends"], dtype=torch.long, device=device
-            )
-        else:
-            # Only compute ranges for clips long enough; short ones get dummy [0,1)
-            lengths_np = self.clip_lengths.cpu().numpy()
-            sample_starts = np.zeros(self.num_clips, dtype=np.int64)
-            sample_ends = np.ones(self.num_clips, dtype=np.int64)
-            long_mask = ~short_mask.cpu().numpy()
-            if long_mask.any():
-                s, e = compute_clip_sample_ranges(
-                    lengths_np[long_mask],
-                    window_steps=self.window_steps,
-                )
-                sample_starts[long_mask] = s
-                sample_ends[long_mask] = e
-            self.clip_sample_starts = torch.tensor(
-                sample_starts, dtype=torch.long, device=device
-            )
-            self.clip_sample_ends = torch.tensor(
-                sample_ends, dtype=torch.long, device=device
-            )
+        self.clip_sample_starts = batch.sample_starts
+        self.clip_sample_ends = batch.sample_ends
         self.clip_sample_start_s = self.clip_sample_starts.float() * self.clip_dt
         self.clip_sample_end_s = self.clip_sample_ends.float() * self.clip_dt
+        # Kept for introspection/logging; frame interpolation is cache-local.
+        self.clip_starts = torch.zeros(self.num_clips, dtype=torch.long, device=self._device)
+        self.generation = self._cache.generation
+
+    def advance_cache(self) -> None:
+        self._cache.advance()
+        self._set_batch(self._cache.current)
 
     # ------------------------------------------------------------------
     # Sampling helpers
@@ -339,7 +355,6 @@ class MotionLib:
         steps: tuple[int, ...],
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         fps = self.clip_fps[motion_ids]
-        starts = self.clip_starts[motion_ids]
         lengths = self.clip_lengths[motion_ids]
         durations = self.clip_duration_s[motion_ids]
 
@@ -358,10 +373,8 @@ class MotionLib:
         frame_i0 = torch.clamp(frame_i0, min=zero, max=max_frame)
         frame_i1 = torch.clamp(frame_i1, min=zero, max=max_frame)
 
-        idx0 = (starts[:, None] + frame_i0).reshape(-1)
-        idx1 = (starts[:, None] + frame_i1).reshape(-1)
         window = len(steps)
-        return idx0, idx1, alpha.reshape(-1), window
+        return frame_i0.reshape(-1), frame_i1.reshape(-1), alpha.reshape(-1), window
 
     _ALL_KEYS = frozenset((
         "joint_pos", "joint_vel",
@@ -394,6 +407,7 @@ class MotionLib:
             steps,
         )
         batch = motion_ids.shape[0]
+        batch_idx = motion_ids[:, None].expand(batch, window).reshape(-1)
         want = self._ALL_KEYS if keys is None else keys
 
         result: dict[str, torch.Tensor] = {}
@@ -403,7 +417,7 @@ class MotionLib:
         for key, arr_t in (("joint_pos", self._joint_pos_t), ("joint_vel", self._joint_vel_t)):
             if key not in want:
                 continue
-            v0, v1 = arr_t[idx0], arr_t[idx1]
+            v0, v1 = arr_t[batch_idx, idx0], arr_t[batch_idx, idx1]
             result[key] = (v0 + a1 * (v1 - v0)).reshape(batch, window, -1)
 
         # body arrays: (T, B, D) — GPU gather + lerp, optionally pre-slice bodies
@@ -416,20 +430,21 @@ class MotionLib:
             if key not in want:
                 continue
             if body_indices is not None:
-                v0, v1 = arr_t[idx0][:, body_indices], arr_t[idx1][:, body_indices]
+                v0 = arr_t[batch_idx, idx0][:, body_indices]
+                v1 = arr_t[batch_idx, idx1][:, body_indices]
             else:
-                v0, v1 = arr_t[idx0], arr_t[idx1]
+                v0, v1 = arr_t[batch_idx, idx0], arr_t[batch_idx, idx1]
             interp = v0 + a2 * (v1 - v0)
             result[key] = interp.reshape(batch, window, *interp.shape[1:])
 
         # body_quat_w: GPU slerp, optionally pre-slice bodies
         if "body_quat_w" in want:
             if body_indices is not None:
-                q0 = self._body_quat_w_t[idx0][:, body_indices]
-                q1 = self._body_quat_w_t[idx1][:, body_indices]
+                q0 = self._body_quat_w_t[batch_idx, idx0][:, body_indices]
+                q1 = self._body_quat_w_t[batch_idx, idx1][:, body_indices]
             else:
-                q0 = self._body_quat_w_t[idx0]
-                q1 = self._body_quat_w_t[idx1]
+                q0 = self._body_quat_w_t[batch_idx, idx0]
+                q1 = self._body_quat_w_t[batch_idx, idx1]
             nb = q0.shape[1]
             q0_flat = q0.reshape(-1, 4)
             q1_flat = q1.reshape(-1, 4)
@@ -456,11 +471,6 @@ class MotionLib:
         return {
             key: value[:, 0] for key, value in windowed.items()
         }
-
-
-# Backward compatibility alias
-MotionLoader = MotionLib
-
 
 def _validate_rewind_sampling_cfg(cfg: Any) -> None:
     if cfg.rewind_min_steps < 0:
@@ -502,7 +512,11 @@ class MotionCommand(CommandTerm):
             body_names=self.cfg.body_names,
             device=self.device,
             window_steps=self.cfg.window_steps,
+            cache_num_clips=self.cfg.cache_num_clips,
+            cache_seed=self.cfg.cache_seed,
         )
+        self._motion_cache_step_counter = 0
+        self._motion_cache_swap_pending = False
 
         # Per-env motion state: clip id + elapsed time (seconds)
         self.motion_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -833,6 +847,9 @@ class MotionCommand(CommandTerm):
                 "Supported modes are 'uniform', 'start', and 'rewind'."
             )
 
+        self._reset_envs_to_current_reference(env_ids)
+
+    def _reset_envs_to_current_reference(self, env_ids: torch.Tensor) -> None:
         if env_ids.numel() == 0:
             return
 
@@ -920,6 +937,10 @@ class MotionCommand(CommandTerm):
     def _update_command(self):
         # Advance motion time by real elapsed time
         self.motion_times += self._step_dt
+        if self.cfg.cache_swap_interval_steps > 0:
+            self._motion_cache_step_counter += 1
+            if self._motion_cache_step_counter >= self.cfg.cache_swap_interval_steps:
+                self._motion_cache_swap_pending = True
 
         # Handle clips that exceeded their duration
         end_times = self.motion.clip_sample_end_s[self.motion_ids]
@@ -957,6 +978,24 @@ class MotionCommand(CommandTerm):
 
         self._refresh_body_local_cache()
         self._update_feet_standing()
+
+    def apply_cache_swap_if_pending_barrier(self) -> bool:
+        """Swap the staged motion cache at a rollout barrier, then resample all envs."""
+        if not self._motion_cache_swap_pending:
+            return False
+        self.motion.advance_cache()
+        self._motion_cache_step_counter = 0
+        self._motion_cache_swap_pending = False
+        all_env_ids = torch.arange(self.num_envs, dtype=torch.long, device=self.device)
+        if self.cfg.sampling_mode == "start":
+            self.motion_ids[all_env_ids] = self.motion.sample_motion_ids(self.num_envs)
+            self.motion_times[all_env_ids] = self.motion.sample_start_times(self.motion_ids[all_env_ids])
+        else:
+            # Rewind only makes sense inside one cache generation.  After a cache
+            # swap, local ids refer to different clips, so fall back to uniform.
+            self._uniform_sampling(all_env_ids)
+        self._reset_envs_to_current_reference(all_env_ids)
+        return True
 
     # ------------------------------------------------------------------
     # Visualization
@@ -1044,6 +1083,9 @@ class MotionCommandCfg(CommandTermCfg):
     joint_position_range: tuple[float, float] = (-0.52, 0.52)
     sampling_mode: Literal["uniform", "start", "rewind"] = "rewind"
     window_steps: tuple[int, ...] = (0,)
+    cache_num_clips: int = 1024
+    cache_swap_interval_steps: int = 500
+    cache_seed: int = 0
     rewind_prob: float = 0.8
     rewind_min_steps: int = 25
     rewind_max_steps: int = 75

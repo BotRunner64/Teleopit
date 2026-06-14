@@ -74,7 +74,8 @@ torchrun \
 - 多卡模式下 `--num_envs` 为每张 GPU 的环境数量
 - 多机模式下 `--num_envs` 也按每个进程计算，因此总环境数会随 `world_size` 线性增长
 - 默认日志工具为 TensorBoard。使用 `--logger wandb` 或 `--logger swanlab` 可选择 W&B 或 SwanLab；项目名默认使用 `experiment_name`
-- `--motion_file` 仅接受分片目录（包含 `shard_*.npz` 文件的目录）
+- `--motion_file` 仅接受包含 `manifest.json` 和 `shard_*.h5` 文件的 HDF5 分片目录
+- `--cache_num_clips` 控制当前 HDF5 subset cache 大小；`--cache_swap_interval_steps` 控制在 rollout barrier 切换下一个 subset 的频率
 - `--max_iterations` 表示追加迭代次数；例如从 `model_12000.pt` 恢复训练并设置 `--max_iterations 18000`，最终将训练到 `model_30000.pt`
 
 ## 导出 ONNX

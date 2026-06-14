@@ -74,7 +74,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--experiment_name", type=str, default=None)
     parser.add_argument("--motion_file", type=str, default=None,
-                        help="Shard directory path containing shard_*.npz files")
+                        help="HDF5 shard directory path containing manifest.json and shard_*.h5 files")
     parser.add_argument(
         "--resume",
         type=str,
@@ -93,6 +93,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="Minimum policy steps to rewind for rewind sampling")
     parser.add_argument("--rewind_max_steps", type=int, default=None,
                         help="Maximum policy steps to rewind for rewind sampling")
+    parser.add_argument("--cache_num_clips", type=int, default=None,
+                        help="Number of HDF5 motion windows to keep in the active subset cache")
+    parser.add_argument("--cache_swap_interval_steps", type=int, default=None,
+                        help="Policy steps between HDF5 motion cache swaps; swaps occur at rollout barriers")
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument(
         "--gpu_ids",
@@ -368,6 +372,7 @@ def _run_worker(args: argparse.Namespace) -> None:
 
     # CLI overrides
     env_cfg.seed = _resolve_worker_seed(args.seed)
+    env_cfg.commands["motion"].cache_seed = env_cfg.seed
     if args.num_envs is not None:
         env_cfg.scene.num_envs = args.num_envs
     if args.motion_file is not None:
@@ -381,6 +386,10 @@ def _run_worker(args: argparse.Namespace) -> None:
         env_cfg.commands["motion"].rewind_min_steps = args.rewind_min_steps
     if args.rewind_max_steps is not None:
         env_cfg.commands["motion"].rewind_max_steps = args.rewind_max_steps
+    if args.cache_num_clips is not None:
+        env_cfg.commands["motion"].cache_num_clips = args.cache_num_clips
+    if args.cache_swap_interval_steps is not None:
+        env_cfg.commands["motion"].cache_swap_interval_steps = args.cache_swap_interval_steps
     if args.max_iterations is not None:
         agent_cfg.max_iterations = args.max_iterations
     if args.experiment_name is not None:

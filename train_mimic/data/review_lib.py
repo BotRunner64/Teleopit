@@ -43,7 +43,7 @@ class ReviewRow:
     fps: int
     duration_s: float
     weight: float = 1.0
-    clip_index: int = -1  # index into merged NPZ clip_starts/clip_lengths; -1 = standalone clip
+    clip_index: int = -1  # source-clip index inside HDF5 shard; -1 = standalone source clip
     decision: str = ""
     difficulty: str = ""
     issue_tags: str = ""

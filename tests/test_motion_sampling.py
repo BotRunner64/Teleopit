@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+import json
 
 import numpy as np
 import pytest
 import torch
 
-from train_mimic.data.dataset_lib import merge_clip_dicts
+from train_mimic.data.dataset_lib import write_hdf5_manifest, write_hdf5_motion_shard
 from train_mimic.tasks.tracking.mdp.commands import MotionCommand, MotionLib
 
 
@@ -49,7 +50,28 @@ def _write_shard_dir(
     weights: list[float] | None = None,
 ) -> Path:
     path.mkdir(parents=True, exist_ok=True)
-    merge_clip_dicts(clip_dicts, path / "shard_000.npz", weights=weights)
+    array_keys = [
+        "joint_pos", "joint_vel", "body_pos_w", "body_quat_w",
+        "body_lin_vel_w", "body_ang_vel_w",
+    ]
+    clip_lengths = np.asarray([np.asarray(cd["joint_pos"]).shape[0] for cd in clip_dicts], dtype=np.int64)
+    clip_starts = np.zeros(len(clip_lengths), dtype=np.int64)
+    if len(clip_lengths) > 1:
+        clip_starts[1:] = np.cumsum(clip_lengths[:-1])
+    merged = {key: np.concatenate([np.asarray(cd[key]) for cd in clip_dicts], axis=0) for key in array_keys}
+    merged["fps"] = int(clip_dicts[0]["fps"])
+    merged["body_names"] = np.asarray(clip_dicts[0]["body_names"])
+    merged["clip_starts"] = clip_starts
+    merged["clip_lengths"] = clip_lengths
+    merged["clip_fps"] = np.full(len(clip_dicts), int(clip_dicts[0]["fps"]), dtype=np.int64)
+    merged["clip_weights"] = np.asarray(weights if weights is not None else [1.0] * len(clip_dicts), dtype=np.float64)
+    shard_info = write_hdf5_motion_shard(merged, path / "shard_000.h5")
+    write_hdf5_manifest(
+        path,
+        shard_infos=[shard_info],
+        fps=int(clip_dicts[0]["fps"]),
+        body_names=np.asarray(clip_dicts[0]["body_names"]),
+    )
     return path
 
 
@@ -150,6 +172,66 @@ def test_motion_lib_window_start_and_end_times_follow_valid_center_range(tmp_pat
 
     assert torch.allclose(motion.sample_start_times(motion_ids), torch.tensor([1.0]))
     assert torch.allclose(motion.clip_sample_end_s[motion_ids], torch.tensor([3.0]))
+
+
+def test_motion_lib_rejects_shard_body_name_mismatch(tmp_path: Path) -> None:
+    motion_path = tmp_path / "motion_mismatch"
+    clip = _clip_dict()
+    shard0 = _write_shard_dir(motion_path, [clip])
+
+    clip_bad = _clip_dict()
+    clip_bad["body_names"] = np.asarray(
+        ["pelvis", "right_ankle_roll_link", "left_ankle_roll_link"],
+        dtype=str,
+    )
+    array_keys = [
+        "joint_pos", "joint_vel", "body_pos_w", "body_quat_w",
+        "body_lin_vel_w", "body_ang_vel_w",
+    ]
+    merged = {key: np.asarray(clip_bad[key]) for key in array_keys}
+    merged["fps"] = int(clip_bad["fps"])
+    merged["body_names"] = np.asarray(clip_bad["body_names"])
+    merged["clip_starts"] = np.asarray([0], dtype=np.int64)
+    merged["clip_lengths"] = np.asarray([np.asarray(clip_bad["joint_pos"]).shape[0]], dtype=np.int64)
+    merged["clip_fps"] = np.asarray([int(clip_bad["fps"])], dtype=np.int64)
+    merged["clip_weights"] = np.asarray([1.0], dtype=np.float64)
+    bad_info = write_hdf5_motion_shard(merged, motion_path / "shard_001.h5")
+
+    (motion_path / "manifest.json").write_text(
+        json.dumps({
+            "format": "teleopit_motion_hdf5",
+            "version": 1,
+            "fps": 1,
+            "body_names": np.asarray(clip["body_names"]).tolist(),
+            "shards": [
+                {"path": "shard_000.h5", "clips": 1, "frames": 6},
+                {"path": "shard_001.h5", "clips": 1, "frames": int(bad_info["frames"])},
+            ],
+            "clips": 2,
+            "frames": 12,
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="body_names mismatch"):
+        MotionLib(
+            str(shard0),
+            body_indexes=torch.tensor([0, 1], dtype=torch.long),
+            window_steps=(0,),
+        )
+
+
+def test_write_hdf5_manifest_accepts_relative_shard_paths(tmp_path: Path) -> None:
+    motion_path = _write_shard_dir(tmp_path / "motion_relative_manifest", [_clip_dict()])
+    manifest_path = write_hdf5_manifest(
+        motion_path,
+        shard_infos=[{"path": "shard_000.h5", "clips": 1, "frames": 6}],
+        fps=1,
+        body_names=np.asarray(["pelvis", "left_ankle_roll_link", "right_ankle_roll_link"]),
+    )
+
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert payload["shards"][0]["path"] == "shard_000.h5"
 
 
 class _FakeMotion:

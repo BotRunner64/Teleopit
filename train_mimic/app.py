@@ -17,11 +17,12 @@ DEFAULT_TASK = GENERAL_TRACKING_TASK
 
 def validate_motion_file(motion_file: str) -> None:
     p = Path(motion_file)
-    if p.is_dir() and any(p.glob("*.npz")):
+    manifest = p / "manifest.json"
+    if p.is_dir() and manifest.is_file() and any(p.glob("*.h5")):
         return
     raise FileNotFoundError(
         f"Motion shard directory not found: {motion_file}. Provide --motion_file "
-        f"pointing to a directory of shard NPZ files. "
+        f"pointing to an HDF5 split directory with manifest.json and shard_*.h5 files. "
         f"Example: {DEFAULT_TRAIN_MOTION_FILE}"
     )
 
