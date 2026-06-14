@@ -95,7 +95,7 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 - Switched default `vr_hand_pose` to a low-latency somehand path with 60 Hz hand retargeting and reduced smoothing.
 - Realtime mode switches and pause/resume now preserve GMR IK warm-starts instead of cold-starting the retargeter on each transition.
 - Added an interactive Pico motion recorder that saves retargeted G1 motion clips as training-ready NPZ files.
-- General-Tracking-G1 training now defaults to uniform motion sampling; clip-local adaptive sampling remains available through `sampling_mode=adaptive`.
+- General-Tracking-G1 training defaults to `rewind` motion sampling and also supports `uniform`; playback/benchmark use `start`.
 - Added optional `sampling_mode=rewind` for training, which restarts failed episodes from the same clip after rewinding a configurable number of policy steps.
 - Added root velocity, joint tracking, and survival rewards to the General-Tracking-G1 training objective.
 - Renamed General-Tracking-G1 observation terms to explicit `ref_*`, `robot_*`, and `prev_action` keys.
@@ -115,7 +115,7 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 
 ### v0.1.1 (2025-03-28)
 
-- Dataset shard-only refactor and `adaptive_bin` sampling
+- Dataset shard-only refactor
 - External asset management (ModelScope), repository slimming
 
 ### v0.1.0 (2025-03-25)

@@ -131,4 +131,4 @@ Key files:
 - `train_mimic/app.py` - Shared entry point for train/play/benchmark
 - `train_mimic/tasks/tracking/config/env.py` - General-Tracking-G1 env builder
 - `train_mimic/tasks/tracking/config/rl.py` - TemporalCNN PPO config
-- `train_mimic/tasks/tracking/mdp/commands.py` - Supports `uniform`, `start`, `adaptive`, and `rewind` sampling modes. Training defaults to `uniform`; playback/benchmark use `start`.
+- `train_mimic/tasks/tracking/mdp/commands.py` - Supports `uniform`, `start`, and `rewind` sampling modes. Training defaults to `rewind`; playback/benchmark use `start`.

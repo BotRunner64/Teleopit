@@ -85,7 +85,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--sampling_mode", type=str, default=None,
-                        choices=["uniform", "start", "adaptive", "rewind"],
+                        choices=["uniform", "start", "rewind"],
                         help="Motion sampling mode (default: from task config)")
     parser.add_argument("--rewind_prob", type=float, default=None,
                         help="Rewind sampling probability for failed episodes")

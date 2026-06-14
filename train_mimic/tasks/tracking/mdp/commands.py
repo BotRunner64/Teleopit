@@ -299,7 +299,6 @@ class MotionLib:
             )
         self.clip_sample_start_s = self.clip_sample_starts.float() * self.clip_dt
         self.clip_sample_end_s = self.clip_sample_ends.float() * self.clip_dt
-        self._adaptive_bin_size_frames: int | None = None
 
     # ------------------------------------------------------------------
     # Sampling helpers
@@ -332,132 +331,6 @@ class MotionLib:
     def sample_start_times(self, motion_ids: torch.Tensor) -> torch.Tensor:
         """Return the earliest valid center time for each motion id."""
         return self.clip_sample_start_s[motion_ids]
-
-    def prepare_adaptive_sampling(self, bin_size_frames: int) -> int:
-        """Build clip-local adaptive sampling bins.
-
-        Bins are cut only from each clip's valid center-frame range, so sampled
-        times never cross into adjacent clips in the flat motion arrays.
-        """
-        if bin_size_frames <= 0:
-            raise ValueError(
-                f"adaptive_bin_size_frames must be positive, got {bin_size_frames}"
-            )
-        if self._adaptive_bin_size_frames == bin_size_frames:
-            return int(self.adaptive_bin_clip_ids.numel())
-
-        clip_sample_starts = self.clip_sample_starts.cpu().numpy()
-        clip_sample_ends = self.clip_sample_ends.cpu().numpy()
-        clip_weights = self.clip_weights.cpu().numpy()
-
-        bin_clip_ids: list[int] = []
-        bin_start_frames: list[int] = []
-        bin_end_frames: list[int] = []
-        bin_base_weights: list[float] = []
-        clip_bin_offsets = np.full(self.num_clips, -1, dtype=np.int64)
-        clip_bin_counts = np.zeros(self.num_clips, dtype=np.int64)
-
-        for clip_id in range(self.num_clips):
-            clip_weight = float(clip_weights[clip_id])
-            sample_start = int(clip_sample_starts[clip_id])
-            sample_end = int(clip_sample_ends[clip_id])
-            valid_length = sample_end - sample_start
-            if clip_weight <= 0.0 or valid_length <= 0:
-                continue
-
-            clip_bin_offsets[clip_id] = len(bin_clip_ids)
-            for start in range(sample_start, sample_end, bin_size_frames):
-                end = min(start + bin_size_frames, sample_end)
-                width = end - start
-                bin_clip_ids.append(clip_id)
-                bin_start_frames.append(start)
-                bin_end_frames.append(end)
-                bin_base_weights.append(clip_weight * float(width) / float(valid_length))
-            clip_bin_counts[clip_id] = len(bin_clip_ids) - clip_bin_offsets[clip_id]
-
-        if not bin_clip_ids:
-            raise ValueError(
-                "Adaptive sampling has no valid bins. Check clip_weights and "
-                f"window_steps={list(self.window_steps)}."
-            )
-
-        device = self._device
-        self.adaptive_bin_clip_ids = torch.tensor(
-            bin_clip_ids, dtype=torch.long, device=device
-        )
-        self.adaptive_bin_start_frames = torch.tensor(
-            bin_start_frames, dtype=torch.float32, device=device
-        )
-        self.adaptive_bin_end_frames = torch.tensor(
-            bin_end_frames, dtype=torch.float32, device=device
-        )
-        self.adaptive_bin_base_probs = torch.tensor(
-            bin_base_weights, dtype=torch.float32, device=device
-        )
-        total = self.adaptive_bin_base_probs.sum()
-        if total <= 0:
-            raise ValueError("Adaptive sampling base probabilities sum to zero.")
-        self.adaptive_bin_base_probs = self.adaptive_bin_base_probs / total
-        self.adaptive_clip_bin_offsets = torch.tensor(
-            clip_bin_offsets, dtype=torch.long, device=device
-        )
-        self.adaptive_clip_bin_counts = torch.tensor(
-            clip_bin_counts, dtype=torch.long, device=device
-        )
-        self._adaptive_bin_size_frames = bin_size_frames
-        return int(self.adaptive_bin_clip_ids.numel())
-
-    def sample_adaptive_times(
-        self,
-        bin_probabilities: torch.Tensor,
-        n: int,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Sample clip ids and clip-local times from adaptive bin probabilities."""
-        if self._adaptive_bin_size_frames is None:
-            raise RuntimeError("prepare_adaptive_sampling() must be called first.")
-        if bin_probabilities.shape != self.adaptive_bin_base_probs.shape:
-            raise ValueError(
-                "adaptive bin probability shape mismatch: "
-                f"{tuple(bin_probabilities.shape)} vs "
-                f"{tuple(self.adaptive_bin_base_probs.shape)}"
-            )
-        sampled_bins = torch.multinomial(bin_probabilities, n, replacement=True)
-        motion_ids = self.adaptive_bin_clip_ids[sampled_bins]
-        starts = self.adaptive_bin_start_frames[sampled_bins]
-        ends = self.adaptive_bin_end_frames[sampled_bins]
-        frame_f = starts + torch.rand_like(starts) * (ends - starts)
-        motion_times = frame_f / self.clip_fps[motion_ids]
-        return motion_ids, motion_times, sampled_bins
-
-    def adaptive_bins_for(
-        self, motion_ids: torch.Tensor, motion_times: torch.Tensor
-    ) -> torch.Tensor:
-        """Return adaptive bin ids for clip-local motion states."""
-        if self._adaptive_bin_size_frames is None:
-            raise RuntimeError("prepare_adaptive_sampling() must be called first.")
-        counts = self.adaptive_clip_bin_counts[motion_ids]
-        offsets = self.adaptive_clip_bin_offsets[motion_ids]
-        bins = torch.full_like(motion_ids, -1)
-        valid = (counts > 0) & (offsets >= 0)
-        if not torch.any(valid):
-            return bins
-
-        valid_ids = motion_ids[valid]
-        local_frames = torch.floor(
-            motion_times[valid] * self.clip_fps[valid_ids]
-        ).long()
-        rel = local_frames - self.clip_sample_starts[valid_ids]
-        local_bins = torch.div(
-            torch.clamp(rel, min=0),
-            self._adaptive_bin_size_frames,
-            rounding_mode="floor",
-        )
-        local_bins = torch.minimum(
-            torch.clamp(local_bins, min=0),
-            counts[valid] - 1,
-        )
-        bins[valid] = offsets[valid] + local_bins
-        return bins
 
     def _compute_interpolation_state(
         self,
@@ -630,23 +503,11 @@ class MotionCommand(CommandTerm):
             device=self.device,
             window_steps=self.cfg.window_steps,
         )
-        if self.cfg.sampling_mode == "adaptive":
-            adaptive_bin_count = self.motion.prepare_adaptive_sampling(
-                self.cfg.adaptive_bin_size_frames
-            )
-        else:
-            adaptive_bin_count = 0
 
         # Per-env motion state: clip id + elapsed time (seconds)
         self.motion_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.motion_times = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
         self._step_dt = env.step_dt
-        self.adaptive_bin_failed_count = torch.zeros(
-            adaptive_bin_count, dtype=torch.float32, device=self.device
-        )
-        self._current_adaptive_bin_failed = torch.zeros(
-            adaptive_bin_count, dtype=torch.float32, device=self.device
-        )
 
         # Cached interpolated frames — refreshed every step
         self._cached_frames: dict[str, torch.Tensor] = {}
@@ -679,9 +540,6 @@ class MotionCommand(CommandTerm):
         self.metrics["error_body_rot"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["error_joint_pos"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["error_joint_vel"] = torch.zeros(self.num_envs, device=self.device)
-        self.metrics["sampling_entropy"] = torch.zeros(self.num_envs, device=self.device)
-        self.metrics["sampling_top1_prob"] = torch.zeros(self.num_envs, device=self.device)
-        self.metrics["sampling_failed_bin_mean"] = torch.zeros(self.num_envs, device=self.device)
 
         if self.cfg.feet_body_names:
             self._feet_body_indexes = [
@@ -926,62 +784,6 @@ class MotionCommand(CommandTerm):
         self.motion_ids[env_ids] = self.motion.sample_motion_ids(len(env_ids))
         self.motion_times[env_ids] = self.motion.sample_times(self.motion_ids[env_ids])
 
-    def _update_adaptive_sampling_metrics(
-        self,
-        sampling_probabilities: torch.Tensor,
-    ) -> None:
-        entropy = -(
-            sampling_probabilities * (sampling_probabilities + 1e-12).log()
-        ).sum()
-        if sampling_probabilities.numel() > 1:
-            entropy = entropy / torch.log(
-                torch.tensor(
-                    float(sampling_probabilities.numel()),
-                    dtype=torch.float32,
-                    device=self.device,
-                )
-            )
-        pmax = sampling_probabilities.max()
-        failed = self.adaptive_bin_failed_count
-        self.metrics["sampling_entropy"][:] = entropy
-        self.metrics["sampling_top1_prob"][:] = pmax
-        self.metrics["sampling_failed_bin_mean"][:] = failed.mean()
-
-    def _adaptive_sampling_probabilities(self) -> torch.Tensor:
-        sampling_probabilities = (
-            self.adaptive_bin_failed_count
-            + self.cfg.adaptive_uniform_ratio * self.motion.adaptive_bin_base_probs
-        )
-        probability_sum = sampling_probabilities.sum()
-        if probability_sum <= 0:
-            return self.motion.adaptive_bin_base_probs
-        return sampling_probabilities / probability_sum
-
-    def _adaptive_sampling(self, env_ids: torch.Tensor):
-        episode_failed = self._env.termination_manager.terminated[env_ids]
-        if torch.any(episode_failed):
-            failed_env_ids = env_ids[episode_failed]
-            failed_bins = self.motion.adaptive_bins_for(
-                self.motion_ids[failed_env_ids],
-                self.motion_times[failed_env_ids],
-            )
-            failed_bins = failed_bins[failed_bins >= 0]
-            if failed_bins.numel() > 0:
-                self._current_adaptive_bin_failed += torch.bincount(
-                    failed_bins,
-                    minlength=self.adaptive_bin_failed_count.numel(),
-                ).to(dtype=torch.float32, device=self.device)
-
-        sampling_probabilities = self._adaptive_sampling_probabilities()
-        motion_ids, motion_times, _sampled_bins = self.motion.sample_adaptive_times(
-            sampling_probabilities,
-            len(env_ids),
-        )
-        self.motion_ids[env_ids] = motion_ids
-        self.motion_times[env_ids] = motion_times
-
-        self._update_adaptive_sampling_metrics(sampling_probabilities)
-
     def _rewind_sampling(self, env_ids: torch.Tensor) -> None:
         _validate_rewind_sampling_cfg(self.cfg)
 
@@ -1023,14 +825,12 @@ class MotionCommand(CommandTerm):
             self.motion_times[env_ids] = self.motion.sample_start_times(self.motion_ids[env_ids])
         elif self.cfg.sampling_mode == "uniform":
             self._uniform_sampling(env_ids)
-        elif self.cfg.sampling_mode == "adaptive":
-            self._adaptive_sampling(env_ids)
         elif self.cfg.sampling_mode == "rewind":
             self._rewind_sampling(env_ids)
         else:
             raise ValueError(
                 f"Unsupported motion sampling_mode={self.cfg.sampling_mode!r}. "
-                "Supported modes are 'uniform', 'start', 'adaptive', and 'rewind'."
+                "Supported modes are 'uniform', 'start', and 'rewind'."
             )
 
         if env_ids.numel() == 0:
@@ -1155,55 +955,8 @@ class MotionCommand(CommandTerm):
             delta_ori_w, self.body_pos_w - anchor_pos_w_repeat
         )
 
-        if self.cfg.sampling_mode == "adaptive":
-            self.adaptive_bin_failed_count = (
-                self.cfg.adaptive_alpha * self._current_adaptive_bin_failed
-                + (1.0 - self.cfg.adaptive_alpha) * self.adaptive_bin_failed_count
-            )
-            self._current_adaptive_bin_failed.zero_()
-            self._update_adaptive_sampling_metrics(
-                self._adaptive_sampling_probabilities()
-            )
-
         self._refresh_body_local_cache()
         self._update_feet_standing()
-
-    def get_adaptive_sampling_state(self) -> dict[str, torch.Tensor | int] | None:
-        if self.cfg.sampling_mode != "adaptive":
-            return None
-        return {
-            "adaptive_bin_size_frames": int(self.cfg.adaptive_bin_size_frames),
-            "adaptive_bin_failed_count": self.adaptive_bin_failed_count.detach().cpu(),
-            "current_adaptive_bin_failed": self._current_adaptive_bin_failed.detach().cpu(),
-        }
-
-    def load_adaptive_sampling_state(self, state: dict[str, torch.Tensor | int]) -> None:
-        if self.cfg.sampling_mode != "adaptive":
-            return
-        bin_size = int(state.get("adaptive_bin_size_frames", -1))
-        if bin_size != self.cfg.adaptive_bin_size_frames:
-            raise ValueError(
-                "adaptive sampling checkpoint bin size mismatch: "
-                f"checkpoint={bin_size}, current={self.cfg.adaptive_bin_size_frames}"
-            )
-        failed_count = state.get("adaptive_bin_failed_count")
-        current_failed = state.get("current_adaptive_bin_failed")
-        if not isinstance(failed_count, torch.Tensor) or not isinstance(current_failed, torch.Tensor):
-            raise ValueError("adaptive sampling checkpoint state is missing tensors")
-        if failed_count.shape != self.adaptive_bin_failed_count.shape:
-            raise ValueError(
-                "adaptive sampling checkpoint bin count mismatch: "
-                f"checkpoint={tuple(failed_count.shape)}, "
-                f"current={tuple(self.adaptive_bin_failed_count.shape)}"
-            )
-        if current_failed.shape != self._current_adaptive_bin_failed.shape:
-            raise ValueError(
-                "adaptive sampling checkpoint current-bin count mismatch: "
-                f"checkpoint={tuple(current_failed.shape)}, "
-                f"current={tuple(self._current_adaptive_bin_failed.shape)}"
-            )
-        self.adaptive_bin_failed_count.copy_(failed_count.to(self.device))
-        self._current_adaptive_bin_failed.copy_(current_failed.to(self.device))
 
     # ------------------------------------------------------------------
     # Visualization
@@ -1289,11 +1042,8 @@ class MotionCommandCfg(CommandTermCfg):
     pose_range: dict[str, tuple[float, float]] = field(default_factory=dict)
     velocity_range: dict[str, tuple[float, float]] = field(default_factory=dict)
     joint_position_range: tuple[float, float] = (-0.52, 0.52)
-    sampling_mode: Literal["uniform", "start", "adaptive", "rewind"] = "uniform"
+    sampling_mode: Literal["uniform", "start", "rewind"] = "rewind"
     window_steps: tuple[int, ...] = (0,)
-    adaptive_bin_size_frames: int = 10
-    adaptive_uniform_ratio: float = 0.1
-    adaptive_alpha: float = 0.001
     rewind_prob: float = 0.8
     rewind_min_steps: int = 25
     rewind_max_steps: int = 75

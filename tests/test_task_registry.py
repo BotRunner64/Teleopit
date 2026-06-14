@@ -56,7 +56,7 @@ def test_general_tracking_task_is_registered() -> None:
     ]
     assert "actor_history" in env_cfg.observations
     assert "critic_history" in env_cfg.observations
-    assert env_cfg.commands["motion"].sampling_mode == "uniform"
+    assert env_cfg.commands["motion"].sampling_mode == "rewind"
     assert env_cfg.commands["motion"].window_steps == (0,)
     assert env_cfg.rewards["motion_global_root_lin_vel"].weight == 1.0
     assert env_cfg.rewards["motion_global_root_lin_vel"].params == {

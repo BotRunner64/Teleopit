@@ -96,26 +96,6 @@ class MotionTrackingOnPolicyRunner(MjlabOnPolicyRunner):
     def _motion_command(self) -> MotionCommand:
         return cast(MotionCommand, self.env.unwrapped.command_manager.get_term("motion"))
 
-    def save(self, path: str, infos=None) -> None:
-        motion_state = self._motion_command().get_adaptive_sampling_state()
-        if motion_state is not None:
-            infos = {**(infos or {}), "motion_adaptive_sampling_state": motion_state}
-        super().save(path, infos)
-
-    def load(
-        self,
-        path: str,
-        load_cfg: dict | None = None,
-        strict: bool = True,
-        map_location: str | None = None,
-    ) -> dict:
-        infos = super().load(path, load_cfg=load_cfg, strict=strict, map_location=map_location)
-        if infos and "motion_adaptive_sampling_state" in infos:
-            self._motion_command().load_adaptive_sampling_state(
-                infos["motion_adaptive_sampling_state"]
-            )
-        return infos
-
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         """Run the learning loop using 1-based iteration numbering."""
         if init_at_random_ep_len:
