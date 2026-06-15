@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from functools import partial
 import sys
 import types
 from pathlib import Path
@@ -34,6 +35,7 @@ def _args(**overrides: object) -> argparse.Namespace:
         "logger": "tensorboard",
         "experiment_name": None,
         "motion_file": "data/datasets/twist2",
+        "robot_xml": None,
         "resume": None,
         "sampling_mode": None,
         "rewind_prob": None,
@@ -69,6 +71,10 @@ class TestTrainLauncherHelpers:
         args = train.parse_args(["--gpu_ids", "0", "2", "3", "--master_port", "29600"])
         assert args.gpu_ids == [0, 2, 3]
         assert args.master_port == 29600
+
+    def test_parse_args_accepts_robot_xml(self) -> None:
+        args = train.parse_args(["--robot_xml", "assets/robots/unitree_g1/g1_29dof_dex3.xml"])
+        assert args.robot_xml == "assets/robots/unitree_g1/g1_29dof_dex3.xml"
 
     def test_should_launch_multi_gpu(self) -> None:
         args = _args(gpu_ids=[0, 1, 2, 3])
@@ -185,6 +191,7 @@ class TestTrainLauncherHelpers:
                 )
             },
             scene=types.SimpleNamespace(num_envs=64),
+            robot_xml="/tmp/g1.xml",
         )
 
         active = train._configure_experiment_logger(
@@ -206,6 +213,7 @@ class TestTrainLauncherHelpers:
                     "config": {
                         "experiment_name": "exp",
                         "motion_file": "data/train",
+                        "robot_xml": "/tmp/g1.xml",
                         "num_envs": 64,
                         "max_iterations": 10,
                         "sampling_mode": "uniform",
@@ -241,6 +249,16 @@ class TestTrainLauncherHelpers:
 
 def test_tracking_runner_configs_disable_model_upload() -> None:
     assert make_general_tracking_ppo_runner_cfg().upload_model is False
+
+
+def test_make_g1_training_robot_cfg_uses_requested_xml() -> None:
+    from train_mimic.tasks.tracking.config.env import make_g1_training_robot_cfg
+
+    xml_path = Path("assets/robots/unitree_g1/g1_29dof_dex3.xml").resolve()
+    robot_cfg = make_g1_training_robot_cfg(xml_path)
+
+    assert isinstance(robot_cfg.spec_fn, partial)
+    assert robot_cfg.spec_fn.args == (xml_path,)
 
 
 def test_validate_motion_file_accepts_shard_directories(tmp_path: Path) -> None:

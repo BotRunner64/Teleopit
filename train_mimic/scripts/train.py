@@ -50,6 +50,10 @@ from train_mimic.app import (
     validate_motion_file,
 )
 from train_mimic.tasks.tracking.config.constants import DEFAULT_TRAIN_MOTION_FILE
+from train_mimic.tasks.tracking.config.env import (
+    make_g1_training_robot_cfg,
+    resolve_g1_training_xml,
+)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -75,6 +79,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--experiment_name", type=str, default=None)
     parser.add_argument("--motion_file", type=str, default=None,
                         help="Dataset root containing Teleopit shard_*.h5 files, searched recursively")
+    parser.add_argument(
+        "--robot_xml",
+        type=str,
+        default=None,
+        help=(
+            "MuJoCo XML used for the G1 training robot "
+            "(default: assets/robots/unitree_g1/g1_29dof.xml)"
+        ),
+    )
     parser.add_argument(
         "--resume",
         type=str,
@@ -297,6 +310,7 @@ def _configure_experiment_logger(
         config={
             "experiment_name": agent_cfg.experiment_name,
             "motion_file": env_cfg.commands["motion"].motion_file,
+            "robot_xml": getattr(env_cfg, "robot_xml", None),
             "num_envs": env_cfg.scene.num_envs,
             "max_iterations": agent_cfg.max_iterations,
             "sampling_mode": env_cfg.commands["motion"].sampling_mode,
@@ -379,6 +393,11 @@ def _run_worker(args: argparse.Namespace) -> None:
     # CLI overrides
     env_cfg.seed = _resolve_worker_seed(args.seed)
     env_cfg.commands["motion"].cache_seed = env_cfg.seed
+    robot_xml = resolve_g1_training_xml(args.robot_xml)
+    if not robot_xml.is_file():
+        raise FileNotFoundError(f"G1 training MuJoCo XML not found: {robot_xml}")
+    env_cfg.scene.entities["robot"] = make_g1_training_robot_cfg(robot_xml)
+    env_cfg.robot_xml = str(robot_xml)
     if args.num_envs is not None:
         env_cfg.scene.num_envs = args.num_envs
     if args.motion_file is not None:

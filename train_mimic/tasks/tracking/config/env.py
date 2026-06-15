@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from functools import partial
+from pathlib import Path
 
 import mujoco
 
@@ -47,20 +49,33 @@ _TRAIN_ONLY_EVENTS = (
 )
 
 
-def _get_g1_training_spec() -> mujoco.MjSpec:
-    if not UNITREE_G1_XML.is_file():
+def resolve_g1_training_xml(robot_xml: str | Path | None = None) -> Path:
+    """Resolve the MuJoCo XML used for G1 policy training."""
+    if robot_xml is None or str(robot_xml).strip() == "":
+        return UNITREE_G1_XML.resolve()
+
+    path = Path(robot_xml).expanduser()
+    if not path.is_absolute():
+        path = (Path.cwd() / path).resolve()
+    return path
+
+
+def _get_g1_training_spec(robot_xml: str | Path | None = None) -> mujoco.MjSpec:
+    xml_path = resolve_g1_training_xml(robot_xml)
+    if not xml_path.is_file():
         raise FileNotFoundError(
-            missing_gmr_assets_message(UNITREE_G1_XML, label="G1 training MuJoCo XML")
+            missing_gmr_assets_message(xml_path, label="G1 training MuJoCo XML")
         )
-    spec = mujoco.MjSpec.from_file(str(UNITREE_G1_XML))
+    spec = mujoco.MjSpec.from_file(str(xml_path))
     for actuator in list(spec.actuators):
         spec.delete(actuator)
     return spec
 
 
-def _get_g1_training_robot_cfg():
+def make_g1_training_robot_cfg(robot_xml: str | Path | None = None):
     robot_cfg = get_g1_robot_cfg()
-    robot_cfg.spec_fn = _get_g1_training_spec
+    xml_path = resolve_g1_training_xml(robot_xml)
+    robot_cfg.spec_fn = partial(_get_g1_training_spec, xml_path)
     return robot_cfg
 
 
@@ -189,7 +204,7 @@ def make_general_tracking_env_cfg(
     """Create the General-Tracking-G1 training env."""
     cfg = make_tracking_env_cfg()
 
-    cfg.scene.entities = {"robot": _get_g1_training_robot_cfg()}
+    cfg.scene.entities = {"robot": make_g1_training_robot_cfg()}
 
     joint_pos_action = cfg.actions["joint_pos"]
     assert isinstance(joint_pos_action, JointPositionActionCfg)
