@@ -53,7 +53,7 @@ Teleopit targets pico-bridge 0.2.1 and its `pico_native` tracking semantics.
 
 ```bash
 pip install modelscope
-python scripts/setup/download_assets.py --only gmr ckpt bvh
+python scripts/setup/download_assets.py --only robots gmr ckpt bvh
 ```
 
 ## 4. Run Pico Sim2Sim

@@ -40,3 +40,14 @@ def test_resolve_entry_source_uses_only_current_remote_layout(tmp_path: Path) ->
     )
 
     assert _resolve_entry_source(tmp_path, entry) == archive
+
+
+def test_robot_asset_group_uses_archive_layout() -> None:
+    from teleopit.runtime.external_assets import ASSET_GROUPS
+
+    entries = ASSET_GROUPS["robots"]
+
+    assert len(entries) == 1
+    assert entries[0].remote_path == "archives/robot_assets.tar.gz"
+    assert entries[0].local_path == "assets/robots"
+    assert entries[0].mode == "extract"

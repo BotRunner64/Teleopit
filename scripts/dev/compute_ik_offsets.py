@@ -33,6 +33,8 @@ import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
+from teleopit.runtime.assets import UNITREE_G1_XML
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -184,15 +186,7 @@ def main():
     if not config_path.is_absolute():
         config_path = PROJECT_ROOT / config_path
 
-    xml_path = str(
-        PROJECT_ROOT
-        / "teleopit"
-        / "retargeting"
-        / "gmr"
-        / "assets"
-        / "unitree_g1"
-        / "g1_mocap_29dof.xml"
-    )
+    xml_path = str(UNITREE_G1_XML)
 
     with open(config_path) as f:
         config = json.load(f)

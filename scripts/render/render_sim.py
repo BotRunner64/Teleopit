@@ -31,6 +31,7 @@ import imageio  # noqa: E402
 import mujoco  # noqa: E402
 
 from teleopit.debug.rollout_trace import RolloutTraceWriter  # noqa: E402
+from teleopit.runtime.assets import UNITREE_G1_XML  # noqa: E402
 from teleopit.sim.mocap_mujoco import (  # noqa: E402
     MocapSkeletonSceneDrawer,
     fit_mocap_camera,
@@ -191,17 +192,7 @@ def render_retarget(
     project_root = _find_project_root()
     cfgs = _load_configs(str(bvh_path), project_root, bvh_format, policy_path=None)
 
-    # Retarget rendering uses the GMR mocap XML (no actuator limits needed)
-    mocap_xml = (
-        project_root
-        / "teleopit"
-        / "retargeting"
-        / "gmr"
-        / "assets"
-        / "unitree_g1"
-        / "g1_mocap_29dof.xml"
-    )
-    cfgs["robot"].xml_path = str(mocap_xml)
+    cfgs["robot"].xml_path = str(UNITREE_G1_XML)
 
     from teleopit.inputs import BVHInputProvider
     from teleopit.retargeting.core import RetargetingModule

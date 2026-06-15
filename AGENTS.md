@@ -87,7 +87,7 @@ train_mimic/              # Training package
 ### Sim2Sim Pipeline
 - Policy runs at 50Hz, PD control at 1000Hz (`decimation=20`, `sim_dt=0.001`)
 - Action flow: `compute_action()` returns raw action → `get_target_dof_pos()` applies clip `[-10, 10]`, scale, and `default_dof_pos`
-- Must use `g1_mjlab.xml` for sim2sim; `g1_mocap_29dof.xml` clamps torques to `±1 Nm` and is only for kinematic retarget visualization
+- Must use `assets/robots/unitree_g1/g1_29dof.xml` for training, sim2sim, dataset FK, and retargeting; it is the canonical G1 XML entry point
 
 ### Multi-Viewer Support
 `SimulationLoop` supports multiple simultaneous viewer windows controlled by the `viewers` config:
@@ -223,15 +223,16 @@ python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_general_trac
 ```
 
 ### GMR Retargeting
-- Self-contained in `teleopit/retargeting/gmr/`; assets need `scripts/setup/download_assets.py --only gmr`
+- Self-contained in `teleopit/retargeting/gmr/`; assets need `scripts/setup/download_assets.py --only robots gmr`
 - Supports `lafan1` BVH (22 joints, 30fps, centimeters)
 - Supports `hc_mocap` BVH (50 joints, 60fps downsampled to 30fps, meters)
 - `lafan1-resolved` still needs an adapter layer and remains unsupported
 
 ### External Assets
 - Do not commit robot meshes, datasets, checkpoints, or demo media to Git; use `scripts/setup/download_assets.py`
+- `assets/robots/unitree_g1/g1_29dof.xml` and its meshes are the canonical G1 robot model assets; they are downloaded from the `robots` asset group and are not tracked in Git
 - `teleopit/retargeting/gmr/assets/` is gitignored; downloaded at runtime
-- `train_mimic/assets/` is no longer tracked; FK tooling reuses `teleopit/retargeting/gmr/assets/unitree_g1/g1_mjlab.xml`
+- `train_mimic/assets/` is no longer tracked; FK tooling reuses `assets/robots/unitree_g1/g1_29dof.xml`
 - `third_party/linkerhand-python-sdk` and `third_party/somehand` support optional LinkerHand L6 sim2real control
 - Run `python scripts/check_large_tracked_files.py` before pushing
 
@@ -248,7 +249,7 @@ Asset group → repo mapping is defined in `teleopit/runtime/external_assets.py`
 
 ```bash
 # 1. Prepare upload directory
-python scripts/setup/prepare_modelscope_assets.py --only ckpt gmr bvh --clean
+python scripts/setup/prepare_modelscope_assets.py --only ckpt robots gmr bvh --clean
 python scripts/setup/prepare_modelscope_assets.py --only data
 
 # 2. Upload to each repo
@@ -299,4 +300,4 @@ pytest tests/ -v
 ## Known Issues
 
 1. `lafan1-resolved` retargeting is still broken because it uses a different BVH skeleton layout.
-2. `g1_mocap_29dof.xml` still has `ctrlrange="-1 1"`; never use it for sim2sim.
+2. Legacy downloaded GMR XMLs under `teleopit/retargeting/gmr/assets/unitree_g1/` are not the project entry point; use `assets/robots/unitree_g1/g1_29dof.xml`.

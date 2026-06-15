@@ -9,7 +9,7 @@ sidebar_position: 3
 ## 前置条件
 
 1. [安装 Teleopit](installation)（推理配置）
-2. [下载资源](download-assets)（`--only gmr ckpt bvh`）
+2. [下载资源](download-assets)（`--only robots gmr ckpt bvh`）
 
 ## 运行离线 Sim2Sim
 

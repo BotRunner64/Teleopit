@@ -4,11 +4,12 @@ sidebar_position: 2
 
 # Asset Management
 
-Robot models, datasets, checkpoints, and demo media are not tracked in Git. They are distributed via ModelScope and HuggingFace.
+Datasets, checkpoints, robot models, and demo media are not tracked in Git. They are distributed via ModelScope and HuggingFace. The canonical Unitree G1 model is downloaded to `assets/robots/unitree_g1/g1_29dof.xml`.
 
 ## What's Not in Git
 
-- `teleopit/retargeting/gmr/assets/` - Robot meshes, URDF/MJCF
+- `assets/robots/` - Canonical robot XML/meshes
+- `teleopit/retargeting/gmr/assets/` - GMR retargeting assets, IK configs, and non-canonical robot descriptions
 - `data/`, checkpoints, caches
 - Demo media (`assets/demo.gif`, `assets/demo.mp4`)
 
@@ -33,6 +34,7 @@ Robot models, datasets, checkpoints, and demo media are not tracked in Git. They
 | Group | Repository | Remote Path |
 |-------|-----------|-------------|
 | `ckpt` | Teleopit-models | `checkpoints/track.onnx`, `checkpoints/track.pt` |
+| `robots` | Teleopit-models | `archives/robot_assets.tar.gz` |
 | `gmr` | Teleopit-models | `archives/gmr_assets.tar.gz` |
 | `bvh` | Teleopit-models | `archives/sample_bvh.tar.gz` |
 | `data` | Teleopit-datasets | `data/` |
@@ -46,7 +48,7 @@ Use the project download script (defaults to ModelScope):
 python scripts/setup/download_assets.py
 
 # Only inference essentials
-python scripts/setup/download_assets.py --only gmr ckpt bvh
+python scripts/setup/download_assets.py --only robots gmr ckpt bvh
 
 # Only training data
 python scripts/setup/download_assets.py --only data
@@ -61,6 +63,7 @@ Local paths after download:
 |--------|-------|
 | `checkpoints/track.onnx` | `track.onnx` |
 | `checkpoints/track.pt` | `track.pt` |
+| `archives/robot_assets.tar.gz` | `assets/robots/` (extracted) |
 | `archives/gmr_assets.tar.gz` | `teleopit/retargeting/gmr/assets/` (extracted) |
 | `archives/sample_bvh.tar.gz` | `data/sample_bvh/` (extracted) |
 | `data/` | `data/datasets/seed/` |
@@ -70,7 +73,7 @@ Local paths after download:
 ### Step 1: Prepare Upload Directory
 
 ```bash
-python scripts/setup/prepare_modelscope_assets.py --only ckpt gmr bvh --clean
+python scripts/setup/prepare_modelscope_assets.py --only ckpt robots gmr bvh --clean
 python scripts/setup/prepare_modelscope_assets.py --only data
 ```
 
@@ -111,7 +114,7 @@ Tags should match Git tags for traceability.
 
 ```bash
 # Prepare and upload model assets (--clean ensures no leftover files)
-python scripts/setup/upload_hf_assets.py --only ckpt gmr bvh --clean
+python scripts/setup/upload_hf_assets.py --only ckpt robots gmr bvh --clean
 
 # Prepare and upload dataset
 python scripts/setup/upload_hf_assets.py --only data --clean

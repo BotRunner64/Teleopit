@@ -46,7 +46,7 @@ ls_iterations: 20
 # Use built-in PD actuators matching mjlab training
 builtin_pd: true
 
-xml_path: "teleopit/retargeting/gmr/assets/unitree_g1/g1_mjlab.xml"
+xml_path: "assets/robots/unitree_g1/g1_29dof.xml"
 base_body: "pelvis"
 
 ang_vel_scale: 0.25

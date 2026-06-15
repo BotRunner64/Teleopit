@@ -22,7 +22,7 @@ from teleopit.recording.pico_motion import (
     write_motion_clip_npz,
 )
 from teleopit.retargeting.core import RetargetingModule
-from teleopit.runtime.assets import PROJECT_ROOT, UNITREE_G1_MJLAB_XML, missing_gmr_assets_message
+from teleopit.runtime.assets import PROJECT_ROOT, UNITREE_G1_XML, missing_gmr_assets_message
 from teleopit.runtime.common import cfg_get
 from teleopit.runtime.terminal_keyboard import TerminalKeyboardReader
 from teleopit.sim.viewer_subprocess import start_robot_viewer
@@ -31,7 +31,7 @@ from teleopit.sim.viewer_subprocess import start_robot_viewer
 class RetargetPreview:
     """Small wrapper around the existing MuJoCo retarget viewer subprocess."""
 
-    def __init__(self, xml_path: str | Path = UNITREE_G1_MJLAB_XML, *, enabled: bool = True) -> None:
+    def __init__(self, xml_path: str | Path = UNITREE_G1_XML, *, enabled: bool = True) -> None:
         self.enabled = bool(enabled)
         self._proc = None
         self._arr = None

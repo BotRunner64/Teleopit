@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import mujoco
+
 from mjlab.asset_zoo.robots import G1_ACTION_SCALE, get_g1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
@@ -17,6 +19,7 @@ from train_mimic.tasks.tracking import mdp
 from train_mimic.tasks.tracking.config.constants import DEFAULT_TRAIN_MOTION_FILE
 from train_mimic.tasks.tracking.mdp import MotionCommandCfg
 from train_mimic.tasks.tracking.tracking_env_cfg import make_tracking_env_cfg
+from teleopit.runtime.assets import UNITREE_G1_XML, missing_gmr_assets_message
 
 _TRACKING_BODY_NAMES = (
     "pelvis",
@@ -42,6 +45,23 @@ _TRAIN_ONLY_EVENTS = (
     "physics_material",
     "randomize_rigid_body_mass",
 )
+
+
+def _get_g1_training_spec() -> mujoco.MjSpec:
+    if not UNITREE_G1_XML.is_file():
+        raise FileNotFoundError(
+            missing_gmr_assets_message(UNITREE_G1_XML, label="G1 training MuJoCo XML")
+        )
+    spec = mujoco.MjSpec.from_file(str(UNITREE_G1_XML))
+    for actuator in list(spec.actuators):
+        spec.delete(actuator)
+    return spec
+
+
+def _get_g1_training_robot_cfg():
+    robot_cfg = get_g1_robot_cfg()
+    robot_cfg.spec_fn = _get_g1_training_spec
+    return robot_cfg
 
 
 def _apply_play_mode_overrides(cfg: ManagerBasedRlEnvCfg) -> None:
@@ -169,7 +189,7 @@ def make_general_tracking_env_cfg(
     """Create the General-Tracking-G1 training env."""
     cfg = make_tracking_env_cfg()
 
-    cfg.scene.entities = {"robot": get_g1_robot_cfg()}
+    cfg.scene.entities = {"robot": _get_g1_training_robot_cfg()}
 
     joint_pos_action = cfg.actions["joint_pos"]
     assert isinstance(joint_pos_action, JointPositionActionCfg)

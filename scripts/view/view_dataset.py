@@ -19,10 +19,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from mjlab.viewer.viser import ViserMujocoScene
 
-from teleopit.runtime.assets import UNITREE_G1_MJLAB_XML, missing_gmr_assets_message
+from teleopit.runtime.assets import UNITREE_G1_XML, missing_gmr_assets_message
 from train_mimic.data.dataset_lib import find_motion_shards, read_motion_clip
 
-DEFAULT_XML = UNITREE_G1_MJLAB_XML
+DEFAULT_XML = UNITREE_G1_XML
 
 
 @dataclass(frozen=True)

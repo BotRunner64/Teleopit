@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from teleopit.runtime.assets import UNITREE_G1_XML
+
 BASE_DIR = Path(__file__).parent
 
 
@@ -11,7 +13,7 @@ IK_CONFIG_ROOT = _resolve_path("ik_configs")
 ASSET_ROOT = _resolve_path("assets")
 
 ROBOT_XML_DICT = {
-    "unitree_g1": _resolve_path("assets/unitree_g1/g1_mocap_29dof.xml"),
+    "unitree_g1": UNITREE_G1_XML,
     "unitree_g1_with_hands": _resolve_path("assets/unitree_g1/g1_mocap_29dof_with_hands.xml"),
     "unitree_h1": _resolve_path("assets/unitree_h1/h1.xml"),
     "unitree_h1_2": _resolve_path("assets/unitree_h1_2/h1_2_handless.xml"),

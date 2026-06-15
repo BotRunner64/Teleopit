@@ -183,6 +183,27 @@ def test_motion_lib_global_cache_sampling_weights_follow_valid_duration(tmp_path
     )
 
 
+def test_motion_cache_sampler_draws_global_ids_randomly_by_valid_duration(tmp_path: Path) -> None:
+    motion_path = _write_shard_dir(
+        tmp_path / "motion_weighted_global",
+        [
+            _clip_dict(num_frames=3, fps=10),
+            _clip_dict(num_frames=11, fps=10),
+        ],
+    )
+
+    motion = MotionLib(
+        str(motion_path),
+        body_indexes=torch.tensor([0, 1], dtype=torch.long),
+        window_steps=(0,),
+    )
+
+    ids = torch.cat([motion._cache._sample_global_ids() for _ in range(256)])
+    counts = torch.bincount(ids.cpu(), minlength=2).float()
+
+    assert counts[1] > counts[0] * 3.0
+
+
 def test_motion_lib_rejects_shard_body_name_mismatch(tmp_path: Path) -> None:
     motion_path = tmp_path / "motion_mismatch"
     clip = _clip_dict()

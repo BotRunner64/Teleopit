@@ -9,10 +9,10 @@ from typing import Iterable
 import mujoco
 import numpy as np
 
-from teleopit.runtime.assets import UNITREE_G1_MJLAB_XML, missing_gmr_assets_message
+from teleopit.runtime.assets import UNITREE_G1_XML, missing_gmr_assets_message
 
 
-DEFAULT_G1_XML_PATH = UNITREE_G1_MJLAB_XML
+DEFAULT_G1_XML_PATH = UNITREE_G1_XML
 
 
 def quat_xyzw_to_wxyz(q: np.ndarray) -> np.ndarray:

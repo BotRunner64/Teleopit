@@ -2,7 +2,7 @@
 """Prepare a compact upload directory for the ModelScope asset repos.
 
 Asset groups by destination repo:
-  model   (BingqianWu/Teleopit-models):   ckpt, gmr, bvh
+  model   (BingqianWu/Teleopit-models):   ckpt, robots, gmr, bvh
   dataset (BingqianWu/Teleopit-datasets): data
 """
 

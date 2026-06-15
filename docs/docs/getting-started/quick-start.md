@@ -9,7 +9,7 @@ This guide walks you through running your first sim2sim playback in under 5 minu
 ## Prerequisites
 
 1. [Install Teleopit](installation) (inference profile)
-2. [Download assets](download-assets) (`--only gmr ckpt bvh`)
+2. [Download assets](download-assets) (`--only robots gmr ckpt bvh`)
 
 ## Run Offline Sim2Sim
 

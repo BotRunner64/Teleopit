@@ -168,6 +168,6 @@ print(cfg.init_state.joint_pos)  # 必须与 g1.yaml default_angles 一致
 
 ### 解决方案
 
-更新 `teleopit/configs/robot/g1.yaml` 和 `g1_mjlab.xml`，使其与训练环境的值一致（default angles、armature、condim）。
+更新 `teleopit/configs/robot/g1.yaml` 和 `assets/robots/unitree_g1/g1_29dof.xml`，使其与训练环境的值一致（default angles、armature、condim）。
 
 此修复同时影响 sim2real 路径，因为 `default_angles` 被 `rl_policy.py` 和 `observation.py` 共用。

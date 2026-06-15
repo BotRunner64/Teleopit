@@ -32,8 +32,12 @@ pip install -e .
 
 ```bash
 pip install modelscope
-python scripts/setup/download_assets.py --only gmr ckpt bvh
+python scripts/setup/download_assets.py --only robots gmr ckpt bvh
 ```
+
+The canonical Unitree G1 robot model is downloaded to
+`assets/robots/unitree_g1/g1_29dof.xml`. Training, sim2sim, retargeting, and FK
+validation all use this same XML.
 
 **3. Run**
 

@@ -52,7 +52,7 @@ Teleopit 面向 pico-bridge 0.2.1 及其 `pico_native` tracking 语义。
 
 ```bash
 pip install modelscope
-python scripts/setup/download_assets.py --only gmr ckpt bvh
+python scripts/setup/download_assets.py --only robots gmr ckpt bvh
 ```
 
 ## 4. 运行 Pico Sim2Sim

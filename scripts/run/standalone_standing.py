@@ -111,7 +111,7 @@ JOINT_POS_UPPER = np.array([
 ], dtype=np.float32)
 
 # MuJoCo XML path for FK
-MJCF_PATH = _REPO_ROOT / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_mjlab.xml"
+MJCF_PATH = _REPO_ROOT / "assets" / "robots" / "unitree_g1" / "g1_29dof.xml"
 
 JOINT_MAP = list(range(NUM_JOINTS))
 GRAVITY_UNIT_W = np.array([0.0, 0.0, -1.0], dtype=np.float32)
