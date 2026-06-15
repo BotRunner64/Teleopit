@@ -29,8 +29,7 @@ python scripts/setup/download_assets.py --only gmr ckpt bvh
 |------|------|------|
 | `track.onnx` | 4 MB | ONNX 推理模型 |
 | `track.pt` | 27 MB | PyTorch 检查点（用于恢复训练） |
-| `data/datasets/seed/train/manifest.json` + `shard_*.h5` | ~25 GB | 训练数据集 |
-| `data/datasets/seed/val/manifest.json` + `shard_*.h5` | ~1.4 GB | 验证数据集 |
+| `data/datasets/seed/shard_*.h5` | ~26 GB | 训练数据集 |
 | `data/sample_bvh/*.bvh` | 5 MB | 示例动捕文件 |
 | `teleopit/retargeting/gmr/assets/` | ~1.2 GB | GMR 重定向机器人模型 |
 

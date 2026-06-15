@@ -41,9 +41,8 @@ def main() -> int:
         output_root=args.output_root,
     )
     print(f"[DONE] dataset={report['dataset']}")
-    print(f"[DONE] train={report['splits']['train']['output']}")
-    print(f"[DONE] val={report['splits']['val']['output']}")
-    print(f"[DONE] build_info={report['dataset_dir']}/build_info.json")
+    print(f"[DONE] output={report['dataset_dir']}")
+    print(f"[DONE] shards={len(report.get('shards', []))}")
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0

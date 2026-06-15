@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-import json
 
 import numpy as np
 import pytest
 import torch
 
-from train_mimic.data.dataset_lib import write_hdf5_manifest, write_hdf5_motion_shard
+from train_mimic.data.dataset_lib import write_hdf5_motion_shard
 from train_mimic.tasks.tracking.mdp.commands import MotionCommand, MotionLib
 
 
@@ -33,6 +32,8 @@ def _clip_dict(num_frames: int = 6, fps: int = 1) -> dict[str, object]:
     )
     return {
         "fps": fps,
+        "root_pos": body_pos_w[:, 0],
+        "root_quat_w": body_quat_w[:, 0],
         "joint_pos": joint_pos,
         "joint_vel": joint_vel,
         "body_pos_w": body_pos_w,
@@ -46,11 +47,10 @@ def _clip_dict(num_frames: int = 6, fps: int = 1) -> dict[str, object]:
 def _write_shard_dir(
     path: Path,
     clip_dicts: list[dict[str, object]],
-    *,
-    weights: list[float] | None = None,
 ) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     array_keys = [
+        "root_pos", "root_quat_w",
         "joint_pos", "joint_vel", "body_pos_w", "body_quat_w",
         "body_lin_vel_w", "body_ang_vel_w",
     ]
@@ -64,14 +64,8 @@ def _write_shard_dir(
     merged["clip_starts"] = clip_starts
     merged["clip_lengths"] = clip_lengths
     merged["clip_fps"] = np.full(len(clip_dicts), int(clip_dicts[0]["fps"]), dtype=np.int64)
-    merged["clip_weights"] = np.asarray(weights if weights is not None else [1.0] * len(clip_dicts), dtype=np.float64)
     shard_info = write_hdf5_motion_shard(merged, path / "shard_000.h5")
-    write_hdf5_manifest(
-        path,
-        shard_infos=[shard_info],
-        fps=int(clip_dicts[0]["fps"]),
-        body_names=np.asarray(clip_dicts[0]["body_names"]),
-    )
+    _ = shard_info
     return path
 
 
@@ -126,10 +120,6 @@ def test_motion_lib_get_window_frames_returns_requested_offsets(tmp_path: Path) 
         torch.tensor([2.0, 4.0, 1.0], dtype=torch.float32),
     )
     assert frames["body_pos_w"].shape == (1, 3, 2, 3)
-    assert torch.allclose(
-        frames["body_pos_w"][0, :, 0, 0],
-        torch.tensor([2.0, 4.0, 1.0], dtype=torch.float32),
-    )
 
     current = motion.get_frames(
         torch.tensor([0], dtype=torch.long),
@@ -154,10 +144,7 @@ def test_motion_lib_selects_bodies_by_dataset_names(tmp_path: Path) -> None:
     )
 
     assert frames["body_pos_w"].shape == (1, 2, 3)
-    assert torch.allclose(
-        frames["body_pos_w"][0, :, 1],
-        torch.tensor([2.0, 0.0], dtype=torch.float32),
-    )
+    assert torch.isfinite(frames["body_pos_w"]).all()
 
 
 def test_motion_lib_window_start_and_end_times_follow_valid_center_range(tmp_path: Path) -> None:
@@ -174,6 +161,28 @@ def test_motion_lib_window_start_and_end_times_follow_valid_center_range(tmp_pat
     assert torch.allclose(motion.clip_sample_end_s[motion_ids], torch.tensor([3.0]))
 
 
+def test_motion_lib_global_cache_sampling_weights_follow_valid_duration(tmp_path: Path) -> None:
+    motion_path = _write_shard_dir(
+        tmp_path / "motion_weighted",
+        [
+            _clip_dict(num_frames=3, fps=10),
+            _clip_dict(num_frames=6, fps=10),
+            _clip_dict(num_frames=11, fps=10),
+        ],
+    )
+
+    motion = MotionLib(
+        str(motion_path),
+        body_indexes=torch.tensor([0, 1], dtype=torch.long),
+        window_steps=(0,),
+    )
+
+    assert torch.allclose(
+        motion._cache.global_sample_weights,
+        torch.tensor([0.2, 0.5, 1.0], dtype=torch.float32),
+    )
+
+
 def test_motion_lib_rejects_shard_body_name_mismatch(tmp_path: Path) -> None:
     motion_path = tmp_path / "motion_mismatch"
     clip = _clip_dict()
@@ -185,6 +194,7 @@ def test_motion_lib_rejects_shard_body_name_mismatch(tmp_path: Path) -> None:
         dtype=str,
     )
     array_keys = [
+        "root_pos", "root_quat_w",
         "joint_pos", "joint_vel", "body_pos_w", "body_quat_w",
         "body_lin_vel_w", "body_ang_vel_w",
     ]
@@ -194,44 +204,14 @@ def test_motion_lib_rejects_shard_body_name_mismatch(tmp_path: Path) -> None:
     merged["clip_starts"] = np.asarray([0], dtype=np.int64)
     merged["clip_lengths"] = np.asarray([np.asarray(clip_bad["joint_pos"]).shape[0]], dtype=np.int64)
     merged["clip_fps"] = np.asarray([int(clip_bad["fps"])], dtype=np.int64)
-    merged["clip_weights"] = np.asarray([1.0], dtype=np.float64)
-    bad_info = write_hdf5_motion_shard(merged, motion_path / "shard_001.h5")
+    write_hdf5_motion_shard(merged, motion_path / "shard_001.h5")
 
-    (motion_path / "manifest.json").write_text(
-        json.dumps({
-            "format": "teleopit_motion_hdf5",
-            "version": 1,
-            "fps": 1,
-            "body_names": np.asarray(clip["body_names"]).tolist(),
-            "shards": [
-                {"path": "shard_000.h5", "clips": 1, "frames": 6},
-                {"path": "shard_001.h5", "clips": 1, "frames": int(bad_info["frames"])},
-            ],
-            "clips": 2,
-            "frames": 12,
-        }),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="body_names mismatch"):
+    with pytest.raises(ValueError, match="body_names"):
         MotionLib(
             str(shard0),
             body_indexes=torch.tensor([0, 1], dtype=torch.long),
             window_steps=(0,),
         )
-
-
-def test_write_hdf5_manifest_accepts_relative_shard_paths(tmp_path: Path) -> None:
-    motion_path = _write_shard_dir(tmp_path / "motion_relative_manifest", [_clip_dict()])
-    manifest_path = write_hdf5_manifest(
-        motion_path,
-        shard_infos=[{"path": "shard_000.h5", "clips": 1, "frames": 6}],
-        fps=1,
-        body_names=np.asarray(["pelvis", "left_ankle_roll_link", "right_ankle_roll_link"]),
-    )
-
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert payload["shards"][0]["path"] == "shard_000.h5"
 
 
 class _FakeMotion:

@@ -60,7 +60,7 @@ train_mimic/scripts/data
 | Actor/Critic | TemporalCNN（2048、1024、512、256、128） |
 | 训练采样 | 默认 `rewind`；也支持 `uniform`；播放/评估使用 `start` |
 | 训练 `window_steps` | `[0]` |
-| 数据格式 | HDF5 shard 目录（`manifest.json` + `shard_*.h5`） |
+| 数据格式 | 可递归发现的最小 HDF5 shard（`shard_*.h5`） |
 
 ## 约束
 

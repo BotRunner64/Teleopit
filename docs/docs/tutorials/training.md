@@ -31,7 +31,7 @@ python -c "import train_mimic.tasks; print('training OK')"
 python train_mimic/scripts/train.py \
     --num_envs 64 \
     --max_iterations 100 \
-    --motion_file data/datasets/seed/train
+    --motion_file data/datasets/seed
 ```
 
 ### Full Training
@@ -40,7 +40,7 @@ python train_mimic/scripts/train.py \
 python train_mimic/scripts/train.py \
     --num_envs 4096 \
     --max_iterations 30000 \
-    --motion_file data/datasets/seed/train
+    --motion_file data/datasets/seed
 ```
 
 ### Multi-GPU
@@ -50,7 +50,7 @@ python train_mimic/scripts/train.py \
     --gpu_ids 0 1 2 3 \
     --num_envs 1024 \
     --max_iterations 30000 \
-    --motion_file data/datasets/seed/train
+    --motion_file data/datasets/seed
 ```
 
 ### Multi-Node Multi-GPU
@@ -67,14 +67,14 @@ torchrun \
     train_mimic/scripts/train.py \
     --num_envs 1024 \
     --max_iterations 1000 \
-    --motion_file data/datasets/seed/train
+    --motion_file data/datasets/seed
 ```
 
 **Notes:**
 - `--num_envs` is per-GPU in multi-GPU mode
 - `--num_envs` is also per-process in multi-node mode, so total environments scale with `world_size`
 - Default logger is TensorBoard. Use `--logger wandb` or `--logger swanlab` to select W&B or SwanLab; the project name defaults to `experiment_name`
-- `--motion_file` accepts only HDF5 shard directories containing `manifest.json` and `shard_*.h5` files
+- `--motion_file` accepts a dataset root directory or single `.h5` shard; shard discovery is recursive
 - `--cache_num_clips` controls the active HDF5 subset size; `--cache_swap_interval_steps` controls how often the next subset is swapped in at a rollout barrier
 - `--max_iterations` means additional iterations; resuming from `model_12000.pt` with `--max_iterations 18000` trains to `model_30000.pt`
 
@@ -96,7 +96,7 @@ The exported model is a dual-input ONNX (`obs` + `obs_history`). The inference s
 ```bash
 python train_mimic/scripts/play.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/seed/val
+    --motion_file data/datasets/seed
 ```
 
 ### Benchmark
@@ -104,7 +104,7 @@ python train_mimic/scripts/play.py \
 ```bash
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/seed/val \
+    --motion_file data/datasets/seed \
     --num_envs 1
 ```
 
@@ -113,7 +113,7 @@ python train_mimic/scripts/benchmark.py \
 ```bash
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/seed/val \
+    --motion_file data/datasets/seed \
     --num_envs 1 \
     --video \
     --video_length 600

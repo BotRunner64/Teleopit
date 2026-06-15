@@ -60,7 +60,7 @@ train_mimic/scripts/data
 | Actor/Critic | TemporalCNN (2048, 1024, 512, 256, 128) |
 | Training sampling | Default `rewind`; also supports `uniform`; playback/benchmark use `start` |
 | Training `window_steps` | `[0]` |
-| Data format | HDF5 shard directories (`manifest.json` + `shard_*.h5`) |
+| Data format | Minimal recursive HDF5 shards (`shard_*.h5`) |
 
 ## Constraints
 

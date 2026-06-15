@@ -10,10 +10,10 @@ sidebar_position: 3
 python scripts/setup/download_assets.py --only data
 ```
 
-下载后直接传 HDF5 shard 目录用于训练：
+下载后直接传数据集根目录用于训练：
 
 ```bash
-python train_mimic/scripts/train.py --motion_file data/datasets/seed/train
+python train_mimic/scripts/train.py --motion_file data/datasets/seed
 ```
 
 如需自定义构建，继续阅读下文。
@@ -42,11 +42,11 @@ python train_mimic/scripts/data/build_dataset.py \
     --spec data/pico_motion/pico_recorded.yaml --force
 ```
 
-构建前至少录制两段 clip，确保 train 和 validation split 都能生成。
+预处理后至少需要保留一段有效 clip。
 
 ## 自定义构建
 
-数据主线：`typed source YAML -> preprocess/filter -> HDF5 shard-only 训练数据`
+数据主线：`typed source YAML -> preprocess/filter -> minimal HDF5 shards`
 
 ```bash
 python train_mimic/scripts/data/build_dataset.py \
@@ -59,19 +59,13 @@ python train_mimic/scripts/data/build_dataset.py \
 data/datasets/<dataset>/
 ├── clips/                  # 可选；仅在需要逐 clip 中间产物时存在
 │   └── <source>/...
-├── train/
-│   ├── manifest.json
-│   └── shard_*.h5
-├── val/
-│   ├── manifest.json
-│   └── shard_*.h5
-├── manifest_resolved.csv
-└── build_info.json
+└── shard_*.h5
 ```
 
 - 若 spec 包含 `bvh` 或 `npz` source，builder 会保留/生成 `clips/`
-- 若 spec 全部是 `pkl` 或 `seed_csv` source，直接并行产出 split 级别的 shard，默认不写中间 clip 文件
-- 训练时只从 HDF5 split 加载一个 subset cache，同时预加载下一个 cache，并在 PPO rollout barrier 处切换。
+- 若 spec 全部是 `pkl` 或 `seed_csv` source，builder 会直接并行产出 shard，默认不写中间 clip 文件
+- 训练会递归发现指定根目录下的 `*.h5` shard，因此可以把多个数据集目录放到同一个父目录下完成合并
+- 训练时只从发现的 shard 加载一个 subset cache，在线派生 FK/速度，同时预加载下一个 cache，并在 PPO rollout barrier 处切换。
 
 ## YAML spec
 
@@ -80,8 +74,6 @@ data/datasets/<dataset>/
 ```yaml
 name: twist2
 target_fps: 30
-val_percent: 5
-hash_salt: ""
 preprocess:
   normalize_root_xy: true
   ground_align: first_frame_foot
@@ -101,8 +93,6 @@ sources:
 |------|------|
 | `name` | 数据集名称，对应输出目录 `data/datasets/<name>/` |
 | `target_fps` | 写入 shard 前统一重采样到的目标帧率 |
-| `val_percent` | 基于 `clip_id` hash 的验证集比例 |
-| `hash_salt` | 可选 split salt |
 | `preprocess.normalize_root_xy` | 是否把根 body 首帧 xy 平移到原点 |
 | `preprocess.ground_align` | `none` / `first_frame_foot` |
 | `preprocess.min_frames` | clip 最短长度约束 |
@@ -110,10 +100,19 @@ sources:
 | `sources[].name` | source 名称；生成 clip 中间产物时也作为 `clips/<source>/` 子目录名 |
 | `sources[].type` | `bvh` / `pkl` / `npz` / `seed_csv` |
 | `sources[].input` | 原始输入文件或目录 |
-| `sources[].weight` | 可选源级别采样权重，默认 `1.0` |
 | `sources[].bvh_format` | 仅 `bvh` source 必填：`lafan1` / `hc_mocap` / `nokov` |
 | `sources[].robot_name` | 仅 `bvh` source，默认 `unitree_g1` |
 | `sources[].max_frames` | 仅 `bvh` source，`0` 表示全长 |
+
+## 转换规则
+
+所有 source 都会转换成标准训练 shard。每段 clip 会先经过预处理/过滤，再写入 shard：
+
+- `bvh -> retarget pkl -> npz clip`
+- `pkl -> npz clip`（或在 pkl-only 数据集中直接 batch 写 shard）
+- `npz -> validate + copy/reuse`
+
+每个 shard 只保存最小运动数据：`root_pos`、`root_quat_w`、`joint_pos`、`body_names`、`clip_starts`、`clip_lengths` 和 `clip_fps`。Joint velocity 和 body FK/velocity 会在训练加载 cache 时计算。
 
 ## 常用命令
 
@@ -134,11 +133,14 @@ python train_mimic/scripts/data/build_dataset.py \
 # 打印 build report
 python train_mimic/scripts/data/build_dataset.py \
     --spec train_mimic/configs/datasets/twist2.yaml --json
+
+# 查看数据集统计
+python train_mimic/scripts/data/inspect_dataset.py data/datasets/twist2
 ```
 
 ## 批量转换为 NPZ clips
 
-只把某批原始数据转成标准 NPZ clip，不做 train/val merge：
+只把某批原始数据转成标准 NPZ clip，不合并为 shard：
 
 ```bash
 python train_mimic/scripts/data/ingest_motion.py \

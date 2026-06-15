@@ -15,7 +15,6 @@ from train_mimic.data.dataset_builder import (
     SourceInputFile,
     DatasetSourceSpec,
     DatasetSpec,
-    assign_splits,
     build_dataset_from_spec,
     convert_source_to_npz_clips,
     load_dataset_spec,
@@ -99,13 +98,10 @@ def test_load_dataset_spec_parses_typed_sources(tmp_path: Path) -> None:
     spec_path.write_text(
         f"""name: demo
 target_fps: 30
-val_percent: 5
-hash_salt: ""
 sources:
   - name: clips
     type: npz
     input: {tmp_path / 'npz_source'}
-    weight: 2.5
   - name: lafan1
     type: bvh
     input: {tmp_path / 'lafan1'}
@@ -119,7 +115,6 @@ sources:
     assert spec.name == "demo"
     assert spec.target_fps == 30
     assert spec.sources[0].type == "npz"
-    assert spec.sources[0].weight == 2.5
     assert spec.sources[1].type == "bvh"
     assert spec.sources[1].bvh_format == "lafan1"
 
@@ -129,8 +124,6 @@ def test_load_dataset_spec_parses_preprocess(tmp_path: Path) -> None:
     spec_path.write_text(
         f"""name: demo
 target_fps: 30
-val_percent: 5
-hash_salt: ""
 preprocess:
   normalize_root_xy: true
   ground_align: none
@@ -162,8 +155,6 @@ def test_load_dataset_spec_parses_seed_filter_preset(tmp_path: Path) -> None:
     spec_path.write_text(
         f"""name: seed_demo
 target_fps: 30
-val_percent: 5
-hash_salt: ""
 sources:
   - name: seed
     type: seed_csv
@@ -187,8 +178,6 @@ def test_load_dataset_spec_rejects_seed_filter_preset_on_non_seed_source(tmp_pat
     spec_path.write_text(
         f"""name: demo
 target_fps: 30
-val_percent: 5
-hash_salt: ""
 sources:
   - name: clips
     type: npz
@@ -210,8 +199,6 @@ def test_load_dataset_spec_rejects_unknown_seed_filter_preset(tmp_path: Path) ->
     spec_path.write_text(
         f"""name: demo
 target_fps: 30
-val_percent: 5
-hash_salt: ""
 sources:
   - name: seed
     type: seed_csv
@@ -231,8 +218,6 @@ def test_load_dataset_spec_rejects_bvh_without_format(tmp_path: Path) -> None:
     spec_path.write_text(
         """name: demo
 target_fps: 30
-val_percent: 5
-hash_salt: ""
 sources:
   - name: broken
     type: bvh
@@ -243,22 +228,6 @@ sources:
 
     with pytest.raises(ValueError, match="requires bvh_format"):
         load_dataset_spec(spec_path)
-
-
-def test_assign_splits_guarantees_non_empty_train_and_val() -> None:
-    rows = [
-        DatasetClipRow("clip_a", "src", "a.npz", 10, 30, "", "/tmp/a.npz"),
-        DatasetClipRow("clip_b", "src", "b.npz", 10, 30, "", "/tmp/b.npz"),
-    ]
-    resolved = assign_splits(rows, 1, "")
-    splits = {row.clip_id: row.resolved_split for row in resolved}
-    assert set(splits.values()) == {"train", "val"}
-
-
-def test_assign_splits_rejects_single_clip_dataset() -> None:
-    rows = [DatasetClipRow("clip_a", "src", "a.npz", 10, 30, "", "/tmp/a.npz")]
-    with pytest.raises(ValueError, match="at least 2 clips"):
-        assign_splits(rows, 5, "")
 
 
 def test_convert_source_to_npz_clips_handles_pkl_source(tmp_path: Path) -> None:
@@ -509,8 +478,6 @@ def test_build_dataset_from_spec_writes_shard_directories(tmp_path: Path) -> Non
     spec = DatasetSpec(
         name="demo_dataset",
         target_fps=30,
-        val_percent=5,
-        hash_salt="",
         sources=[DatasetSourceSpec(name="npz_src", type="npz", input=str(npz_input))],
     )
 
@@ -519,20 +486,16 @@ def test_build_dataset_from_spec_writes_shard_directories(tmp_path: Path) -> Non
 
     dataset_dir = output_root / "demo_dataset"
     assert report["dataset_dir"] == str(dataset_dir)
-    assert report["build_dir"] == str(dataset_dir)
     assert (dataset_dir / "clips" / "npz_src" / "clip_a.npz").is_file()
     assert (dataset_dir / "clips" / "npz_src" / "clip_b.npz").is_file()
-    assert (dataset_dir / "train" / "manifest.json").is_file()
-    assert (dataset_dir / "train" / "shard_000.h5").is_file()
-    assert (dataset_dir / "val" / "manifest.json").is_file()
-    assert (dataset_dir / "val" / "shard_000.h5").is_file()
-    assert (dataset_dir / "manifest_resolved.csv").is_file()
-    assert (dataset_dir / "build_info.json").is_file()
-    assert report["clip_counts"]["total"] == 2
+    assert (dataset_dir / "shard_000.h5").is_file()
+    assert report["input_clips"] == 2
 
-    with h5py.File(dataset_dir / "train" / "shard_000.h5", "r") as train_data:
-        assert "clip_starts" in train_data
-        assert "clip_lengths" in train_data
+    with h5py.File(dataset_dir / "shard_000.h5", "r") as shard:
+        assert "root_pos" in shard
+        assert "root_quat_w" in shard
+        assert "joint_pos" in shard
+        assert "body_pos_w" not in shard
 
 
 def test_collect_clip_rows_ignores_stale_excluded_cached_npz(tmp_path: Path) -> None:
@@ -543,8 +506,6 @@ def test_collect_clip_rows_ignores_stale_excluded_cached_npz(tmp_path: Path) -> 
     spec = DatasetSpec(
         name="demo_dataset",
         target_fps=30,
-        val_percent=5,
-        hash_salt="",
         sources=[
             DatasetSourceSpec(
                 name="npz_src",
@@ -577,8 +538,6 @@ def test_convert_source_to_npz_clips_applies_preprocess(tmp_path: Path) -> None:
         preprocess=DatasetSpec(
             name="unused",
             target_fps=30,
-            val_percent=5,
-            hash_salt="",
             sources=[source],
         ).preprocess,
     )
@@ -737,7 +696,6 @@ def test_batch_convert_chunk_preprocess_sees_resampled_target_fps(
 
     dataset_builder._batch_convert_chunk(
         [str(pkl_path)],
-        [1.0],
         30,
         str(tmp_path / "merged.npz"),
         "train",
@@ -763,6 +721,8 @@ def test_batch_convert_chunk_skips_filtered_short_clips(
         body_quat_w[..., 0] = 1.0
         return {
             "fps": 30,
+            "root_pos": np.zeros((num_frames, 3), dtype=np.float32),
+            "root_quat_w": np.tile(np.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32), (num_frames, 1)),
             "joint_pos": np.zeros((num_frames, 29), dtype=np.float32),
             "joint_vel": np.zeros((num_frames, 29), dtype=np.float32),
             "body_pos_w": np.zeros((num_frames, num_bodies, 3), dtype=np.float32),
@@ -786,7 +746,6 @@ def test_batch_convert_chunk_skips_filtered_short_clips(
 
     stats = dataset_builder._batch_convert_chunk(
         [str(short_path), str(valid_path)],
-        [1.0, 1.0],
         30,
         str(tmp_path / "merged.h5"),
         "train",
@@ -836,8 +795,6 @@ def test_build_dataset_batch_manifest_skips_filtered_entries(
     spec = DatasetSpec(
         name="seed_demo",
         target_fps=30,
-        val_percent=5,
-        hash_salt="",
         sources=[DatasetSourceSpec(name="seed", type="seed_csv", input=str(source_dir))],
     )
     dataset_dir = tmp_path / "datasets" / spec.name
@@ -861,15 +818,14 @@ def test_build_dataset_batch_manifest_skips_filtered_entries(
             "preset_reject_reasons": {"content_body_position:sitting": 1},
         })
 
-    def _hash_split(clip_id: str, _val_percent: int, _salt: str = "") -> str:
-        return "val" if clip_id.endswith("keep_val") else "train"
-
     num_bodies = len(_MJLAB_G1_BODY_NAMES)
 
     def _write_merged(path: Path, lengths: list[int]) -> dict:
         total = sum(lengths)
         joint_pos = np.zeros((total, 29), dtype=np.float32)
         joint_vel = np.zeros_like(joint_pos)
+        root_pos = np.zeros((total, 3), dtype=np.float32)
+        root_quat_w = np.tile(np.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32), (total, 1))
         body_pos_w = np.zeros((total, num_bodies, 3), dtype=np.float32)
         body_quat_w = np.zeros((total, num_bodies, 4), dtype=np.float32)
         body_quat_w[..., 0] = 1.0
@@ -881,6 +837,8 @@ def test_build_dataset_batch_manifest_skips_filtered_entries(
             clip_starts[1:] = np.cumsum(clip_lengths[:-1])
         return write_hdf5_motion_shard({
             "fps": 30,
+            "root_pos": root_pos,
+            "root_quat_w": root_quat_w,
             "joint_pos": joint_pos,
             "joint_vel": joint_vel,
             "body_pos_w": body_pos_w,
@@ -891,50 +849,31 @@ def test_build_dataset_batch_manifest_skips_filtered_entries(
             "clip_starts": clip_starts,
             "clip_lengths": clip_lengths,
             "clip_fps": np.full(len(lengths), 30, dtype=np.int64),
-            "clip_weights": np.ones(len(lengths), dtype=np.float64),
         }, path)
 
-    def _batch_convert_split(clips, target_fps, output_dir, jobs, split_name, preprocess):
+    def _batch_convert_split(clips, target_fps, output_dir, jobs, label, preprocess):
         _ = clips, target_fps, jobs, preprocess
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         shard_path = output_dir / "shard_000.h5"
-        if split_name == "train":
-            h5_info = _write_merged(shard_path, [22])
-            return ({
-                "output": str(output_dir),
-                "shards": 1,
-                "clips": 1,
-                "num_clips": 1,
-                "frames": 22,
-                "fps": 30,
-                "duration_s": 22.0 / 30.0,
-            }, [{
-                "path": shard_path,
-                "clip_lengths": h5_info["clip_lengths"],
-                "source_clip_lengths": h5_info["source_clip_lengths"],
-                "frames": h5_info["frames"],
-                "kept_file_paths": [str(keep_train)],
-            }])
-        h5_info = _write_merged(shard_path, [24])
+        h5_info = _write_merged(shard_path, [22, 24])
         return ({
             "output": str(output_dir),
             "shards": 1,
-            "clips": 1,
-            "num_clips": 1,
-            "frames": 24,
+            "clips": 2,
+            "num_clips": 2,
+            "frames": 46,
             "fps": 30,
-            "duration_s": 24.0 / 30.0,
+            "duration_s": 46.0 / 30.0,
         }, [{
             "path": shard_path,
             "clip_lengths": h5_info["clip_lengths"],
             "source_clip_lengths": h5_info["source_clip_lengths"],
             "frames": h5_info["frames"],
-            "kept_file_paths": [str(keep_val)],
+            "kept_file_paths": [str(keep_train), str(keep_val)],
         }])
 
     monkeypatch.setattr(dataset_builder, "_collect_source_files_with_report", _collect_with_report)
-    monkeypatch.setattr(dataset_builder, "hash_split", _hash_split)
     monkeypatch.setattr(dataset_builder, "_batch_convert_split", _batch_convert_split)
 
     report = dataset_builder._build_dataset_batch(
@@ -946,11 +885,102 @@ def test_build_dataset_batch_manifest_skips_filtered_entries(
         jobs=2,
     )
 
-    manifest = (dataset_dir / "manifest_resolved.csv").read_text(encoding="utf-8")
-    assert "seed:keep_train" in manifest
-    assert "seed:keep_val" in manifest
-    assert "seed:drop_train" not in manifest
-    assert report["clip_counts"] == {"total": 2, "train": 1, "val": 1}
-    assert report["input_clip_counts"] == {"total": 3, "train": 2, "val": 1}
+    assert (dataset_dir / "shard_000.h5").is_file()
+    assert not (dataset_dir / "manifest_resolved.csv").exists()
+    assert report["input_clips"] == 3
+    assert report["stats"]["clips"] == 2
     assert report["source_filters"][0]["seed_filter_preset"] == "groot_strict"
     assert report["source_filters"][0]["preset_reject_reasons"] == {"content_body_position:sitting": 1}
+
+
+def test_build_dataset_batch_clears_stale_top_level_shards(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_dir = tmp_path / "seed_source"
+    keep_path = source_dir / "keep.csv"
+    keep_path.parent.mkdir(parents=True, exist_ok=True)
+    keep_path.write_text("placeholder", encoding="utf-8")
+
+    spec = DatasetSpec(
+        name="seed_demo",
+        target_fps=30,
+        sources=[DatasetSourceSpec(name="seed", type="seed_csv", input=str(source_dir))],
+    )
+    paths = dataset_builder.resolve_dataset_paths(spec, output_root=tmp_path / "datasets")
+    paths.dataset_dir.mkdir(parents=True)
+    stale_shard = paths.dataset_dir / "shard_999.h5"
+    stale_tmp = paths.dataset_dir / ".seed_demo_chunk_7.h5"
+    stale_shard.write_text("stale", encoding="utf-8")
+    stale_tmp.write_text("stale", encoding="utf-8")
+
+    def _collect_with_report(_source, *, quiet=False):
+        _ = quiet
+        return ([
+            SourceInputFile(path=keep_path, rel_no_suffix=Path("keep")),
+        ], source_dir, {
+            "source": "seed",
+            "type": "seed_csv",
+            "metadata_csv": None,
+            "seed_filter_preset": None,
+            "scanned_files": 1,
+            "metadata_rows_matched": 1,
+            "kept_files": 1,
+            "filtered_files": 0,
+        })
+
+    def _batch_convert_split(clips, target_fps, output_dir, jobs, label, preprocess):
+        _ = clips, target_fps, jobs, label, preprocess
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        shard_path = output_dir / "shard_000.h5"
+        num_bodies = len(_MJLAB_G1_BODY_NAMES)
+        h5_info = write_hdf5_motion_shard({
+            "fps": 30,
+            "root_pos": np.zeros((22, 3), dtype=np.float32),
+            "root_quat_w": np.tile(np.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32), (22, 1)),
+            "joint_pos": np.zeros((22, 29), dtype=np.float32),
+            "joint_vel": np.zeros((22, 29), dtype=np.float32),
+            "body_pos_w": np.zeros((22, num_bodies, 3), dtype=np.float32),
+            "body_quat_w": np.tile(
+                np.asarray([[[1.0, 0.0, 0.0, 0.0]]], dtype=np.float32),
+                (22, num_bodies, 1),
+            ),
+            "body_lin_vel_w": np.zeros((22, num_bodies, 3), dtype=np.float32),
+            "body_ang_vel_w": np.zeros((22, num_bodies, 3), dtype=np.float32),
+            "body_names": np.asarray(_MJLAB_G1_BODY_NAMES, dtype=str),
+            "clip_starts": np.asarray([0], dtype=np.int64),
+            "clip_lengths": np.asarray([22], dtype=np.int64),
+            "clip_fps": np.asarray([30], dtype=np.int64),
+        }, shard_path)
+        return ({
+            "output": str(output_dir),
+            "shards": 1,
+            "clips": 1,
+            "num_clips": 1,
+            "frames": 22,
+            "fps": 30,
+            "duration_s": 22.0 / 30.0,
+        }, [{
+            "path": shard_path,
+            "clip_lengths": h5_info["clip_lengths"],
+            "source_clip_lengths": h5_info["source_clip_lengths"],
+            "frames": h5_info["frames"],
+            "kept_file_paths": [str(keep_path)],
+        }])
+
+    monkeypatch.setattr(dataset_builder, "_collect_source_files_with_report", _collect_with_report)
+    monkeypatch.setattr(dataset_builder, "_batch_convert_split", _batch_convert_split)
+
+    dataset_builder._build_dataset_batch(
+        spec,
+        paths=paths,
+        force=False,
+        skip_fk_check=True,
+        skip_validate=False,
+        jobs=1,
+    )
+
+    assert (paths.dataset_dir / "shard_000.h5").is_file()
+    assert not stale_shard.exists()
+    assert not stale_tmp.exists()

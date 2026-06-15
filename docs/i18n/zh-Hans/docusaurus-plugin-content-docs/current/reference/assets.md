@@ -35,7 +35,7 @@ sidebar_position: 2
 | `ckpt` | Teleopit-models | `checkpoints/track.onnx`、`checkpoints/track.pt` |
 | `gmr` | Teleopit-models | `archives/gmr_assets.tar.gz` |
 | `bvh` | Teleopit-models | `archives/sample_bvh.tar.gz` |
-| `data` | Teleopit-datasets | `data/train/`、`data/val/` |
+| `data` | Teleopit-datasets | `data/` |
 
 ## 下载
 
@@ -63,8 +63,7 @@ python scripts/setup/download_assets.py --source huggingface
 | `checkpoints/track.pt` | `track.pt` |
 | `archives/gmr_assets.tar.gz` | `teleopit/retargeting/gmr/assets/`（自动解压） |
 | `archives/sample_bvh.tar.gz` | `data/sample_bvh/`（自动解压） |
-| `data/train/` | `data/datasets/seed/train/` |
-| `data/val/` | `data/datasets/seed/val/` |
+| `data/` | `data/datasets/seed/` |
 
 ## 上传到 ModelScope
 

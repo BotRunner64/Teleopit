@@ -68,6 +68,8 @@ def test_unique_clip_path_adds_timestamp_and_avoids_overwrite(tmp_path: Path) ->
 def test_qpos_sequence_to_motion_clip_writes_standard_npz_fields() -> None:
     clip = qpos_sequence_to_motion_clip(_qpos_sequence(), fps=30, extractor=_FakeFkExtractor())
     assert int(clip["fps"]) == 30
+    assert clip["root_pos"].shape == (4, 3)
+    assert clip["root_quat_w"].shape == (4, 4)
     assert clip["joint_pos"].shape == (4, NUM_JOINTS)
     assert clip["joint_vel"].shape == (4, NUM_JOINTS)
     assert clip["body_pos_w"].shape[0] == 4

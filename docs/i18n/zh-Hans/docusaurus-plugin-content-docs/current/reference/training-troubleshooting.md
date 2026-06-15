@@ -45,7 +45,7 @@ python train_mimic/scripts/data/check_motion_npz_fk.py \
 ```bash
 python train_mimic/scripts/train.py \
     --num_envs 64 --max_iterations 100 \
-    --motion_file data/datasets/<dataset>/train
+    --motion_file data/datasets/<dataset>
 ```
 
 预期：`Mean episode length` 明显大于 1，`error_anchor_pos` 开始下降。
@@ -126,7 +126,7 @@ self.sim.nconmax = 150_000
 ```bash
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/<dataset>/val \
+    --motion_file data/datasets/<dataset> \
     --num_envs 1 --num_eval_steps 2000 \
     --video --video_length 600
 ```

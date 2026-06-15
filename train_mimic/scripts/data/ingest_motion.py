@@ -26,7 +26,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", required=True, help="Input file or directory")
     parser.add_argument("--output", required=True, help="Output clips directory")
     parser.add_argument("--source", default="source", help="Logical source name used in logs")
-    parser.add_argument("--weight", type=float, default=1.0, help="Optional source weight metadata")
     parser.add_argument("--bvh_format", choices=["lafan1", "hc_mocap", "nokov"], default=None)
     parser.add_argument("--robot_name", default="unitree_g1", help="Robot name for BVH retargeting")
     parser.add_argument("--max_frames", type=int, default=0, help="Max frames per BVH clip (0 = all)")
@@ -42,7 +41,6 @@ def main() -> int:
         name=args.source,
         type=args.type,
         input=args.input,
-        weight=float(args.weight),
         bvh_format=args.bvh_format,
         robot_name=args.robot_name,
         max_frames=int(args.max_frames),

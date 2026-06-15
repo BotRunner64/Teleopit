@@ -15,7 +15,7 @@ import numpy as np
 from teleopit.constants import FULL_QPOS_DIM, NUM_JOINTS, ROOT_DIM
 from teleopit.runtime.assets import PROJECT_ROOT
 from train_mimic.data.dataset_lib import inspect_clip_dict
-from train_mimic.data.motion_fk import MotionFkExtractor, compute_body_velocities
+from train_mimic.data.motion_fk import MotionFkExtractor, compute_body_velocities, finite_diff_velocity
 from train_mimic.scripts.convert_pkl_to_npz import _MJLAB_G1_BODY_NAMES
 
 
@@ -25,7 +25,6 @@ class PicoDatasetSpec:
 
     dataset_name: str = "pico_recorded"
     target_fps: int = 30
-    val_percent: int = 5
     source_name: str = "pico_clips"
 
 
@@ -150,8 +149,6 @@ def ensure_pico_dataset_spec(
     content = (
         f"name: {spec.dataset_name}\n"
         f"target_fps: {int(spec.target_fps)}\n"
-        f"val_percent: {int(spec.val_percent)}\n"
-        'hash_salt: ""\n'
         "preprocess:\n"
         "  normalize_root_xy: true\n"
         "  ground_align: first_frame_foot\n"
@@ -190,7 +187,7 @@ def qpos_sequence_to_motion_clip(
         raise ValueError(f"joint_pos must have {NUM_JOINTS} columns, got {joint_pos.shape}")
 
     dt = 1.0 / float(fps)
-    joint_vel = np.gradient(joint_pos, dt, axis=0).astype(np.float32)
+    joint_vel = finite_diff_velocity(joint_pos, dt)
 
     fk_extractor = extractor or MotionFkExtractor()
     body_pos_w, body_quat_w = fk_extractor.extract(root_pos, root_quat_wxyz, joint_pos, names)
@@ -198,6 +195,8 @@ def qpos_sequence_to_motion_clip(
 
     clip = {
         "fps": int(fps),
+        "root_pos": root_pos.astype(np.float32, copy=False),
+        "root_quat_w": root_quat_wxyz.astype(np.float32, copy=False),
         "joint_pos": joint_pos.astype(np.float32, copy=False),
         "joint_vel": joint_vel.astype(np.float32, copy=False),
         "body_pos_w": np.asarray(body_pos_w, dtype=np.float32),

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -15,6 +14,8 @@ import numpy as np
 
 REQUIRED_NPZ_KEYS = [
     "fps",
+    "root_pos",
+    "root_quat_w",
     "joint_pos",
     "joint_vel",
     "body_pos_w",
@@ -28,6 +29,17 @@ NUM_ACTIONS = 29
 MOTION_ARRAY_KEYS = [
     "joint_pos", "joint_vel", "body_pos_w", "body_quat_w",
     "body_lin_vel_w", "body_ang_vel_w",
+]
+MINIMAL_MOTION_ARRAY_KEYS = ["root_pos", "root_quat_w", "joint_pos"]
+FULL_CLIP_ARRAY_KEYS = [
+    "root_pos",
+    "root_quat_w",
+    "joint_pos",
+    "joint_vel",
+    "body_pos_w",
+    "body_quat_w",
+    "body_lin_vel_w",
+    "body_ang_vel_w",
 ]
 HDF5_DATASET_VERSION = 1
 DEFAULT_HDF5_MAX_WINDOW_FRAMES = 512
@@ -126,6 +138,8 @@ def inspect_clip_dict(payload: Mapping[str, Any]) -> NpzMeta:
     if fps <= 0:
         raise ValueError(f"invalid fps={fps}")
 
+    root_pos = np.asarray(payload["root_pos"])
+    root_quat_w = np.asarray(payload["root_quat_w"])
     joint_pos = np.asarray(payload["joint_pos"])
     joint_vel = np.asarray(payload["joint_vel"])
     body_pos_w = np.asarray(payload["body_pos_w"])
@@ -134,6 +148,10 @@ def inspect_clip_dict(payload: Mapping[str, Any]) -> NpzMeta:
     body_ang_vel_w = np.asarray(payload["body_ang_vel_w"])
     body_names = np.asarray(payload["body_names"])
 
+    if root_pos.ndim != 2 or root_pos.shape[1] != 3:
+        raise ValueError(f"root_pos must be (T,3), got {root_pos.shape}")
+    if root_quat_w.ndim != 2 or root_quat_w.shape[1] != 4:
+        raise ValueError(f"root_quat_w must be (T,4), got {root_quat_w.shape}")
     if joint_pos.ndim != 2 or joint_pos.shape[1] != NUM_ACTIONS:
         raise ValueError(f"joint_pos must be (T,{NUM_ACTIONS}), got {joint_pos.shape}")
     if joint_vel.ndim != 2 or joint_vel.shape != joint_pos.shape:
@@ -153,6 +171,8 @@ def inspect_clip_dict(payload: Mapping[str, Any]) -> NpzMeta:
         raise ValueError("empty time/body dimension")
 
     for name, arr in [
+        ("root_pos", root_pos),
+        ("root_quat_w", root_quat_w),
         ("joint_pos", joint_pos),
         ("joint_vel", joint_vel),
         ("body_pos_w", body_pos_w),
@@ -170,6 +190,9 @@ def inspect_clip_dict(payload: Mapping[str, Any]) -> NpzMeta:
     if body_names.ndim != 1 or body_names.shape[0] != nb:
         raise ValueError(f"body_names must be (nb,), got {body_names.shape}")
 
+    root_quat_norm = np.linalg.norm(root_quat_w, axis=-1)
+    if np.min(root_quat_norm) < 1e-6:
+        raise ValueError("root_quat_w contains near-zero norms")
     quat_norm = np.linalg.norm(body_quat_w, axis=-1)
     if np.min(quat_norm) < 1e-6:
         raise ValueError("body_quat_w contains near-zero norms")
@@ -186,12 +209,6 @@ def inspect_npz(path: Path) -> NpzMeta:
         raise FileNotFoundError(f"npz not found: {path}")
     data = np.load(path, allow_pickle=True)
     return inspect_clip_dict({key: data[key] for key in data.files})
-
-
-def hash_split(clip_id: str, val_percent: int, salt: str = "") -> str:
-    payload = f"{salt}:{clip_id}".encode("utf-8")
-    bucket = int(hashlib.md5(payload).hexdigest(), 16) % 100
-    return "val" if bucket < val_percent else "train"
 
 
 def resample_along_time(arr: np.ndarray, new_t: int) -> np.ndarray:
@@ -219,29 +236,16 @@ def merge_npz_files(
     output_path: Path,
     *,
     target_fps: int | None = None,
-    weights: list[float] | None = None,
 ) -> dict[str, Any]:
     if not npz_files:
         raise ValueError("no npz files to merge")
-    if weights is not None and len(weights) != len(npz_files):
-        raise ValueError(
-            f"weights length ({len(weights)}) != npz_files length ({len(npz_files)})"
-        )
 
-    arrays: dict[str, list[np.ndarray]] = {
-        "joint_pos": [],
-        "joint_vel": [],
-        "body_pos_w": [],
-        "body_quat_w": [],
-        "body_lin_vel_w": [],
-        "body_ang_vel_w": [],
-    }
+    arrays: dict[str, list[np.ndarray]] = {key: [] for key in FULL_CLIP_ARRAY_KEYS}
     fps: int | None = None
     body_names: np.ndarray[Any, Any] | None = None
     per_clip_fps: list[int] = []
-    per_clip_weights: list[float] = []
 
-    for i, p in enumerate(npz_files):
+    for p in npz_files:
         d = np.load(p, allow_pickle=True)
         cur_fps = int(d["fps"])
         if cur_fps <= 0:
@@ -250,6 +254,8 @@ def merge_npz_files(
         if target_fps is not None and target_fps <= 0:
             raise ValueError(f"target_fps must be > 0, got {target_fps}")
 
+        root_pos = np.asarray(d["root_pos"])
+        root_quat_w = np.asarray(d["root_quat_w"])
         joint_pos = np.asarray(d["joint_pos"])
         joint_vel = np.asarray(d["joint_vel"])
         body_pos_w = np.asarray(d["body_pos_w"])
@@ -262,6 +268,8 @@ def merge_npz_files(
             new_t = int(round(old_t * float(target_fps) / float(cur_fps)))
             new_t = max(new_t, 1)
 
+            root_pos = resample_along_time(root_pos, new_t)
+            root_quat_w = resample_along_time(root_quat_w, new_t)
             joint_pos = resample_along_time(joint_pos, new_t)
             joint_vel = resample_along_time(joint_vel, new_t)
             body_pos_w = resample_along_time(body_pos_w, new_t)
@@ -269,6 +277,9 @@ def merge_npz_files(
             body_lin_vel_w = resample_along_time(body_lin_vel_w, new_t)
             body_ang_vel_w = resample_along_time(body_ang_vel_w, new_t)
 
+            root_quat_norm = np.linalg.norm(root_quat_w, axis=-1, keepdims=True)
+            root_quat_norm = np.where(root_quat_norm < 1e-8, 1.0, root_quat_norm)
+            root_quat_w = root_quat_w / root_quat_norm
             quat_norm = np.linalg.norm(body_quat_w, axis=-1, keepdims=True)
             quat_norm = np.where(quat_norm < 1e-8, 1.0, quat_norm)
             body_quat_w = body_quat_w / quat_norm
@@ -284,8 +295,9 @@ def merge_npz_files(
                 raise ValueError(f"inconsistent body_names in merge: {p}")
 
         per_clip_fps.append(cur_fps)
-        per_clip_weights.append(weights[i] if weights is not None else 1.0)
 
+        arrays["root_pos"].append(root_pos)
+        arrays["root_quat_w"].append(root_quat_w)
         arrays["joint_pos"].append(joint_pos)
         arrays["joint_vel"].append(joint_vel)
         arrays["body_pos_w"].append(body_pos_w)
@@ -307,7 +319,6 @@ def merge_npz_files(
     merged["clip_starts"] = clip_starts
     merged["clip_lengths"] = clip_lengths
     merged["clip_fps"] = np.array(per_clip_fps, dtype=np.int64)
-    merged["clip_weights"] = np.array(per_clip_weights, dtype=np.float64)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(output_path, **merged)
@@ -328,13 +339,11 @@ def merge_clip_dicts(
     output_path: Path,
     *,
     target_fps: int | None = None,
-    weights: list[float] | None = None,
 ) -> dict[str, Any]:
     """Merge a list of in-memory clip array dicts into a single NPZ."""
     merged = merge_clip_dicts_payload(
         clip_dicts,
         target_fps=target_fps,
-        weights=weights,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(output_path, **merged)
@@ -354,7 +363,6 @@ def merge_clip_dicts_payload(
     clip_dicts: list[dict[str, Any]],
     *,
     target_fps: int | None = None,
-    weights: list[float] | None = None,
 ) -> dict[str, Any]:
     """Merge in-memory clip array dicts and return a flat motion payload.
 
@@ -363,22 +371,14 @@ def merge_clip_dicts_payload(
     """
     if not clip_dicts:
         raise ValueError("no clip dicts to merge")
-    if weights is not None and len(weights) != len(clip_dicts):
-        raise ValueError(
-            f"weights length ({len(weights)}) != clip_dicts length ({len(clip_dicts)})"
-        )
     if target_fps is not None and target_fps <= 0:
         raise ValueError(f"target_fps must be > 0, got {target_fps}")
 
-    array_keys = [
-        "joint_pos", "joint_vel", "body_pos_w", "body_quat_w",
-        "body_lin_vel_w", "body_ang_vel_w",
-    ]
+    array_keys = FULL_CLIP_ARRAY_KEYS
     arrays: dict[str, list[np.ndarray]] = {k: [] for k in array_keys}
     fps: int | None = None
     body_names: np.ndarray | None = None
     per_clip_fps: list[int] = []
-    per_clip_weights: list[float] = []
 
     for i, cd in enumerate(clip_dicts):
         cur_fps = int(cd["fps"])
@@ -391,6 +391,8 @@ def merge_clip_dicts_payload(
             new_t = max(1, round(old_t * target_fps / cur_fps))
             for k in array_keys:
                 clip_arrays[k] = resample_along_time(clip_arrays[k], new_t)
+            qn_root = np.linalg.norm(clip_arrays["root_quat_w"], axis=-1, keepdims=True)
+            clip_arrays["root_quat_w"] = clip_arrays["root_quat_w"] / np.where(qn_root < 1e-8, 1.0, qn_root)
             qn = np.linalg.norm(clip_arrays["body_quat_w"], axis=-1, keepdims=True)
             clip_arrays["body_quat_w"] = clip_arrays["body_quat_w"] / np.where(qn < 1e-8, 1.0, qn)
             cur_fps = target_fps
@@ -404,7 +406,6 @@ def merge_clip_dicts_payload(
             raise ValueError(f"inconsistent body_names: clip {i}")
 
         per_clip_fps.append(cur_fps)
-        per_clip_weights.append(weights[i] if weights is not None else 1.0)
         for k in array_keys:
             arrays[k].append(clip_arrays[k])
 
@@ -419,7 +420,6 @@ def merge_clip_dicts_payload(
     merged["clip_starts"] = clip_starts
     merged["clip_lengths"] = clip_lengths
     merged["clip_fps"] = np.array(per_clip_fps, dtype=np.int64)
-    merged["clip_weights"] = np.array(per_clip_weights, dtype=np.float64)
     return merged
 
 
@@ -457,13 +457,15 @@ def write_hdf5_motion_shard(
     max_window_frames: int = DEFAULT_HDF5_MAX_WINDOW_FRAMES,
     overlap_frames: int = DEFAULT_HDF5_WINDOW_OVERLAP_FRAMES,
 ) -> dict[str, Any]:
-    """Write a merged motion payload as one HDF5 shard with bounded windows.
+    """Write a merged motion payload as one minimal HDF5 shard.
 
-    The frame arrays remain flat in the HDF5 file.  ``clip_starts`` and
+    The frame arrays remain flat in the HDF5 file. ``clip_starts`` and
     ``clip_lengths`` describe training windows, not necessarily original clips.
     Long clips are split into overlapping windows to bound runtime cache size.
+    Runtime loading derives joint velocities and body FK/velocities from the
+    stored root pose and joint positions.
     """
-    missing = [key for key in [*MOTION_ARRAY_KEYS, "fps", "body_names", "clip_starts", "clip_lengths", "clip_fps", "clip_weights"] if key not in merged]
+    missing = [key for key in [*MINIMAL_MOTION_ARRAY_KEYS, "fps", "body_names", "clip_starts", "clip_lengths", "clip_fps"] if key not in merged]
     if missing:
         raise ValueError(f"merged payload missing required keys: {missing}")
 
@@ -474,12 +476,10 @@ def write_hdf5_motion_shard(
     original_starts = np.asarray(merged["clip_starts"], dtype=np.int64)
     original_lengths = np.asarray(merged["clip_lengths"], dtype=np.int64)
     original_fps = np.asarray(merged["clip_fps"], dtype=np.int64)
-    original_weights = np.asarray(merged["clip_weights"], dtype=np.float64)
 
     window_starts: list[int] = []
     window_lengths: list[int] = []
     window_fps: list[int] = []
-    window_weights: list[float] = []
     source_clip_ids: list[int] = []
     source_start_frames: list[int] = []
     for source_idx, (clip_start, clip_length) in enumerate(zip(original_starts, original_lengths)):
@@ -489,12 +489,10 @@ def write_hdf5_motion_shard(
             max_window_frames=max_window_frames,
             overlap_frames=overlap_frames,
         )
-        per_window_weight = float(original_weights[source_idx]) / float(len(ranges))
         for start, length in ranges:
             window_starts.append(int(start))
             window_lengths.append(int(length))
             window_fps.append(int(original_fps[source_idx]))
-            window_weights.append(per_window_weight)
             source_clip_ids.append(int(source_idx))
             source_start_frames.append(int(start - int(clip_start)))
 
@@ -507,19 +505,17 @@ def write_hdf5_motion_shard(
         h5.attrs["max_window_frames"] = int(max_window_frames)
         h5.attrs["overlap_frames"] = int(overlap_frames)
         h5.create_dataset("body_names", data=body_names.astype(object), dtype=str_dt)
-        for key in MOTION_ARRAY_KEYS:
+        for key in MINIMAL_MOTION_ARRAY_KEYS:
             arr = np.asarray(merged[key], dtype=np.float32)
             h5.create_dataset(key, data=arr, chunks=True)
         h5.create_dataset("clip_starts", data=np.asarray(window_starts, dtype=np.int64))
         h5.create_dataset("clip_lengths", data=np.asarray(window_lengths, dtype=np.int64))
         h5.create_dataset("clip_fps", data=np.asarray(window_fps, dtype=np.int64))
-        h5.create_dataset("clip_weights", data=np.asarray(window_weights, dtype=np.float64))
         h5.create_dataset("source_clip_ids", data=np.asarray(source_clip_ids, dtype=np.int64))
         h5.create_dataset("source_start_frames", data=np.asarray(source_start_frames, dtype=np.int64))
         h5.create_dataset("source_clip_starts", data=original_starts.astype(np.int64))
         h5.create_dataset("source_clip_lengths", data=original_lengths.astype(np.int64))
         h5.create_dataset("source_clip_fps", data=original_fps.astype(np.int64))
-        h5.create_dataset("source_clip_weights", data=original_weights.astype(np.float64))
 
     total_frames = int(np.asarray(merged["joint_pos"]).shape[0])
     return {
@@ -552,7 +548,7 @@ def read_motion_clip(path: Path, clip_index: int) -> dict[str, Any]:
     if path.suffix == ".h5":
         return read_hdf5_source_clip(path, clip_index)
     raise ValueError(
-        f"review/rebuild input must be a current HDF5 shard (.h5), got: {path}"
+        f"source clip input must be a current HDF5 shard (.h5), got: {path}"
     )
 
 
@@ -565,7 +561,7 @@ def read_hdf5_source_clip(path: Path, clip_index: int) -> dict[str, Any]:
             "source_clip_lengths",
             "source_clip_fps",
             "body_names",
-            *MOTION_ARRAY_KEYS,
+            *MINIMAL_MOTION_ARRAY_KEYS,
         ]
         missing = [key for key in required if key not in h5]
         if missing:
@@ -583,64 +579,120 @@ def read_hdf5_source_clip(path: Path, clip_index: int) -> dict[str, Any]:
         start = int(starts[clip_index])
         length = int(lengths[clip_index])
         sl = slice(start, start + length)
-        return {
-            "fps": int(fps[clip_index]),
-            "joint_pos": np.asarray(h5["joint_pos"][sl], dtype=np.float32),
-            "joint_vel": np.asarray(h5["joint_vel"][sl], dtype=np.float32),
-            "body_pos_w": np.asarray(h5["body_pos_w"][sl], dtype=np.float32),
-            "body_quat_w": np.asarray(h5["body_quat_w"][sl], dtype=np.float32),
-            "body_lin_vel_w": np.asarray(h5["body_lin_vel_w"][sl], dtype=np.float32),
-            "body_ang_vel_w": np.asarray(h5["body_ang_vel_w"][sl], dtype=np.float32),
-            "body_names": np.asarray(read_hdf5_body_names(path), dtype=str),
-        }
+        root_pos = np.asarray(h5["root_pos"][sl], dtype=np.float32)
+        root_quat_w = np.asarray(h5["root_quat_w"][sl], dtype=np.float32)
+        joint_pos = np.asarray(h5["joint_pos"][sl], dtype=np.float32)
+        body_names = np.asarray(read_hdf5_body_names(path), dtype=str)
+
+    from train_mimic.data.motion_fk import MotionFkExtractor, compute_body_velocities, finite_diff_velocity
+
+    dt = 1.0 / float(fps[clip_index])
+    joint_vel = finite_diff_velocity(joint_pos, dt)
+    fk = MotionFkExtractor()
+    body_pos_w, body_quat_w = fk.extract(root_pos, root_quat_w, joint_pos, body_names)
+    body_lin_vel_w, body_ang_vel_w = compute_body_velocities(body_pos_w, body_quat_w, dt)
+    return {
+        "fps": int(fps[clip_index]),
+        "root_pos": root_pos,
+        "root_quat_w": root_quat_w,
+        "joint_pos": joint_pos,
+        "joint_vel": joint_vel,
+        "body_pos_w": body_pos_w,
+        "body_quat_w": body_quat_w,
+        "body_lin_vel_w": body_lin_vel_w,
+        "body_ang_vel_w": body_ang_vel_w,
+        "body_names": body_names,
+    }
 
 
-def write_hdf5_manifest(
-    split_dir: Path,
-    *,
-    shard_infos: Sequence[Mapping[str, Any]],
-    fps: int,
-    body_names: Sequence[str] | np.ndarray,
-) -> Path:
-    shards = []
+def find_motion_shards(dataset_dir: str | Path) -> list[Path]:
+    """Recursively find Teleopit HDF5 motion shards under a root directory."""
+    root = Path(dataset_dir).expanduser().resolve()
+    if root.is_file():
+        candidates = [root]
+    elif root.is_dir():
+        candidates = sorted(root.rglob("*.h5"))
+    else:
+        raise FileNotFoundError(f"motion dataset path not found: {dataset_dir}")
+
+    shards: list[Path] = []
+    for path in candidates:
+        try:
+            with h5py.File(path, "r") as h5:
+                if h5.attrs.get("format") == "teleopit_motion_hdf5":
+                    shards.append(path)
+        except OSError:
+            continue
+    if not shards:
+        raise FileNotFoundError(f"no Teleopit HDF5 motion shards found under {dataset_dir}")
+    return shards
+
+
+def compute_dataset_stats(dataset_dir: str | Path) -> dict[str, Any]:
+    shards = find_motion_shards(dataset_dir)
     total_windows = 0
     total_frames = 0
-    expected_body_names = [str(name) for name in np.asarray(body_names).tolist()]
-    for info in shard_infos:
-        path = Path(str(info["path"]))
-        shard_path = path if path.is_absolute() else split_dir / path
-        if shard_path.is_file():
-            actual_body_names = read_hdf5_body_names(shard_path)
-            if actual_body_names != expected_body_names:
+    total_source_clips = 0
+    fps_values: set[int] = set()
+    body_names_ref: list[str] | None = None
+    shard_rows: list[dict[str, Any]] = []
+
+    for shard_path in shards:
+        with h5py.File(shard_path, "r") as h5:
+            missing = [
+                key for key in [
+                    *MINIMAL_MOTION_ARRAY_KEYS,
+                    "body_names",
+                    "clip_starts",
+                    "clip_lengths",
+                    "clip_fps",
+                ]
+                if key not in h5
+            ]
+            if missing:
+                raise ValueError(f"HDF5 shard {shard_path} missing required datasets: {missing}")
+            body_names = read_hdf5_body_names(shard_path)
+            if body_names_ref is None:
+                body_names_ref = body_names
+            elif body_names != body_names_ref:
                 raise ValueError(
-                    f"HDF5 shard body_names mismatch for {shard_path}: "
-                    "all shards in a split must use the same body order"
+                    f"inconsistent body_names in {shard_path}; all shards under one training root must match"
                 )
-        if path.is_absolute():
-            rel_path = path.name if path.parent == split_dir else str(path.relative_to(split_dir))
-        else:
-            rel_path = str(path)
-        clips = int(info.get("clips", info.get("num_clips", 0)))
-        frames = int(info.get("frames", 0))
-        total_windows += clips
-        total_frames += frames
-        shards.append({
-            "path": rel_path,
-            "clips": clips,
-            "frames": frames,
-        })
-    manifest = {
+            lengths = np.asarray(h5["clip_lengths"], dtype=np.int64)
+            fps_arr = np.asarray(h5["clip_fps"], dtype=np.int64)
+            source_ids = (
+                np.asarray(h5["source_clip_ids"], dtype=np.int64)
+                if "source_clip_ids" in h5
+                else np.arange(lengths.shape[0], dtype=np.int64)
+            )
+            fps_values.update(int(v) for v in np.unique(fps_arr))
+            windows = int(lengths.shape[0])
+            frames = int(np.asarray(h5["joint_pos"]).shape[0])
+            source_clips = int(len(np.unique(source_ids)))
+            total_windows += windows
+            total_frames += frames
+            total_source_clips += source_clips
+            shard_rows.append({
+                "path": str(shard_path),
+                "windows": windows,
+                "source_clips": source_clips,
+                "frames": frames,
+                "min_window_frames": int(lengths.min()) if windows else 0,
+                "max_window_frames": int(lengths.max()) if windows else 0,
+            })
+
+    return {
         "format": "teleopit_motion_hdf5",
         "version": HDF5_DATASET_VERSION,
-        "fps": int(fps),
-        "body_names": expected_body_names,
-        "shards": shards,
-        "clips": total_windows,
+        "root": str(Path(dataset_dir).expanduser().resolve()),
+        "shards": len(shards),
+        "windows": total_windows,
+        "source_clips": total_source_clips,
         "frames": total_frames,
+        "fps": sorted(fps_values),
+        "body_names": body_names_ref or [],
+        "shard_details": shard_rows,
     }
-    path = split_dir / "manifest.json"
-    write_json(path, manifest)
-    return path
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:

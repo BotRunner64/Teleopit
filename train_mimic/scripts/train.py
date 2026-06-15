@@ -4,30 +4,30 @@
 Usage:
     python train_mimic/scripts/train.py \
         --num_envs 4096 --max_iterations 18000 \
-        --motion_file data/datasets/twist2/train
+        --motion_file data/datasets/twist2
 
     # Quick verification
     python train_mimic/scripts/train.py \
         --num_envs 64 --max_iterations 100 \
-        --motion_file data/datasets/twist2/train
+        --motion_file data/datasets/twist2
 
     # With W&B logging
     python train_mimic/scripts/train.py \
         --num_envs 4096 --max_iterations 30000 \
-        --motion_file data/datasets/twist2/train \
+        --motion_file data/datasets/twist2 \
         --logger wandb
 
     # With SwanLab logging
     python train_mimic/scripts/train.py \
         --num_envs 4096 --max_iterations 30000 \
-        --motion_file data/datasets/twist2/train \
+        --motion_file data/datasets/twist2 \
         --logger swanlab
 
     # Resume for additional iterations
     python train_mimic/scripts/train.py \
         --resume logs/rsl_rl/g1_general_tracking/<run>/model_12000.pt \
         --max_iterations 18000 \
-        --motion_file data/datasets/twist2/train
+        --motion_file data/datasets/twist2
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--experiment_name", type=str, default=None)
     parser.add_argument("--motion_file", type=str, default=None,
-                        help="HDF5 shard directory path containing manifest.json and shard_*.h5 files")
+                        help="Dataset root containing Teleopit shard_*.h5 files, searched recursively")
     parser.add_argument(
         "--resume",
         type=str,

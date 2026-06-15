@@ -101,6 +101,8 @@ def preprocess_clip_dict(
 
     result = {
         "fps": int(payload["fps"]),
+        "root_pos": np.asarray(payload["root_pos"]).copy(),
+        "root_quat_w": np.asarray(payload["root_quat_w"]).copy(),
         "joint_pos": np.asarray(payload["joint_pos"]).copy(),
         "joint_vel": np.asarray(payload["joint_vel"]).copy(),
         "body_pos_w": np.asarray(payload["body_pos_w"]).copy(),
@@ -112,6 +114,7 @@ def preprocess_clip_dict(
     inspect_clip_dict(result)
 
     fps = int(result["fps"])
+    root_pos = result["root_pos"]
     body_pos_w = result["body_pos_w"]
     body_lin_vel_w = result["body_lin_vel_w"]
     body_names = np.asarray(result["body_names"])
@@ -129,6 +132,8 @@ def preprocess_clip_dict(
     if spec.normalize_root_xy:
         assert root_index is not None
         offset_xy = body_pos_w[0, root_index, :2].copy()
+        root_pos[:, 0] -= offset_xy[0]
+        root_pos[:, 1] -= offset_xy[1]
         body_pos_w[..., 0] -= offset_xy[0]
         body_pos_w[..., 1] -= offset_xy[1]
 
@@ -172,7 +177,9 @@ def preprocess_clip_dict(
     if spec.ground_align == "first_frame_foot":
         assert foot_indices is not None
         foot_z = body_pos_w[:, foot_indices, 2]
-        body_pos_w[..., 2] -= float(np.min(foot_z[0]))
+        dz = float(np.min(foot_z[0]))
+        root_pos[:, 2] -= dz
+        body_pos_w[..., 2] -= dz
 
     if spec.min_peak_body_height is not None:
         peak_height = float(np.max(body_pos_w[:, :, 2]))

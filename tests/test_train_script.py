@@ -7,9 +7,11 @@ import sys
 import types
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from train_mimic.app import DEFAULT_TASK, validate_checkpoint_path, validate_motion_file
+from train_mimic.data.dataset_lib import write_hdf5_motion_shard
 from train_mimic.scripts import train
 from train_mimic.tasks.tracking.config.rl import make_general_tracking_ppo_runner_cfg
 
@@ -31,7 +33,7 @@ def _args(**overrides: object) -> argparse.Namespace:
         "seed": 42,
         "logger": "tensorboard",
         "experiment_name": None,
-        "motion_file": "data/datasets/twist2/train",
+        "motion_file": "data/datasets/twist2",
         "resume": None,
         "sampling_mode": None,
         "rewind_prob": None,
@@ -242,16 +244,25 @@ def test_tracking_runner_configs_disable_model_upload() -> None:
 
 
 def test_validate_motion_file_accepts_shard_directories(tmp_path: Path) -> None:
-    (tmp_path / "manifest.json").write_text(
-        '{"format":"teleopit_motion_hdf5","version":1,"shards":[{"path":"shard_000.h5"}]}',
-        encoding="utf-8",
+    num_frames = 3
+    write_hdf5_motion_shard(
+        {
+            "fps": 30,
+            "root_pos": np.zeros((num_frames, 3), dtype=np.float32),
+            "root_quat_w": np.tile(np.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32), (num_frames, 1)),
+            "joint_pos": np.zeros((num_frames, 29), dtype=np.float32),
+            "body_names": np.asarray(["pelvis"], dtype=str),
+            "clip_starts": np.asarray([0], dtype=np.int64),
+            "clip_lengths": np.asarray([num_frames], dtype=np.int64),
+            "clip_fps": np.asarray([30], dtype=np.int64),
+        },
+        tmp_path / "shard_000.h5",
     )
-    (tmp_path / "shard_000.h5").write_bytes(b"placeholder")
     validate_motion_file(str(tmp_path))
 
 
 def test_validate_motion_file_rejects_non_shard_paths(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError, match="Motion shard directory not found"):
+    with pytest.raises(FileNotFoundError, match="Motion dataset not found"):
         validate_motion_file(str(tmp_path))
 
 

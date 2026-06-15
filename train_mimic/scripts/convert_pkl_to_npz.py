@@ -47,6 +47,7 @@ import numpy as np
 from train_mimic.data.motion_fk import (
     MotionFkExtractor,
     compute_body_velocities,
+    finite_diff_velocity,
     normalize_quaternion,
     quat_xyzw_to_wxyz,
 )
@@ -131,7 +132,7 @@ def convert_pkl_to_arrays(
         )
 
     # Joint velocity via finite difference
-    joint_vel = np.gradient(dof_pos, dt, axis=0).astype(np.float32)
+    joint_vel = finite_diff_velocity(dof_pos, dt)
 
     # Convert root quaternion: xyzw -> wxyz
     root_rot_wxyz = normalize_quaternion(quat_xyzw_to_wxyz(root_rot_xyzw))
@@ -148,6 +149,8 @@ def convert_pkl_to_arrays(
 
     return {
         "fps": fps,
+        "root_pos": root_pos,
+        "root_quat_w": root_rot_wxyz,
         "joint_pos": dof_pos,
         "joint_vel": joint_vel,
         "body_pos_w": body_pos_w,
@@ -217,7 +220,7 @@ def convert_seed_csv_to_arrays(
     root_rot_xyzw = np.asarray(pkl_dict["root_rot"], dtype=np.float32)
     dof_pos = np.asarray(pkl_dict["dof_pos"], dtype=np.float32)
 
-    joint_vel = np.gradient(dof_pos, dt, axis=0).astype(np.float32)
+    joint_vel = finite_diff_velocity(dof_pos, dt)
     root_rot_wxyz = normalize_quaternion(quat_xyzw_to_wxyz(root_rot_xyzw))
 
     fk_extractor = extractor or MotionFkExtractor()
@@ -229,6 +232,8 @@ def convert_seed_csv_to_arrays(
 
     return {
         "fps": fps,
+        "root_pos": root_pos,
+        "root_quat_w": root_rot_wxyz,
         "joint_pos": dof_pos,
         "joint_vel": joint_vel,
         "body_pos_w": body_pos_w,

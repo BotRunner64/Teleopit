@@ -33,6 +33,21 @@ def normalize_quaternion(q: np.ndarray) -> np.ndarray:
     return arr / norms
 
 
+def finite_diff_velocity(x: np.ndarray, dt: float) -> np.ndarray:
+    """Finite-difference velocity with central interior and one-sided edges."""
+    arr = np.asarray(x, dtype=np.float32)
+    vel = np.zeros_like(arr, dtype=np.float32)
+    if dt <= 0.0:
+        raise ValueError(f"dt must be > 0, got {dt}")
+    if arr.shape[0] < 2:
+        return vel
+    inv_dt = 1.0 / float(dt)
+    vel[1:-1] = (arr[2:] - arr[:-2]) * (0.5 * inv_dt)
+    vel[0] = (arr[1] - arr[0]) * inv_dt
+    vel[-1] = (arr[-1] - arr[-2]) * inv_dt
+    return vel
+
+
 def quat_multiply(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
     """Multiply two wxyz quaternions: q1 * q2."""
     q1 = np.asarray(q1, dtype=np.float32)
@@ -75,9 +90,19 @@ def quat_rotate_inverse(q: np.ndarray, v: np.ndarray) -> np.ndarray:
 
 def quat_to_angular_velocity(q: np.ndarray, dt: float) -> np.ndarray:
     """Compute angular velocity from quaternion sequence in wxyz convention."""
-    q = normalize_quaternion(q)
-    q_dot = np.gradient(q, dt, axis=0)
-    product = quat_multiply(q_dot, quat_conjugate(q))
+    quat = normalize_quaternion(q)
+    if quat.shape[0] < 2:
+        return np.zeros(quat.shape[:-1] + (3,), dtype=np.float32)
+
+    flat = quat.reshape(quat.shape[0], -1, 4)
+    dots = np.sum(flat[1:] * flat[:-1], axis=-1)
+    signs = np.where(dots < 0.0, -1.0, 1.0).astype(np.float32)
+    signs = np.concatenate([np.ones_like(signs[:1]), signs], axis=0)
+    flat = flat * np.cumprod(signs, axis=0)[..., None]
+    quat = flat.reshape(quat.shape)
+
+    q_dot = finite_diff_velocity(quat, dt)
+    product = quat_multiply(q_dot, quat_conjugate(quat))
     return (2.0 * product[..., 1:4]).astype(np.float32)
 
 
@@ -192,9 +217,7 @@ def compute_body_velocities(
     """Compute linear and angular velocity sequences from FK outputs."""
     body_pos_w = np.asarray(body_pos_w, dtype=np.float32)
     body_quat_w = normalize_quaternion(body_quat_w)
-    if dt <= 0.0:
-        raise ValueError(f"dt must be > 0, got {dt}")
-    body_lin_vel_w = np.gradient(body_pos_w, dt, axis=0).astype(np.float32)
+    body_lin_vel_w = finite_diff_velocity(body_pos_w, dt)
     body_ang_vel_w = quat_to_angular_velocity(body_quat_w, dt).astype(np.float32)
     return body_lin_vel_w, body_ang_vel_w
 

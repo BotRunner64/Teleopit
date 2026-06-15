@@ -45,7 +45,7 @@ If check fails, regenerate data and run a smoke test:
 ```bash
 python train_mimic/scripts/train.py \
     --num_envs 64 --max_iterations 100 \
-    --motion_file data/datasets/<dataset>/train
+    --motion_file data/datasets/<dataset>
 ```
 
 Expected: `Mean episode length` significantly > 1, `error_anchor_pos` starts decreasing.
@@ -126,7 +126,7 @@ Ensure `num_eval_steps >= video_length`:
 ```bash
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/<dataset>/val \
+    --motion_file data/datasets/<dataset> \
     --num_envs 1 --num_eval_steps 2000 \
     --video --video_length 600
 ```

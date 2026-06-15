@@ -11,20 +11,20 @@ from train_mimic.tasks.tracking.config.constants import (
     GENERAL_TRACKING_TASK,
     SUPPORTED_TASKS,
 )
+from train_mimic.data.dataset_lib import find_motion_shards
 
 DEFAULT_TASK = GENERAL_TRACKING_TASK
 
 
 def validate_motion_file(motion_file: str) -> None:
-    p = Path(motion_file)
-    manifest = p / "manifest.json"
-    if p.is_dir() and manifest.is_file() and any(p.glob("*.h5")):
-        return
-    raise FileNotFoundError(
-        f"Motion shard directory not found: {motion_file}. Provide --motion_file "
-        f"pointing to an HDF5 split directory with manifest.json and shard_*.h5 files. "
-        f"Example: {DEFAULT_TRAIN_MOTION_FILE}"
-    )
+    try:
+        find_motion_shards(Path(motion_file))
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"Motion dataset not found: {motion_file}. Provide --motion_file pointing "
+            "to a dataset root directory containing Teleopit shard_*.h5 files "
+            f"(recursively allowed). Example: {DEFAULT_TRAIN_MOTION_FILE}"
+        ) from exc
 
 
 def validate_checkpoint_path(checkpoint_path: str) -> None:

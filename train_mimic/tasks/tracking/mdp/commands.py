@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,9 +14,11 @@ import torch
 from train_mimic.data.dataset_lib import (
     MOTION_ARRAY_KEYS,
     compute_clip_sample_ranges,
+    compute_dataset_stats,
+    find_motion_shards,
     parse_window_steps,
-    read_hdf5_body_names,
 )
+from train_mimic.data.motion_fk import MotionFkExtractor, compute_body_velocities, finite_diff_velocity
 
 from mjlab.managers import CommandTerm, CommandTermCfg
 from mjlab.utils.lab_api.math import (
@@ -70,7 +71,6 @@ class _Hdf5ClipRef:
     start: int
     length: int
     fps: int
-    weight: float
 
 
 @dataclass
@@ -78,7 +78,6 @@ class _MotionBatch:
     tensors: dict[str, torch.Tensor]
     lengths: torch.Tensor
     fps: torch.Tensor
-    weights: torch.Tensor
     sample_starts: torch.Tensor
     sample_ends: torch.Tensor
     global_ids: torch.Tensor
@@ -97,15 +96,6 @@ class _Hdf5MotionCache:
     ) -> None:
         if cache_num_clips <= 0:
             raise ValueError(f"cache_num_clips must be positive, got {cache_num_clips}")
-        manifest_path = motion_dir / "manifest.json"
-        if not manifest_path.is_file():
-            raise FileNotFoundError(
-                f"motion_file must be an HDF5 split directory containing manifest.json, got: {motion_dir}"
-            )
-        with manifest_path.open("r", encoding="utf-8") as f:
-            manifest = json.load(f)
-        if manifest.get("format") != "teleopit_motion_hdf5":
-            raise ValueError(f"Unsupported motion manifest format in {manifest_path}")
 
         self.motion_dir = motion_dir
         self.body_idx_np = body_idx_np
@@ -114,8 +104,19 @@ class _Hdf5MotionCache:
         self.cache_num_clips = int(cache_num_clips)
         self._rng = torch.Generator(device="cpu")
         self._rng.manual_seed(int(seed))
-        self._shard_paths = [motion_dir / shard["path"] for shard in manifest["shards"]]
-        self.body_names = np.asarray(manifest["body_names"], dtype=str)
+        self._shard_paths = find_motion_shards(motion_dir)
+        stats = compute_dataset_stats(motion_dir)
+        self.body_names = np.asarray(stats["body_names"], dtype=str)
+        self._fk_extractor = MotionFkExtractor()
+        _LOG.info(
+            "Motion dataset: root=%s shards=%d windows=%d source_clips=%d frames=%d fps=%s",
+            motion_dir,
+            stats["shards"],
+            stats["windows"],
+            stats["source_clips"],
+            stats["frames"],
+            stats["fps"],
+        )
 
         max_future = max((step for step in self.window_steps if step > 0), default=0)
         max_history = -min((step for step in self.window_steps if step < 0), default=0)
@@ -125,17 +126,10 @@ class _Hdf5MotionCache:
         skipped_short = 0
         for shard_index, shard_path in enumerate(self._shard_paths):
             with h5py.File(shard_path, "r") as h5:
-                shard_body_names = read_hdf5_body_names(shard_path)
-                if shard_body_names != self.body_names.tolist():
-                    raise ValueError(
-                        f"HDF5 shard body_names mismatch for {shard_path}: "
-                        "all shards must match manifest body_names order"
-                    )
                 starts = np.asarray(h5["clip_starts"], dtype=np.int64)
                 lengths = np.asarray(h5["clip_lengths"], dtype=np.int64)
                 fps = np.asarray(h5["clip_fps"], dtype=np.int64)
-                weights = np.asarray(h5["clip_weights"], dtype=np.float64)
-                for start, length, cur_fps, weight in zip(starts, lengths, fps, weights):
+                for start, length, cur_fps in zip(starts, lengths, fps):
                     if int(length) < min_clip_length:
                         skipped_short += 1
                         continue
@@ -144,7 +138,6 @@ class _Hdf5MotionCache:
                         start=int(start),
                         length=int(length),
                         fps=int(cur_fps),
-                        weight=float(weight),
                     ))
         if not refs:
             raise ValueError(f"HDF5 motion dataset is empty: {motion_dir}")
@@ -156,19 +149,29 @@ class _Hdf5MotionCache:
                 list(self.window_steps),
             )
         self.refs = refs
-        self.global_weights = torch.tensor(
-            [max(ref.weight, 0.0) for ref in refs], dtype=torch.float32
+        ref_lengths_np = np.asarray([ref.length for ref in refs], dtype=np.int64)
+        ref_starts_np, ref_ends_np = compute_clip_sample_ranges(
+            ref_lengths_np,
+            window_steps=self.window_steps,
         )
-        if float(self.global_weights.sum()) <= 0.0:
-            raise ValueError(f"All HDF5 motion weights are zero in {motion_dir}")
+        ref_fps_np = np.asarray([ref.fps for ref in refs], dtype=np.float32)
+        ref_valid_seconds = (ref_ends_np - ref_starts_np).astype(np.float32) / ref_fps_np
+        if np.any(ref_valid_seconds <= 0.0):
+            raise ValueError(
+                "HDF5 motion dataset contains windows with no valid sample duration "
+                f"after applying window_steps={list(self.window_steps)}"
+            )
+        self.global_sample_weights = torch.as_tensor(ref_valid_seconds, dtype=torch.float32)
+        total_weight = float(self.global_sample_weights.sum().item())
+        if total_weight <= 0.0:
+            raise ValueError(f"HDF5 motion dataset has no positive sample duration: {motion_dir}")
         self.generation = 0
         self.current = self._load_random_batch()
         self.next = self._load_random_batch()
 
     def _sample_global_ids(self) -> torch.Tensor:
-        probs = self.global_weights / self.global_weights.sum()
         return torch.multinomial(
-            probs,
+            self.global_sample_weights,
             self.cache_num_clips,
             replacement=True,
             generator=self._rng,
@@ -196,10 +199,26 @@ class _Hdf5MotionCache:
             shard_path = self._shard_paths[ref.shard_index]
             sl = slice(ref.start, ref.start + ref.length)
             with h5py.File(shard_path, "r") as h5:
-                arrays["joint_pos"][out_i, :ref.length] = np.asarray(h5["joint_pos"][sl], dtype=np.float32)
-                arrays["joint_vel"][out_i, :ref.length] = np.asarray(h5["joint_vel"][sl], dtype=np.float32)
-                for key in ("body_pos_w", "body_quat_w", "body_lin_vel_w", "body_ang_vel_w"):
-                    arrays[key][out_i, :ref.length] = np.asarray(h5[key][sl], dtype=np.float32)[:, self.body_idx_np]
+                root_pos = np.asarray(h5["root_pos"][sl], dtype=np.float32)
+                root_quat_w = np.asarray(h5["root_quat_w"][sl], dtype=np.float32)
+                joint_pos = np.asarray(h5["joint_pos"][sl], dtype=np.float32)
+
+            dt = 1.0 / float(ref.fps)
+            body_pos_w, body_quat_w = self._fk_extractor.extract(
+                root_pos,
+                root_quat_w,
+                joint_pos,
+                self.body_names,
+            )
+            body_lin_vel_w, body_ang_vel_w = compute_body_velocities(body_pos_w, body_quat_w, dt)
+            joint_vel = finite_diff_velocity(joint_pos, dt)
+
+            arrays["joint_pos"][out_i, :ref.length] = joint_pos
+            arrays["joint_vel"][out_i, :ref.length] = joint_vel
+            arrays["body_pos_w"][out_i, :ref.length] = body_pos_w[:, self.body_idx_np]
+            arrays["body_quat_w"][out_i, :ref.length] = body_quat_w[:, self.body_idx_np]
+            arrays["body_lin_vel_w"][out_i, :ref.length] = body_lin_vel_w[:, self.body_idx_np]
+            arrays["body_ang_vel_w"][out_i, :ref.length] = body_ang_vel_w[:, self.body_idx_np]
 
         lengths_np = np.asarray([ref.length for ref in selected], dtype=np.int64)
         starts_np, ends_np = compute_clip_sample_ranges(lengths_np, window_steps=self.window_steps)
@@ -208,7 +227,6 @@ class _Hdf5MotionCache:
             tensors=tensors,
             lengths=torch.tensor(lengths_np, dtype=torch.long, device=self.device),
             fps=torch.tensor([ref.fps for ref in selected], dtype=torch.float32, device=self.device),
-            weights=torch.ones(len(selected), dtype=torch.float32, device=self.device),
             sample_starts=torch.tensor(starts_np, dtype=torch.long, device=self.device),
             sample_ends=torch.tensor(ends_np, dtype=torch.long, device=self.device),
             global_ids=global_ids.to(self.device),
@@ -242,24 +260,16 @@ class MotionLib:
         self.window_steps = parse_window_steps(window_steps)
 
         motion_path = Path(motion_file)
-        if not motion_path.is_dir():
+        if not motion_path.exists():
             raise FileNotFoundError(
-                f"motion_file must be an HDF5 shard directory, got: {motion_file}"
+                f"motion_file must be a dataset root directory or .h5 shard, got: {motion_file}"
             )
-        manifest_path = motion_path / "manifest.json"
-        if not manifest_path.is_file():
-            raise FileNotFoundError(
-                f"motion_file must contain manifest.json for HDF5 loading, got: {motion_file}"
-            )
-        with manifest_path.open("r", encoding="utf-8") as f:
-            manifest = json.load(f)
-        if manifest.get("format") != "teleopit_motion_hdf5":
-            raise ValueError(f"Unsupported motion manifest format in {manifest_path}")
+        stats = compute_dataset_stats(motion_path)
 
         if body_names is None:
             body_idx_np = body_indexes.cpu().numpy()
         else:
-            dataset_body_names = [str(name) for name in manifest["body_names"]]
+            dataset_body_names = [str(name) for name in stats["body_names"]]
             dataset_body_index_by_name = {
                 name: index for index, name in enumerate(dataset_body_names)
             }
@@ -298,7 +308,6 @@ class MotionLib:
         self._body_ang_vel_w_t = batch.tensors["body_ang_vel_w"]
 
         self.clip_lengths = batch.lengths
-        self.clip_weights = batch.weights
         self.clip_fps = batch.fps
         self.num_clips = int(batch.lengths.shape[0])
         self.time_step_total = int(batch.lengths.max().item())
@@ -321,15 +330,8 @@ class MotionLib:
     # ------------------------------------------------------------------
 
     def sample_motion_ids(self, n: int) -> torch.Tensor:
-        """Sample *n* clip indices weighted by ``clip_weights``."""
-        total = self.clip_weights.sum()
-        if total <= 0:
-            raise ValueError(
-                "All clip weights are zero — cannot sample. "
-                "Check that the shard dataset was built with positive weights."
-            )
-        probs = self.clip_weights / total
-        return torch.multinomial(probs, n, replacement=True)
+        """Sample *n* cache-local clip indices uniformly."""
+        return torch.randint(0, self.num_clips, (n,), device=self._device)
 
     def sample_times(self, motion_ids: torch.Tensor) -> torch.Tensor:
         """Uniform random time over valid center frames for each motion id."""

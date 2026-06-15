@@ -1,7 +1,5 @@
 name: seed
 target_fps: 30
-val_percent: 5
-hash_salt: ""
 preprocess:
   normalize_root_xy: true
   ground_align: first_frame_foot
@@ -11,6 +9,5 @@ sources:
     type: seed_csv
     input: data/SEED/g1/csv
     metadata_csv: data/SEED/seed_metadata_v003.csv
-    weight: 1.0
     filters:
       is_mirror: [false]

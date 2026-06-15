@@ -35,7 +35,7 @@ Robot models, datasets, checkpoints, and demo media are not tracked in Git. They
 | `ckpt` | Teleopit-models | `checkpoints/track.onnx`, `checkpoints/track.pt` |
 | `gmr` | Teleopit-models | `archives/gmr_assets.tar.gz` |
 | `bvh` | Teleopit-models | `archives/sample_bvh.tar.gz` |
-| `data` | Teleopit-datasets | `data/train/`, `data/val/` |
+| `data` | Teleopit-datasets | `data/` |
 
 ## Download
 
@@ -63,8 +63,7 @@ Local paths after download:
 | `checkpoints/track.pt` | `track.pt` |
 | `archives/gmr_assets.tar.gz` | `teleopit/retargeting/gmr/assets/` (extracted) |
 | `archives/sample_bvh.tar.gz` | `data/sample_bvh/` (extracted) |
-| `data/train/` | `data/datasets/seed/train/` |
-| `data/val/` | `data/datasets/seed/val/` |
+| `data/` | `data/datasets/seed/` |
 
 ## Upload to ModelScope
 

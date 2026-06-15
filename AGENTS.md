@@ -203,13 +203,14 @@ The single supported training task is `General-Tracking-G1` (experiment name: `g
 
 ### Dataset Pipeline
 - Dataset build spec supports a `preprocess` section for root-xy normalization, ground alignment, and basic clip filtering
-- Final training dataset outputs are HDF5 split directories: `data/datasets/<dataset>/train/manifest.json` + `shard_*.h5` and the same under `val/`
-- Each shard stores clip-aware window metadata (`clip_starts`, `clip_lengths`, `clip_fps`, `clip_weights`); long clips are split into overlapping bounded windows
+- Final training dataset outputs are minimal HDF5 shards directly under `data/datasets/<dataset>/` (recursive shard discovery is supported; no train/val split and no manifest file)
+- Each shard stores only `root_pos`, `root_quat_w`, `joint_pos`, `body_names`, and clip-aware window metadata (`clip_starts`, `clip_lengths`, `clip_fps`); long clips are split into overlapping bounded windows
+- Training computes joint velocities and body FK/velocities online when loading the motion cache
 - `MotionLib` loads only a configurable HDF5 subset cache into CPU/GPU memory, stages the next cache, and swaps at the PPO rollout barrier
 - `MotionLib` samples only valid center frames for the configured `window_steps`; default is `window_steps=[0]`
 - Training supports `uniform` and `rewind` sampling on the active cache; in distributed training each rank sets a rank-offset `cache_seed`
 - `scripts/run/record_pico_motion.py` records Pico live body tracking as retargeted G1 motion NPZ clips in `data/pico_motion/clips/`; it opens a live `Retarget` viewer, uses terminal keys `R/S/D/N/Q`, stores semantic labels in filenames, and intentionally does not write per-clip JSON
-- Build Pico-recorded clips into shards with `python train_mimic/scripts/data/build_dataset.py --spec data/pico_motion/pico_recorded.yaml --force`; at least two clips are required for non-empty train/val splits
+- Build Pico-recorded clips into shards with `python train_mimic/scripts/data/build_dataset.py --spec data/pico_motion/pico_recorded.yaml --force`
 
 Quick reference:
 
@@ -217,7 +218,7 @@ Quick reference:
 python train_mimic/scripts/data/build_dataset.py --spec train_mimic/configs/datasets/twist2.yaml
 python scripts/run/record_pico_motion.py
 python train_mimic/scripts/data/build_dataset.py --spec data/pico_motion/pico_recorded.yaml --force
-python train_mimic/scripts/train.py --motion_file data/datasets/twist2/train
+python train_mimic/scripts/train.py --motion_file data/datasets/twist2
 python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt --output policy.onnx --history_length 10
 ```
 
