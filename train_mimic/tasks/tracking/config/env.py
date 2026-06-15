@@ -198,6 +198,19 @@ def _configure_feet_acc_reward(cfg: ManagerBasedRlEnvCfg) -> None:
     )
 
 
+def _configure_additional_wrist_pos_reward(cfg: ManagerBasedRlEnvCfg) -> None:
+    cfg.rewards["additional_wrist_pos"] = RewardTermCfg(
+        func=mdp.motion_relative_body_point_position_error_exp,
+        weight=1.0,
+        params={
+            "command_name": "motion",
+            "std": 0.12,
+            "body_names": ("left_wrist_yaw_link", "right_wrist_yaw_link"),
+            "body_offsets": ((0.18, -0.025, 0.0), (0.18, 0.025, 0.0)),
+        },
+    )
+
+
 def make_general_tracking_env_cfg(
     *, play: bool = False,
 ) -> ManagerBasedRlEnvCfg:
@@ -227,6 +240,7 @@ def make_general_tracking_env_cfg(
     ].body_names = "torso_link"
     _configure_self_collision_reward(cfg)
     _configure_feet_acc_reward(cfg)
+    _configure_additional_wrist_pos_reward(cfg)
     cfg.terminations["ee_body_pos"].params["body_names"] = (
         "left_ankle_roll_link",
         "right_ankle_roll_link",

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, cast
 import torch
 
 from mjlab.utils.lab_api.math import (
+    quat_apply,
     quat_error_magnitude,
 )
 
@@ -77,6 +78,41 @@ def motion_relative_body_position_error_exp(
         ),
         dim=-1,
     )
+    return torch.exp(-error.mean(-1) / std**2)
+
+
+def motion_relative_body_point_position_error_exp(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    std: float,
+    body_names: tuple[str, ...],
+    body_offsets: tuple[tuple[float, float, float], ...],
+) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    body_index_by_name = {name: i for i, name in enumerate(command.cfg.body_names)}
+    missing_body_names = [name for name in body_names if name not in body_index_by_name]
+    if missing_body_names:
+        raise ValueError(
+            "body_names must exist in the motion command tracking body list: "
+            f"missing {missing_body_names}"
+        )
+    if len(body_names) != len(body_offsets):
+        raise ValueError(
+            "body_offsets must contain one offset for each selected body: "
+            f"got {len(body_offsets)} offsets for {len(body_names)} bodies"
+        )
+
+    body_indexes = [body_index_by_name[name] for name in body_names]
+    offsets = torch.tensor(
+        body_offsets, dtype=command.body_pos_relative_w.dtype, device=env.device
+    ).expand(env.num_envs, -1, -1)
+    ref_points = command.body_pos_relative_w[:, body_indexes] + quat_apply(
+        command.body_quat_relative_w[:, body_indexes], offsets
+    )
+    robot_points = command.robot_body_pos_w[:, body_indexes] + quat_apply(
+        command.robot_body_quat_w[:, body_indexes], offsets
+    )
+    error = torch.sum(torch.square(ref_points - robot_points), dim=-1)
     return torch.exp(-error.mean(-1) / std**2)
 
 
