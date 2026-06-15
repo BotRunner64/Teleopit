@@ -78,6 +78,7 @@ class _Hdf5ClipRef:
 @dataclass
 class _MotionBatch:
     tensors: dict[str, torch.Tensor]
+    frame_offsets: torch.Tensor
     lengths: torch.Tensor
     fps: torch.Tensor
     sample_starts: torch.Tensor
@@ -87,6 +88,7 @@ class _MotionBatch:
     def pin_memory(self) -> "_MotionBatch":
         return _MotionBatch(
             tensors={key: value.pin_memory() for key, value in self.tensors.items()},
+            frame_offsets=self.frame_offsets.pin_memory(),
             lengths=self.lengths.pin_memory(),
             fps=self.fps.pin_memory(),
             sample_starts=self.sample_starts.pin_memory(),
@@ -208,22 +210,19 @@ class _Hdf5MotionDataset(Dataset[_MotionClipSample]):
 def _collate_motion_clips(samples: list[_MotionClipSample]) -> _MotionBatch:
     if not samples:
         raise ValueError("Motion cache DataLoader produced an empty batch")
-    max_len = max(sample.length for sample in samples)
     arrays: dict[str, torch.Tensor] = {}
     for key in MOTION_ARRAY_KEYS:
-        first = samples[0].tensors[key]
-        arrays[key] = torch.zeros(
-            (len(samples), max_len, *first.shape[1:]),
-            dtype=torch.float32,
-        )
+        arrays[key] = torch.cat([sample.tensors[key] for sample in samples], dim=0)
 
-    for out_i, sample in enumerate(samples):
-        for key, value in sample.tensors.items():
-            arrays[key][out_i, :sample.length] = value
+    lengths = torch.tensor([sample.length for sample in samples], dtype=torch.long)
+    frame_offsets = torch.zeros(len(samples), dtype=torch.long)
+    if len(samples) > 1:
+        frame_offsets[1:] = torch.cumsum(lengths[:-1], dim=0)
 
     return _MotionBatch(
         tensors=arrays,
-        lengths=torch.tensor([sample.length for sample in samples], dtype=torch.long),
+        frame_offsets=frame_offsets,
+        lengths=lengths,
         fps=torch.tensor([sample.fps for sample in samples], dtype=torch.float32),
         sample_starts=torch.tensor([sample.sample_start for sample in samples], dtype=torch.long),
         sample_ends=torch.tensor([sample.sample_end for sample in samples], dtype=torch.long),
@@ -371,6 +370,7 @@ class _Hdf5MotionCache:
             tensors = {key: value.to(self._device) for key, value in batch.tensors.items()}
             return _MotionBatch(
                 tensors=tensors,
+                frame_offsets=batch.frame_offsets.to(self._device),
                 lengths=batch.lengths.to(self._device),
                 fps=batch.fps.to(self._device),
                 sample_starts=batch.sample_starts.to(self._device),
@@ -387,6 +387,7 @@ class _Hdf5MotionCache:
             }
             staged = _MotionBatch(
                 tensors=tensors,
+                frame_offsets=batch.frame_offsets.to(self._device, non_blocking=True),
                 lengths=batch.lengths.to(self._device, non_blocking=True),
                 fps=batch.fps.to(self._device, non_blocking=True),
                 sample_starts=batch.sample_starts.to(self._device, non_blocking=True),
@@ -468,7 +469,7 @@ class MotionLib:
         body_names: tuple[str, ...] | list[str] | None = None,
         device: str = "cpu",
         window_steps: tuple[int, ...] | list[int] | None = None,
-        cache_num_clips: int = 1024,
+        cache_num_clips: int = 8192,
         cache_seed: int = 0,
         dataloader_num_workers: int = 2,
         dataloader_prefetch_factor: int = 1,
@@ -527,6 +528,7 @@ class MotionLib:
         self._body_quat_w_t = batch.tensors["body_quat_w"]
         self._body_lin_vel_w_t = batch.tensors["body_lin_vel_w"]
         self._body_ang_vel_w_t = batch.tensors["body_ang_vel_w"]
+        self.clip_frame_offsets = batch.frame_offsets
 
         self.clip_lengths = batch.lengths
         self.clip_fps = batch.fps
@@ -538,8 +540,8 @@ class MotionLib:
         self.clip_sample_ends = batch.sample_ends
         self.clip_sample_start_s = self.clip_sample_starts.float() * self.clip_dt
         self.clip_sample_end_s = self.clip_sample_ends.float() * self.clip_dt
-        # Kept for introspection/logging; frame interpolation is cache-local.
-        self.clip_starts = torch.zeros(self.num_clips, dtype=torch.long, device=self._device)
+        # Kept for introspection/logging; these are cache-local flat frame offsets.
+        self.clip_starts = self.clip_frame_offsets
         self.generation = self._cache.generation
 
     def advance_cache(self) -> None:
@@ -633,7 +635,9 @@ class MotionLib:
             steps,
         )
         batch = motion_ids.shape[0]
-        batch_idx = motion_ids[:, None].expand(batch, window).reshape(-1)
+        frame_offsets = self.clip_frame_offsets[motion_ids]
+        flat_idx0 = (frame_offsets[:, None] + idx0.reshape(batch, window)).reshape(-1)
+        flat_idx1 = (frame_offsets[:, None] + idx1.reshape(batch, window)).reshape(-1)
         want = self._ALL_KEYS if keys is None else keys
 
         result: dict[str, torch.Tensor] = {}
@@ -643,7 +647,7 @@ class MotionLib:
         for key, arr_t in (("joint_pos", self._joint_pos_t), ("joint_vel", self._joint_vel_t)):
             if key not in want:
                 continue
-            v0, v1 = arr_t[batch_idx, idx0], arr_t[batch_idx, idx1]
+            v0, v1 = arr_t[flat_idx0], arr_t[flat_idx1]
             result[key] = (v0 + a1 * (v1 - v0)).reshape(batch, window, -1)
 
         # body arrays: (T, B, D) — GPU gather + lerp, optionally pre-slice bodies
@@ -656,21 +660,21 @@ class MotionLib:
             if key not in want:
                 continue
             if body_indices is not None:
-                v0 = arr_t[batch_idx, idx0][:, body_indices]
-                v1 = arr_t[batch_idx, idx1][:, body_indices]
+                v0 = arr_t[flat_idx0][:, body_indices]
+                v1 = arr_t[flat_idx1][:, body_indices]
             else:
-                v0, v1 = arr_t[batch_idx, idx0], arr_t[batch_idx, idx1]
+                v0, v1 = arr_t[flat_idx0], arr_t[flat_idx1]
             interp = v0 + a2 * (v1 - v0)
             result[key] = interp.reshape(batch, window, *interp.shape[1:])
 
         # body_quat_w: GPU slerp, optionally pre-slice bodies
         if "body_quat_w" in want:
             if body_indices is not None:
-                q0 = self._body_quat_w_t[batch_idx, idx0][:, body_indices]
-                q1 = self._body_quat_w_t[batch_idx, idx1][:, body_indices]
+                q0 = self._body_quat_w_t[flat_idx0][:, body_indices]
+                q1 = self._body_quat_w_t[flat_idx1][:, body_indices]
             else:
-                q0 = self._body_quat_w_t[batch_idx, idx0]
-                q1 = self._body_quat_w_t[batch_idx, idx1]
+                q0 = self._body_quat_w_t[flat_idx0]
+                q1 = self._body_quat_w_t[flat_idx1]
             nb = q0.shape[1]
             q0_flat = q0.reshape(-1, 4)
             q1_flat = q1.reshape(-1, 4)
@@ -1312,8 +1316,8 @@ class MotionCommandCfg(CommandTermCfg):
     joint_position_range: tuple[float, float] = (-0.52, 0.52)
     sampling_mode: Literal["uniform", "start", "rewind"] = "rewind"
     window_steps: tuple[int, ...] = (0,)
-    cache_num_clips: int = 1024
-    cache_swap_interval_steps: int = 500
+    cache_num_clips: int = 8192
+    cache_swap_interval_steps: int = 2000
     cache_dataloader_num_workers: int = 2
     cache_dataloader_prefetch_factor: int = 1
     cache_dataloader_pin_memory: bool = True

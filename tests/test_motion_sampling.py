@@ -129,6 +129,36 @@ def test_motion_lib_get_window_frames_returns_requested_offsets(tmp_path: Path) 
     assert torch.allclose(current["joint_pos"][0, :1], torch.tensor([2.0], dtype=torch.float32))
 
 
+def test_motion_lib_flat_cache_offsets_select_requested_clip(tmp_path: Path) -> None:
+    clip0 = _clip_dict(num_frames=3)
+    clip1 = _clip_dict(num_frames=7)
+    clip1["root_pos"] = np.asarray(clip1["root_pos"]).copy()
+    clip1["root_pos"][:, 0] += 100.0
+    clip1["joint_pos"] = np.asarray(clip1["joint_pos"]).copy()
+    clip1["joint_pos"][:, 0] += 100.0
+    clip1["body_pos_w"] = np.asarray(clip1["body_pos_w"]).copy()
+    clip1["body_pos_w"][:, :, 0] += 100.0
+
+    motion_path = _write_shard_dir(tmp_path / "motion_flat_offsets", [clip0, clip1])
+    motion = MotionLib(
+        str(motion_path),
+        body_indexes=torch.tensor([0, 1], dtype=torch.long),
+        window_steps=(0,),
+        cache_num_clips=2,
+        cache_seed=0,
+        dataloader_num_workers=0,
+    )
+    motion._set_batch(motion._cache._load_batch(torch.tensor([0, 1], dtype=torch.long)))
+
+    frames = motion.get_frames(
+        torch.tensor([1], dtype=torch.long),
+        torch.tensor([2.0], dtype=torch.float32),
+    )
+
+    assert torch.allclose(frames["joint_pos"][0, :1], torch.tensor([102.0]))
+    assert torch.allclose(frames["body_pos_w"][0, 0], torch.tensor([102.0, 0.0, 0.0]))
+
+
 def test_motion_lib_selects_bodies_by_dataset_names(tmp_path: Path) -> None:
     motion_path = _write_shard_dir(tmp_path / "motion_named_bodies", [_clip_dict()])
 
