@@ -76,6 +76,7 @@ torchrun \
 - Default logger is TensorBoard. Use `--logger wandb` or `--logger swanlab` to select W&B or SwanLab; the project name defaults to `experiment_name`
 - `--motion_file` accepts a dataset root directory or single `.h5` shard; shard discovery is recursive
 - `--cache_num_clips` controls the active HDF5 subset size; `--cache_swap_interval_steps` controls how often the next subset is swapped in at a rollout barrier
+- `--cache_dataloader_num_workers`, `--cache_dataloader_prefetch_factor`, and `--cache_dataloader_pin_memory` tune asynchronous HDF5 cache loading without increasing dataset size
 - `--max_iterations` means additional iterations; resuming from `model_12000.pt` with `--max_iterations 18000` trains to `model_30000.pt`
 
 ## Export ONNX

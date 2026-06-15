@@ -76,6 +76,7 @@ torchrun \
 - 默认日志工具为 TensorBoard。使用 `--logger wandb` 或 `--logger swanlab` 可选择 W&B 或 SwanLab；项目名默认使用 `experiment_name`
 - `--motion_file` 接受数据集根目录或单个 `.h5` shard；shard 会递归发现
 - `--cache_num_clips` 控制当前 HDF5 subset cache 大小；`--cache_swap_interval_steps` 控制在 rollout barrier 切换下一个 subset 的频率
+- `--cache_dataloader_num_workers`、`--cache_dataloader_prefetch_factor` 和 `--cache_dataloader_pin_memory` 用于调节异步 HDF5 cache 加载，不会增加数据集大小
 - `--max_iterations` 表示追加迭代次数；例如从 `model_12000.pt` 恢复训练并设置 `--max_iterations 18000`，最终将训练到 `model_30000.pt`
 
 ## 导出 ONNX

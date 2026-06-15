@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import copy
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Iterator, Literal
 
 import h5py
 import mujoco
 import numpy as np
 import torch
+from torch.utils.data import DataLoader, Dataset, Sampler
 
 from train_mimic.data.dataset_lib import (
     MOTION_ARRAY_KEYS,
@@ -82,6 +84,157 @@ class _MotionBatch:
     sample_ends: torch.Tensor
     global_ids: torch.Tensor
 
+    def pin_memory(self) -> "_MotionBatch":
+        return _MotionBatch(
+            tensors={key: value.pin_memory() for key, value in self.tensors.items()},
+            lengths=self.lengths.pin_memory(),
+            fps=self.fps.pin_memory(),
+            sample_starts=self.sample_starts.pin_memory(),
+            sample_ends=self.sample_ends.pin_memory(),
+            global_ids=self.global_ids.pin_memory(),
+        )
+
+
+@dataclass
+class _MotionClipSample:
+    tensors: dict[str, torch.Tensor]
+    length: int
+    fps: int
+    sample_start: int
+    sample_end: int
+    global_id: int
+
+
+class _WeightedInfiniteClipBatchSampler(Sampler[list[int]]):
+    def __init__(
+        self,
+        *,
+        sample_weights: torch.Tensor,
+        batch_size: int,
+        seed: int,
+    ) -> None:
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {batch_size}")
+        self.sample_weights = sample_weights.cpu().to(dtype=torch.float32)
+        self.batch_size = int(batch_size)
+        self._rng = torch.Generator(device="cpu")
+        self._rng.manual_seed(int(seed))
+
+    def __iter__(self) -> Iterator[list[int]]:
+        while True:
+            ids = torch.multinomial(
+                self.sample_weights,
+                self.batch_size,
+                replacement=True,
+                generator=self._rng,
+            )
+            yield [int(value) for value in ids.tolist()]
+
+
+class _Hdf5MotionDataset(Dataset[_MotionClipSample]):
+    def __init__(
+        self,
+        *,
+        refs: list[_Hdf5ClipRef],
+        shard_paths: list[Path],
+        body_idx_np: np.ndarray,
+        body_names: np.ndarray,
+        window_steps: tuple[int, ...],
+    ) -> None:
+        self.refs = refs
+        self._shard_paths = shard_paths
+        self.body_idx_np = body_idx_np
+        self.body_names = body_names
+        self.window_steps = window_steps
+        self._fk_extractor = MotionFkExtractor()
+        self._h5_handles: dict[int, h5py.File] = {}
+
+    def __len__(self) -> int:
+        return len(self.refs)
+
+    def __getitem__(self, index: int) -> _MotionClipSample:
+        ref = self.refs[int(index)]
+        sl = slice(ref.start, ref.start + ref.length)
+        h5 = self._h5_handle(ref.shard_index)
+        root_pos = np.asarray(h5["root_pos"][sl], dtype=np.float32)
+        root_quat_w = np.asarray(h5["root_quat_w"][sl], dtype=np.float32)
+        joint_pos = np.asarray(h5["joint_pos"][sl], dtype=np.float32)
+
+        dt = 1.0 / float(ref.fps)
+        body_pos_w, body_quat_w = self._fk_extractor.extract(
+            root_pos,
+            root_quat_w,
+            joint_pos,
+            self.body_names,
+        )
+        body_lin_vel_w, body_ang_vel_w = compute_body_velocities(body_pos_w, body_quat_w, dt)
+        joint_vel = finite_diff_velocity(joint_pos, dt)
+        sample_starts, sample_ends = compute_clip_sample_ranges(
+            np.asarray([ref.length], dtype=np.int64),
+            window_steps=self.window_steps,
+        )
+        tensors = {
+            "joint_pos": torch.from_numpy(joint_pos),
+            "joint_vel": torch.from_numpy(joint_vel),
+            "body_pos_w": torch.from_numpy(body_pos_w[:, self.body_idx_np]),
+            "body_quat_w": torch.from_numpy(body_quat_w[:, self.body_idx_np]),
+            "body_lin_vel_w": torch.from_numpy(body_lin_vel_w[:, self.body_idx_np]),
+            "body_ang_vel_w": torch.from_numpy(body_ang_vel_w[:, self.body_idx_np]),
+        }
+        return _MotionClipSample(
+            tensors=tensors,
+            length=ref.length,
+            fps=ref.fps,
+            sample_start=int(sample_starts[0]),
+            sample_end=int(sample_ends[0]),
+            global_id=int(index),
+        )
+
+    def _h5_handle(self, shard_index: int) -> h5py.File:
+        handle = self._h5_handles.get(shard_index)
+        if handle is not None and handle.id:
+            return handle
+        handle = h5py.File(self._shard_paths[shard_index], "r")
+        self._h5_handles[shard_index] = handle
+        return handle
+
+    def close(self) -> None:
+        for handle in self._h5_handles.values():
+            if handle.id:
+                handle.close()
+        self._h5_handles.clear()
+
+
+def _collate_motion_clips(samples: list[_MotionClipSample]) -> _MotionBatch:
+    if not samples:
+        raise ValueError("Motion cache DataLoader produced an empty batch")
+    max_len = max(sample.length for sample in samples)
+    arrays: dict[str, torch.Tensor] = {}
+    for key in MOTION_ARRAY_KEYS:
+        first = samples[0].tensors[key]
+        arrays[key] = torch.zeros(
+            (len(samples), max_len, *first.shape[1:]),
+            dtype=torch.float32,
+        )
+
+    for out_i, sample in enumerate(samples):
+        for key, value in sample.tensors.items():
+            arrays[key][out_i, :sample.length] = value
+
+    return _MotionBatch(
+        tensors=arrays,
+        lengths=torch.tensor([sample.length for sample in samples], dtype=torch.long),
+        fps=torch.tensor([sample.fps for sample in samples], dtype=torch.float32),
+        sample_starts=torch.tensor([sample.sample_start for sample in samples], dtype=torch.long),
+        sample_ends=torch.tensor([sample.sample_end for sample in samples], dtype=torch.long),
+        global_ids=torch.tensor([sample.global_id for sample in samples], dtype=torch.long),
+    )
+
+
+def _motion_worker_init(worker_id: int) -> None:
+    del worker_id
+    torch.set_num_threads(1)
+
 
 class _Hdf5MotionCache:
     def __init__(
@@ -93,6 +246,9 @@ class _Hdf5MotionCache:
         window_steps: tuple[int, ...],
         cache_num_clips: int,
         seed: int,
+        dataloader_num_workers: int,
+        dataloader_prefetch_factor: int,
+        dataloader_pin_memory: bool,
     ) -> None:
         if cache_num_clips <= 0:
             raise ValueError(f"cache_num_clips must be positive, got {cache_num_clips}")
@@ -102,8 +258,12 @@ class _Hdf5MotionCache:
         self.device = device
         self.window_steps = window_steps
         self.cache_num_clips = int(cache_num_clips)
-        self._rng = torch.Generator(device="cpu")
-        self._rng.manual_seed(int(seed))
+        self.dataloader_num_workers = max(0, int(dataloader_num_workers))
+        self.dataloader_prefetch_factor = max(1, int(dataloader_prefetch_factor))
+        self.dataloader_pin_memory = bool(dataloader_pin_memory)
+        self._device = torch.device(device)
+        self._copy_stream: torch.cuda.Stream | None = None
+        self._next_ready_event: torch.cuda.Event | None = None
         self._shard_paths = find_motion_shards(motion_dir)
         stats = compute_dataset_stats(motion_dir)
         self.body_names = np.asarray(stats["body_names"], dtype=str)
@@ -166,76 +326,131 @@ class _Hdf5MotionCache:
         if total_weight <= 0.0:
             raise ValueError(f"HDF5 motion dataset has no positive sample duration: {motion_dir}")
         self.generation = 0
-        self.current = self._load_random_batch()
-        self.next = self._load_random_batch()
+        self._dataset = _Hdf5MotionDataset(
+            refs=self.refs,
+            shard_paths=self._shard_paths,
+            body_idx_np=self.body_idx_np,
+            body_names=self.body_names,
+            window_steps=self.window_steps,
+        )
+        self._sampler = _WeightedInfiniteClipBatchSampler(
+            sample_weights=self.global_sample_weights,
+            batch_size=self.cache_num_clips,
+            seed=seed,
+        )
+        loader_kwargs: dict[str, object] = {}
+        if self.dataloader_num_workers > 0:
+            loader_kwargs["prefetch_factor"] = self.dataloader_prefetch_factor
+            loader_kwargs["persistent_workers"] = True
+            loader_kwargs["worker_init_fn"] = _motion_worker_init
+        self._loader = DataLoader(
+            self._dataset,
+            batch_sampler=self._sampler,
+            num_workers=self.dataloader_num_workers,
+            pin_memory=self.dataloader_pin_memory and self._device.type == "cuda",
+            collate_fn=_collate_motion_clips,
+            **loader_kwargs,
+        )
+        self._iterator = iter(self._loader)
+        self.current = self._stage_batch(self._load_next_cpu_batch(), wait=True)
+        self._next_batch = self._stage_batch(self._load_next_cpu_batch(), wait=False)
+
+    def _load_next_cpu_batch(self, *, log_wait: bool = False) -> _MotionBatch:
+        start = time.perf_counter()
+        batch = next(self._iterator)
+        elapsed = time.perf_counter() - start
+        if log_wait and elapsed > 1e-3:
+            _LOG.info(
+                "Waited %.3fs for asynchronous HDF5 motion cache DataLoader",
+                elapsed,
+            )
+        return batch
+
+    def _stage_batch(self, batch: _MotionBatch, *, wait: bool) -> _MotionBatch:
+        if self._device.type != "cuda":
+            tensors = {key: value.to(self._device) for key, value in batch.tensors.items()}
+            return _MotionBatch(
+                tensors=tensors,
+                lengths=batch.lengths.to(self._device),
+                fps=batch.fps.to(self._device),
+                sample_starts=batch.sample_starts.to(self._device),
+                sample_ends=batch.sample_ends.to(self._device),
+                global_ids=batch.global_ids.to(self._device),
+            )
+
+        if self._copy_stream is None:
+            self._copy_stream = torch.cuda.Stream(device=self._device)
+        with torch.cuda.stream(self._copy_stream):
+            tensors = {
+                key: value.to(self._device, non_blocking=True)
+                for key, value in batch.tensors.items()
+            }
+            staged = _MotionBatch(
+                tensors=tensors,
+                lengths=batch.lengths.to(self._device, non_blocking=True),
+                fps=batch.fps.to(self._device, non_blocking=True),
+                sample_starts=batch.sample_starts.to(self._device, non_blocking=True),
+                sample_ends=batch.sample_ends.to(self._device, non_blocking=True),
+                global_ids=batch.global_ids.to(self._device, non_blocking=True),
+            )
+            event = torch.cuda.Event()
+            event.record(self._copy_stream)
+        if wait:
+            torch.cuda.current_stream(self._device).wait_event(event)
+        else:
+            self._next_ready_event = event
+        return staged
+
+    def _wait_next_ready(self) -> None:
+        if self._next_ready_event is None:
+            return
+        if self._device.type == "cuda":
+            torch.cuda.current_stream(self._device).wait_event(self._next_ready_event)
+        self._next_ready_event = None
+
+    def _materialize_legacy_batch(self, global_ids: torch.Tensor) -> _MotionBatch:
+        samples = [self._dataset[int(idx)] for idx in global_ids.tolist()]
+        batch = _collate_motion_clips(samples)
+        return self._stage_batch(batch, wait=True)
 
     def _sample_global_ids(self) -> torch.Tensor:
-        return torch.multinomial(
-            self.global_sample_weights,
-            self.cache_num_clips,
-            replacement=True,
-            generator=self._rng,
-        )
+        ids = next(iter(self._sampler))
+        return torch.tensor(ids, dtype=torch.long)
 
     def _load_random_batch(self) -> _MotionBatch:
-        return self._load_batch(self._sample_global_ids())
+        return self._materialize_legacy_batch(self._sample_global_ids())
 
     def _load_batch(self, global_ids: torch.Tensor) -> _MotionBatch:
-        ids_np = global_ids.cpu().numpy().astype(np.int64)
-        selected = [self.refs[int(idx)] for idx in ids_np]
-        max_len = max(ref.length for ref in selected)
-        arrays: dict[str, np.ndarray] = {}
-        for key in MOTION_ARRAY_KEYS:
-            sample_shape: tuple[int, ...]
-            if key in ("joint_pos", "joint_vel"):
-                sample_shape = (29,)
-            elif key == "body_quat_w":
-                sample_shape = (len(self.body_idx_np), 4)
-            else:
-                sample_shape = (len(self.body_idx_np), 3)
-            arrays[key] = np.zeros((len(selected), max_len, *sample_shape), dtype=np.float32)
-
-        for out_i, ref in enumerate(selected):
-            shard_path = self._shard_paths[ref.shard_index]
-            sl = slice(ref.start, ref.start + ref.length)
-            with h5py.File(shard_path, "r") as h5:
-                root_pos = np.asarray(h5["root_pos"][sl], dtype=np.float32)
-                root_quat_w = np.asarray(h5["root_quat_w"][sl], dtype=np.float32)
-                joint_pos = np.asarray(h5["joint_pos"][sl], dtype=np.float32)
-
-            dt = 1.0 / float(ref.fps)
-            body_pos_w, body_quat_w = self._fk_extractor.extract(
-                root_pos,
-                root_quat_w,
-                joint_pos,
-                self.body_names,
-            )
-            body_lin_vel_w, body_ang_vel_w = compute_body_velocities(body_pos_w, body_quat_w, dt)
-            joint_vel = finite_diff_velocity(joint_pos, dt)
-
-            arrays["joint_pos"][out_i, :ref.length] = joint_pos
-            arrays["joint_vel"][out_i, :ref.length] = joint_vel
-            arrays["body_pos_w"][out_i, :ref.length] = body_pos_w[:, self.body_idx_np]
-            arrays["body_quat_w"][out_i, :ref.length] = body_quat_w[:, self.body_idx_np]
-            arrays["body_lin_vel_w"][out_i, :ref.length] = body_lin_vel_w[:, self.body_idx_np]
-            arrays["body_ang_vel_w"][out_i, :ref.length] = body_ang_vel_w[:, self.body_idx_np]
-
-        lengths_np = np.asarray([ref.length for ref in selected], dtype=np.int64)
-        starts_np, ends_np = compute_clip_sample_ranges(lengths_np, window_steps=self.window_steps)
-        tensors = {key: torch.from_numpy(value).to(self.device) for key, value in arrays.items()}
-        return _MotionBatch(
-            tensors=tensors,
-            lengths=torch.tensor(lengths_np, dtype=torch.long, device=self.device),
-            fps=torch.tensor([ref.fps for ref in selected], dtype=torch.float32, device=self.device),
-            sample_starts=torch.tensor(starts_np, dtype=torch.long, device=self.device),
-            sample_ends=torch.tensor(ends_np, dtype=torch.long, device=self.device),
-            global_ids=global_ids.to(self.device),
-        )
+        return self._materialize_legacy_batch(global_ids.cpu().to(dtype=torch.long))
 
     def advance(self) -> None:
-        self.current = self.next
-        self.next = self._load_random_batch()
+        start = time.perf_counter()
+        self._wait_next_ready()
+        elapsed = time.perf_counter() - start
+        if elapsed > 1e-3:
+            _LOG.info(
+                "Waited %.3fs for asynchronous HDF5 motion cache staging",
+                elapsed,
+            )
+        self.current = self._next_batch
+        self._next_batch = self._stage_batch(
+            self._load_next_cpu_batch(log_wait=True),
+            wait=False,
+        )
         self.generation += 1
+
+    def close(self) -> None:
+        self._dataset.close()
+        iterator = getattr(self, "_iterator", None)
+        shutdown = getattr(iterator, "_shutdown_workers", None)
+        if callable(shutdown):
+            shutdown()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 class MotionLib:
@@ -255,6 +470,9 @@ class MotionLib:
         window_steps: tuple[int, ...] | list[int] | None = None,
         cache_num_clips: int = 1024,
         cache_seed: int = 0,
+        dataloader_num_workers: int = 2,
+        dataloader_prefetch_factor: int = 1,
+        dataloader_pin_memory: bool = True,
     ) -> None:
         self._device = device
         self.window_steps = parse_window_steps(window_steps)
@@ -295,6 +513,9 @@ class MotionLib:
             window_steps=self.window_steps,
             cache_num_clips=cache_num_clips,
             seed=cache_seed,
+            dataloader_num_workers=dataloader_num_workers,
+            dataloader_prefetch_factor=dataloader_prefetch_factor,
+            dataloader_pin_memory=dataloader_pin_memory,
         )
         self._set_batch(self._cache.current)
 
@@ -324,6 +545,9 @@ class MotionLib:
     def advance_cache(self) -> None:
         self._cache.advance()
         self._set_batch(self._cache.current)
+
+    def close(self) -> None:
+        self._cache.close()
 
     # ------------------------------------------------------------------
     # Sampling helpers
@@ -516,6 +740,9 @@ class MotionCommand(CommandTerm):
             window_steps=self.cfg.window_steps,
             cache_num_clips=self.cfg.cache_num_clips,
             cache_seed=self.cfg.cache_seed,
+            dataloader_num_workers=self.cfg.cache_dataloader_num_workers,
+            dataloader_prefetch_factor=self.cfg.cache_dataloader_prefetch_factor,
+            dataloader_pin_memory=self.cfg.cache_dataloader_pin_memory,
         )
         self._motion_cache_step_counter = 0
         self._motion_cache_swap_pending = False
@@ -1087,6 +1314,9 @@ class MotionCommandCfg(CommandTermCfg):
     window_steps: tuple[int, ...] = (0,)
     cache_num_clips: int = 1024
     cache_swap_interval_steps: int = 500
+    cache_dataloader_num_workers: int = 2
+    cache_dataloader_prefetch_factor: int = 1
+    cache_dataloader_pin_memory: bool = True
     cache_seed: int = 0
     rewind_prob: float = 0.8
     rewind_min_steps: int = 25
