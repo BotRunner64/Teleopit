@@ -1,0 +1,12 @@
+name: pico_record
+target_fps: 30
+preprocess:
+  normalize_root_xy: true
+  ground_align: first_frame_foot
+  min_frames: 22
+  max_all_off_ground_s: 0.8
+  off_ground_height: 0.12
+sources:
+  - name: pico_clips
+    type: npz
+    input: data/pico_motion/clips
