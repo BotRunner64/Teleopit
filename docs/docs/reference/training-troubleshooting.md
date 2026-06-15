@@ -35,7 +35,7 @@ The current `convert_pkl_to_npz.py` fixes these issues.
 
 ```bash
 python train_mimic/scripts/data/check_motion_npz_fk.py \
-    --npz data/datasets/<dataset>/clips/<source>/<clip>.npz
+    --npz data/lafan1_clips/lafan1/<clip>.npz
 ```
 
 Expected thresholds: `pos_max < 1e-3 m`, `quat_mean < 0.05 rad`, `quat_p95 < 0.10 rad`.

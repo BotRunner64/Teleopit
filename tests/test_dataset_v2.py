@@ -482,12 +482,17 @@ def test_build_dataset_from_spec_writes_shard_directories(tmp_path: Path) -> Non
     )
 
     output_root = tmp_path / "datasets"
+    stale_cache = output_root / "demo_dataset" / "clips" / "npz_src" / "clip_a.npz"
+    _write_npz_from_pkl(stale_cache)
+    stale_payload = dict(np.load(stale_cache, allow_pickle=True))
+    stale_payload["root_pos"] = np.asarray(stale_payload["root_pos"], dtype=np.float32) + 100.0
+    np.savez(stale_cache, **stale_payload)
+
     report = build_dataset_from_spec(spec, jobs=2, skip_fk_check=True, output_root=output_root)
 
     dataset_dir = output_root / "demo_dataset"
     assert report["dataset_dir"] == str(dataset_dir)
-    assert (dataset_dir / "clips" / "npz_src" / "clip_a.npz").is_file()
-    assert (dataset_dir / "clips" / "npz_src" / "clip_b.npz").is_file()
+    assert not (dataset_dir / "clips").exists()
     assert (dataset_dir / "shard_000.h5").is_file()
     assert report["input_clips"] == 2
 
@@ -496,6 +501,27 @@ def test_build_dataset_from_spec_writes_shard_directories(tmp_path: Path) -> Non
         assert "root_quat_w" in shard
         assert "joint_pos" in shard
         assert "body_pos_w" not in shard
+        assert float(shard["root_pos"][0, 2]) < 10.0
+
+
+def test_build_dataset_from_spec_rejects_clips_root_source_without_deleting_input(
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "datasets"
+    source_dir = output_root / "demo_dataset" / "clips" / "npz_src"
+    clip_path = source_dir / "clip_a.npz"
+    _write_npz_from_pkl(clip_path)
+
+    spec = DatasetSpec(
+        name="demo_dataset",
+        target_fps=30,
+        sources=[DatasetSourceSpec(name="npz_src", type="npz", input=str(source_dir))],
+    )
+
+    with pytest.raises(ValueError, match="temporary clips directory"):
+        build_dataset_from_spec(spec, jobs=1, skip_fk_check=True, output_root=output_root)
+
+    assert clip_path.is_file()
 
 
 def test_collect_clip_rows_ignores_stale_excluded_cached_npz(tmp_path: Path) -> None:

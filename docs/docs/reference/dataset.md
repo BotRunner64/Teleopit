@@ -59,12 +59,10 @@ python train_mimic/scripts/data/build_dataset.py \
 
 ```text
 data/datasets/<dataset>/
-├── clips/                  # Optional; only for per-clip intermediates
-│   └── <source>/...
 └── shard_*.h5
 ```
 
-- If the spec contains `bvh` or `npz` sources, the builder retains/generates `clips/`
+- If the spec contains `bvh` or `npz` sources, the full dataset builder uses a temporary `clips/` directory during conversion and deletes it after shards are written. Rebuilds do not reuse converted clips.
 - If the spec is all `pkl` or `seed_csv` sources, the builder takes a batch path producing shards directly
 - Training recursively discovers `*.h5` shards below the specified root, so datasets can be merged by placing multiple shard directories under one parent
 - Training loads only a subset cache from the discovered shards, derives FK/velocities online, stages the next cache, and swaps caches at the PPO rollout barrier.
@@ -101,7 +99,7 @@ sources:
 | `preprocess.max_root_lin_vel` | Root linear velocity filter threshold |
 | `preprocess.min_peak_body_height` | Minimum peak body height |
 | `preprocess.max_all_off_ground_s` | Max duration all feet off ground |
-| `sources[].name` | Source name (used for clips subdirectory) |
+| `sources[].name` | Source name |
 | `sources[].type` | `bvh` / `pkl` / `npz` / `seed_csv` |
 | `sources[].input` | Input file or directory |
 | `sources[].bvh_format` | Required for BVH: `lafan1` / `hc_mocap` / `nokov` |
@@ -149,7 +147,7 @@ Convert raw data to standard NPZ clips without merging:
 ```bash
 python train_mimic/scripts/data/ingest_motion.py \
     --type bvh --input data/lafan1_bvh \
-    --output data/datasets/lafan1/clips/lafan1 \
+    --output data/lafan1_clips/lafan1 \
     --source lafan1 --bvh_format lafan1 --jobs 8
 ```
 
@@ -157,7 +155,7 @@ python train_mimic/scripts/data/ingest_motion.py \
 
 ```bash
 python train_mimic/scripts/data/check_motion_npz_fk.py \
-    --npz data/datasets/<dataset>/clips/<source>/<clip>.npz
+    --npz data/lafan1_clips/lafan1/<clip>.npz
 ```
 
 Recommended thresholds: `pos_max < 1e-3 m`, `quat_mean < 0.05 rad`, `quat_p95 < 0.10 rad`.

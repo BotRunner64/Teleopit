@@ -4,8 +4,8 @@ preprocess:
   min_frames: 22
   normalize_root_xy: true
   ground_align: none
-  max_all_off_ground_s: 2.0
-  off_ground_height: 0.2
+  max_all_off_ground_s: 0.8
+  off_ground_height: 0.12
 sources:
   - name: lafan1
     type: bvh

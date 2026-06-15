@@ -403,6 +403,52 @@ def _clear_existing_motion_shards(dataset_dir: Path) -> None:
                 path.unlink()
 
 
+def _clear_intermediate_clips(clips_root: Path) -> None:
+    if not clips_root.exists() and not clips_root.is_symlink():
+        return
+    if clips_root.is_dir() and not clips_root.is_symlink():
+        shutil.rmtree(clips_root)
+    else:
+        clips_root.unlink()
+
+
+def _path_contains(path: Path, candidate: Path) -> bool:
+    try:
+        candidate.relative_to(path)
+    except ValueError:
+        return False
+    return True
+
+
+def _source_input_candidate_path(source: DatasetSourceSpec) -> Path:
+    candidate = Path(source.input).expanduser()
+    if not candidate.is_absolute():
+        candidate = PROJECT_ROOT / candidate
+    return candidate.resolve(strict=False)
+
+
+def _ensure_source_inputs_do_not_overlap_intermediate_clips(
+    spec: DatasetSpec,
+    clips_root: Path,
+) -> None:
+    clips_path = clips_root.resolve(strict=False)
+    conflicts: list[tuple[str, Path]] = []
+    for source in spec.sources:
+        input_path = _source_input_candidate_path(source)
+        if _path_contains(clips_path, input_path) or _path_contains(input_path, clips_path):
+            conflicts.append((source.name, input_path))
+
+    if not conflicts:
+        return
+
+    details = ", ".join(f"{name}={path}" for name, path in conflicts)
+    raise ValueError(
+        f"source input overlaps the temporary clips directory {clips_path}: {details}. "
+        "The dataset builder deletes that directory during full builds, so move source clips "
+        "outside data/datasets/<dataset>/clips or choose a different output root."
+    )
+
+
 def resolve_source_input_path(source: DatasetSourceSpec) -> Path:
     candidate = Path(source.input).expanduser()
     input_path = candidate.resolve() if candidate.is_absolute() else (PROJECT_ROOT / candidate).resolve()
@@ -1029,6 +1075,7 @@ def convert_sources_to_npz(
 ) -> dict[str, Path]:
     if jobs <= 0:
         raise ValueError(f"jobs must be > 0, got {jobs}")
+    _ensure_source_inputs_do_not_overlap_intermediate_clips(spec, paths.clips_root)
     if force and paths.dataset_dir.exists():
         shutil.rmtree(paths.dataset_dir)
     paths.clips_root.mkdir(parents=True, exist_ok=True)
@@ -1470,7 +1517,10 @@ def build_dataset_from_spec(
         )
 
     # Per-file mode for BVH/NPZ sources. Converted clips are temporary build
-    # inputs; final training data is the minimal shard(s) in dataset_dir.
+    # inputs and are rebuilt every time; final training data is the minimal
+    # shard(s) in dataset_dir.
+    _ensure_source_inputs_do_not_overlap_intermediate_clips(spec, paths.clips_root)
+    _clear_intermediate_clips(paths.clips_root)
     convert_sources_to_npz(spec, paths=paths, force=force, jobs=jobs)
     rows = collect_clip_rows(spec, paths=paths)
 
@@ -1491,6 +1541,7 @@ def build_dataset_from_spec(
     payload = {key: payload_npz[key] for key in payload_npz.files}
     shard_info = write_hdf5_motion_shard(payload, shard_path)
     tmp_npz.unlink(missing_ok=True)
+    _clear_intermediate_clips(paths.clips_root)
 
     stats["output"] = str(paths.dataset_dir)
     stats["shards"] = 1

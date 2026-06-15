@@ -35,7 +35,7 @@ sidebar_position: 5
 
 ```bash
 python train_mimic/scripts/data/check_motion_npz_fk.py \
-    --npz data/datasets/<dataset>/clips/<source>/<clip>.npz
+    --npz data/lafan1_clips/lafan1/<clip>.npz
 ```
 
 推荐判据：`pos_max < 1e-3 m`、`quat_mean < 0.05 rad`、`quat_p95 < 0.10 rad`。

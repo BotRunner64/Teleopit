@@ -57,12 +57,10 @@ python train_mimic/scripts/data/build_dataset.py \
 
 ```text
 data/datasets/<dataset>/
-├── clips/                  # 可选；仅在需要逐 clip 中间产物时存在
-│   └── <source>/...
 └── shard_*.h5
 ```
 
-- 若 spec 包含 `bvh` 或 `npz` source，builder 会保留/生成 `clips/`
+- 若 spec 包含 `bvh` 或 `npz` source，完整 dataset builder 会在转换期间使用临时 `clips/` 目录，并在 shard 写入完成后删除。重新 build 不会复用已转换 clips。
 - 若 spec 全部是 `pkl` 或 `seed_csv` source，builder 会直接并行产出 shard，默认不写中间 clip 文件
 - 训练会递归发现指定根目录下的 `*.h5` shard，因此可以把多个数据集目录放到同一个父目录下完成合并
 - 训练时只从发现的 shard 加载一个 subset cache，在线派生 FK/速度，同时预加载下一个 cache，并在 PPO rollout barrier 处切换。
@@ -97,7 +95,7 @@ sources:
 | `preprocess.ground_align` | `none` / `first_frame_foot` |
 | `preprocess.min_frames` | clip 最短长度约束 |
 | `preprocess.max_root_lin_vel` / `min_peak_body_height` / `max_all_off_ground_s` | 基础过滤阈值 |
-| `sources[].name` | source 名称；生成 clip 中间产物时也作为 `clips/<source>/` 子目录名 |
+| `sources[].name` | source 名称 |
 | `sources[].type` | `bvh` / `pkl` / `npz` / `seed_csv` |
 | `sources[].input` | 原始输入文件或目录 |
 | `sources[].bvh_format` | 仅 `bvh` source 必填：`lafan1` / `hc_mocap` / `nokov` |
@@ -145,7 +143,7 @@ python train_mimic/scripts/data/inspect_dataset.py data/datasets/twist2
 ```bash
 python train_mimic/scripts/data/ingest_motion.py \
     --type bvh --input data/lafan1_bvh \
-    --output data/datasets/lafan1/clips/lafan1 \
+    --output data/lafan1_clips/lafan1 \
     --source lafan1 --bvh_format lafan1 --jobs 8
 ```
 
@@ -153,7 +151,7 @@ python train_mimic/scripts/data/ingest_motion.py \
 
 ```bash
 python train_mimic/scripts/data/check_motion_npz_fk.py \
-    --npz data/datasets/<dataset>/clips/<source>/<clip>.npz
+    --npz data/lafan1_clips/lafan1/<clip>.npz
 ```
 
 推荐判据：`pos_max < 1e-3 m`、`quat_mean < 0.05 rad`、`quat_p95 < 0.10 rad`。
