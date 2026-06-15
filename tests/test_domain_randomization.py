@@ -62,7 +62,11 @@ def test_general_tracking_domain_randomization_matches_gr00t_active_set() -> Non
     mass = events["randomize_rigid_body_mass"]
     assert mass.func is dr.pseudo_inertia
     assert mass.mode == "startup"
-    assert mass.params["asset_cfg"].body_names == "torso_link"
+    assert mass.params["asset_cfg"].body_names == (
+        "torso_link",
+        "left_wrist_yaw_link",
+        "right_wrist_yaw_link",
+    )
     assert mass.params["alpha_range"] == (-0.1, 0.45)
 
 

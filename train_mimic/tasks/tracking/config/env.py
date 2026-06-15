@@ -237,7 +237,11 @@ def make_general_tracking_env_cfg(
     cfg.events["base_com"].params["asset_cfg"].body_names = ("torso_link",)
     cfg.events["randomize_rigid_body_mass"].params[
         "asset_cfg"
-    ].body_names = "torso_link"
+    ].body_names = (
+        "torso_link",
+        "left_wrist_yaw_link",
+        "right_wrist_yaw_link",
+    )
     _configure_self_collision_reward(cfg)
     _configure_feet_acc_reward(cfg)
     _configure_additional_wrist_pos_reward(cfg)
