@@ -7,6 +7,15 @@ import json
 from train_mimic.data.dataset_lib import compute_dataset_stats
 
 
+def _format_duration(seconds: float) -> str:
+    total_seconds = int(round(seconds))
+    hours, rem = divmod(total_seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{secs:02d} ({seconds / 3600.0:.2f} h)"
+    return f"{minutes:d}:{secs:02d} ({seconds:.1f} s)"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Inspect a Teleopit motion dataset root.")
     parser.add_argument("dataset", type=str, help="Dataset root directory or a single .h5 shard")
@@ -26,6 +35,7 @@ def main() -> int:
     print(f"windows: {stats['windows']}")
     print(f"source_clips: {stats['source_clips']}")
     print(f"frames: {stats['frames']}")
+    print(f"duration: {_format_duration(float(stats['duration_s']))}")
     print(f"fps: {stats['fps']}")
     print(f"bodies: {len(stats['body_names'])}")
     return 0

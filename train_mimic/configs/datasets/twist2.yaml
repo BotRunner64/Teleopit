@@ -1,8 +1,11 @@
 name: twist2
 target_fps: 30
 preprocess:
+  min_frames: 22
   normalize_root_xy: true
-  ground_align: first_frame_foot
+  ground_align: none
+  max_all_off_ground_s: 2.0
+  off_ground_height: 0.2
 sources:
   - name: OMOMO_g1_GMR
     type: pkl

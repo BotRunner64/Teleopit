@@ -9,7 +9,7 @@ import pytest
 import h5py
 
 from train_mimic.data import dataset_builder
-from train_mimic.data.dataset_lib import write_hdf5_motion_shard
+from train_mimic.data.dataset_lib import compute_dataset_stats, write_hdf5_motion_shard
 from train_mimic.data.dataset_builder import (
     DatasetClipRow,
     SourceInputFile,
@@ -777,6 +777,43 @@ def test_shard_stats_counts_real_frames_not_overlapped_windows(tmp_path: Path) -
 
     assert stats["frames"] == 1000
     assert stats["duration_s"] == 1000 / 30
+
+
+def test_compute_dataset_stats_reports_total_duration_from_source_clips(tmp_path: Path) -> None:
+    num_bodies = len(_MJLAB_G1_BODY_NAMES)
+    total_frames = 18
+    body_quat_w = np.zeros((total_frames, num_bodies, 4), dtype=np.float32)
+    body_quat_w[..., 0] = 1.0
+    write_hdf5_motion_shard(
+        {
+            "fps": 30,
+            "root_pos": np.zeros((total_frames, 3), dtype=np.float32),
+            "root_quat_w": np.tile(
+                np.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32),
+                (total_frames, 1),
+            ),
+            "joint_pos": np.zeros((total_frames, 29), dtype=np.float32),
+            "joint_vel": np.zeros((total_frames, 29), dtype=np.float32),
+            "body_pos_w": np.zeros((total_frames, num_bodies, 3), dtype=np.float32),
+            "body_quat_w": body_quat_w,
+            "body_lin_vel_w": np.zeros((total_frames, num_bodies, 3), dtype=np.float32),
+            "body_ang_vel_w": np.zeros((total_frames, num_bodies, 3), dtype=np.float32),
+            "body_names": np.asarray(_MJLAB_G1_BODY_NAMES, dtype=str),
+            "clip_starts": np.asarray([0, 12], dtype=np.int64),
+            "clip_lengths": np.asarray([12, 6], dtype=np.int64),
+            "clip_fps": np.asarray([30, 60], dtype=np.int64),
+        },
+        tmp_path / "shard_000.h5",
+        max_window_frames=8,
+        overlap_frames=2,
+    )
+
+    stats = compute_dataset_stats(tmp_path)
+
+    assert stats["frames"] == total_frames
+    assert stats["duration_s"] == pytest.approx(12 / 30 + 6 / 60)
+    assert stats["duration_h"] == pytest.approx((12 / 30 + 6 / 60) / 3600)
+    assert stats["shard_details"][0]["duration_s"] == pytest.approx(12 / 30 + 6 / 60)
 
 
 

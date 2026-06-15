@@ -632,6 +632,7 @@ def compute_dataset_stats(dataset_dir: str | Path) -> dict[str, Any]:
     shards = find_motion_shards(dataset_dir)
     total_windows = 0
     total_frames = 0
+    total_duration_s = 0.0
     total_source_clips = 0
     fps_values: set[int] = set()
     body_names_ref: list[str] | None = None
@@ -669,14 +670,23 @@ def compute_dataset_stats(dataset_dir: str | Path) -> dict[str, Any]:
             windows = int(lengths.shape[0])
             frames = int(np.asarray(h5["joint_pos"]).shape[0])
             source_clips = int(len(np.unique(source_ids)))
+            if "source_clip_lengths" in h5 and "source_clip_fps" in h5:
+                source_lengths = np.asarray(h5["source_clip_lengths"], dtype=np.float64)
+                source_fps = np.asarray(h5["source_clip_fps"], dtype=np.float64)
+                shard_duration_s = float(np.sum(source_lengths / np.maximum(source_fps, 1.0)))
+            else:
+                shard_fps = int(h5.attrs.get("fps", fps_arr[0] if fps_arr.shape[0] else 1))
+                shard_duration_s = float(frames / max(shard_fps, 1))
             total_windows += windows
             total_frames += frames
+            total_duration_s += shard_duration_s
             total_source_clips += source_clips
             shard_rows.append({
                 "path": str(shard_path),
                 "windows": windows,
                 "source_clips": source_clips,
                 "frames": frames,
+                "duration_s": shard_duration_s,
                 "min_window_frames": int(lengths.min()) if windows else 0,
                 "max_window_frames": int(lengths.max()) if windows else 0,
             })
@@ -689,6 +699,8 @@ def compute_dataset_stats(dataset_dir: str | Path) -> dict[str, Any]:
         "windows": total_windows,
         "source_clips": total_source_clips,
         "frames": total_frames,
+        "duration_s": total_duration_s,
+        "duration_h": total_duration_s / 3600.0,
         "fps": sorted(fps_values),
         "body_names": body_names_ref or [],
         "shard_details": shard_rows,

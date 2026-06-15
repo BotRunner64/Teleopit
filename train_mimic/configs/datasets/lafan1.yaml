@@ -1,6 +1,7 @@
 name: lafan1
 target_fps: 30
 preprocess:
+  min_frames: 22
   normalize_root_xy: true
   ground_align: none
   max_all_off_ground_s: 2.0
