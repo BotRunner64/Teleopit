@@ -7,13 +7,15 @@ sidebar_position: 3
 ## Download Pre-Built Dataset (Recommended)
 
 ```bash
-python scripts/setup/download_assets.py --only data
+python scripts/setup/download_assets.py --only robots data
 ```
 
-Then train directly with the dataset root:
+Then precompute the training shard and train with the precomputed dataset root:
 
 ```bash
-python train_mimic/scripts/train.py --motion_file data/datasets/seed
+python train_mimic/scripts/data/precompute_dataset.py \
+    data/datasets/seed --outdir data/datasets/seed_precomputed --jobs 8
+python train_mimic/scripts/train.py --motion_file data/datasets/seed_precomputed
 ```
 
 For custom dataset construction, read on.
@@ -48,7 +50,7 @@ At least one valid clip is required after preprocessing.
 
 ## Custom Dataset Construction
 
-Data pipeline: `typed source YAML -> preprocess/filter -> minimal HDF5 shards`
+Data pipeline: `typed source YAML -> preprocess/filter -> minimal HDF5 shards -> precomputed training dataset`
 
 ```bash
 python train_mimic/scripts/data/build_dataset.py \
@@ -60,12 +62,17 @@ python train_mimic/scripts/data/build_dataset.py \
 ```text
 data/datasets/<dataset>/
 └── shard_*.h5
+
+data/datasets/<dataset>_precomputed/
+└── shard_*.h5
 ```
 
 - If the spec contains `bvh` or `npz` sources, the full dataset builder uses a temporary `clips/` directory during conversion and deletes it after shards are written. Rebuilds do not reuse converted clips.
 - If the spec is all `pkl` or `seed_csv` sources, the builder takes a batch path producing shards directly
-- Training recursively discovers `*.h5` shards below the specified root, so datasets can be merged by placing multiple shard directories under one parent
-- Training loads only a subset cache from the discovered shards, derives FK/velocities online, stages the next cache, and swaps caches at the PPO rollout barrier.
+- `build_dataset.py` only writes the minimal distributable dataset. It does not run FK precompute.
+- `precompute_dataset.py` writes a separate training dataset containing the minimal motion plus precomputed joint velocities and body FK/velocities.
+- Training accepts only the precomputed dataset directory. It recursively discovers precomputed `*.h5` shards below the specified root, so precomputed datasets can be merged by placing multiple shard directories under one parent.
+- Training loads only a subset cache from the discovered precomputed shards, stages the next cache asynchronously, and swaps caches at the PPO rollout barrier. Joint velocities and body FK/velocities are not computed during training.
 
 ## YAML Spec Format
 
@@ -108,13 +115,13 @@ sources:
 
 ## Conversion Rules
 
-All sources are converted to standard training shards. Each clip goes through preprocessing/filtering before writing to shards:
+All sources are converted to standard minimal shards. Each clip goes through preprocessing/filtering before writing to shards:
 
 - `bvh -> retarget pkl -> npz clip`
 - `pkl -> npz clip` (or direct batch shard for pkl-only datasets)
 - `npz -> validate + copy/reuse`
 
-Each shard stores minimal motion data: `root_pos`, `root_quat_w`, `joint_pos`, `body_names`, `clip_starts`, `clip_lengths`, `clip_fps`. Joint velocities and body FK/velocities are computed when training loads a cache.
+Each minimal shard stores `root_pos`, `root_quat_w`, `joint_pos`, `body_names`, `clip_starts`, `clip_lengths`, and `clip_fps`. The precomputed training shards store `joint_pos`, `joint_vel`, `body_pos_w`, `body_quat_w`, `body_lin_vel_w`, `body_ang_vel_w`, and the same metadata. Training fails fast if `--motion_file` points at a minimal dataset instead of a precomputed training dataset.
 
 ## Common Commands
 
@@ -135,6 +142,10 @@ python train_mimic/scripts/data/build_dataset.py \
 # Print build report
 python train_mimic/scripts/data/build_dataset.py \
     --spec train_mimic/configs/datasets/twist2.yaml --json
+
+# Generate a precomputed training dataset from an existing minimal dataset
+python train_mimic/scripts/data/precompute_dataset.py \
+    data/datasets/twist2 --outdir data/datasets/twist2_precomputed --jobs 8 --force
 
 # Inspect a dataset root
 python train_mimic/scripts/data/inspect_dataset.py data/datasets/twist2

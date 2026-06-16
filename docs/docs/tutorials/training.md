@@ -23,6 +23,14 @@ Verify:
 python -c "import train_mimic.tasks; print('training OK')"
 ```
 
+Download the minimal seed dataset and generate the precomputed training shard:
+
+```bash
+python scripts/setup/download_assets.py --only robots data
+python train_mimic/scripts/data/precompute_dataset.py \
+    data/datasets/seed --outdir data/datasets/seed_precomputed --jobs 8
+```
+
 ## Training
 
 ### Smoke Test
@@ -31,7 +39,7 @@ python -c "import train_mimic.tasks; print('training OK')"
 python train_mimic/scripts/train.py \
     --num_envs 64 \
     --max_iterations 100 \
-    --motion_file data/datasets/seed
+    --motion_file data/datasets/seed_precomputed
 ```
 
 ### Full Training
@@ -40,7 +48,7 @@ python train_mimic/scripts/train.py \
 python train_mimic/scripts/train.py \
     --num_envs 4096 \
     --max_iterations 30000 \
-    --motion_file data/datasets/seed
+    --motion_file data/datasets/seed_precomputed
 ```
 
 ### Multi-GPU
@@ -50,7 +58,7 @@ python train_mimic/scripts/train.py \
     --gpu_ids 0 1 2 3 \
     --num_envs 1024 \
     --max_iterations 30000 \
-    --motion_file data/datasets/seed
+    --motion_file data/datasets/seed_precomputed
 ```
 
 ### Multi-Node Multi-GPU
@@ -67,16 +75,16 @@ torchrun \
     train_mimic/scripts/train.py \
     --num_envs 1024 \
     --max_iterations 1000 \
-    --motion_file data/datasets/seed
+    --motion_file data/datasets/seed_precomputed
 ```
 
 **Notes:**
 - `--num_envs` is per-GPU in multi-GPU mode
 - `--num_envs` is also per-process in multi-node mode, so total environments scale with `world_size`
 - Default logger is TensorBoard. Use `--logger wandb` or `--logger swanlab` to select W&B or SwanLab; the project name defaults to `experiment_name`
-- `--motion_file` accepts a dataset root directory or single `.h5` shard; shard discovery is recursive
-- `--cache_num_clips` controls the active HDF5 subset size; `--cache_swap_interval_steps` controls how often the next subset is swapped in at a rollout barrier
-- `--cache_dataloader_num_workers`, `--cache_dataloader_prefetch_factor`, and `--cache_dataloader_pin_memory` tune asynchronous HDF5 cache loading without increasing dataset size
+- `--motion_file` accepts a precomputed training dataset root directory or a single precomputed `.h5` shard; shard discovery is recursive
+- If you only have the minimal distributed shards, first run `python train_mimic/scripts/data/precompute_dataset.py <minimal_dataset> --outdir <precomputed_dataset>` and pass the precomputed output to training.
+- `--cache_num_clips` controls how many precomputed HDF5 motion windows are loaded into the active subset cache; the next cache is staged asynchronously and swapped at rollout barriers.
 - `--max_iterations` means additional iterations; resuming from `model_12000.pt` with `--max_iterations 18000` trains to `model_30000.pt`
 
 ## Export ONNX
@@ -97,7 +105,7 @@ The exported model is a dual-input ONNX (`obs` + `obs_history`). The inference s
 ```bash
 python train_mimic/scripts/play.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/seed
+    --motion_file data/datasets/seed_precomputed
 ```
 
 ### Benchmark
@@ -105,7 +113,7 @@ python train_mimic/scripts/play.py \
 ```bash
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/seed \
+    --motion_file data/datasets/seed_precomputed \
     --num_envs 1
 ```
 
@@ -114,7 +122,7 @@ python train_mimic/scripts/benchmark.py \
 ```bash
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/seed \
+    --motion_file data/datasets/seed_precomputed \
     --num_envs 1 \
     --video \
     --video_length 600

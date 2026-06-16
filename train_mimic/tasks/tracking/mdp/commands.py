@@ -17,10 +17,10 @@ from train_mimic.data.dataset_lib import (
     MOTION_ARRAY_KEYS,
     compute_clip_sample_ranges,
     compute_dataset_stats,
-    find_motion_shards,
+    find_precomputed_motion_shards,
     parse_window_steps,
+    validate_precomputed_motion_shard,
 )
-from train_mimic.data.motion_fk import MotionFkExtractor, compute_body_velocities, finite_diff_velocity
 
 from mjlab.managers import CommandTerm, CommandTermCfg
 from mjlab.utils.lab_api.math import (
@@ -140,15 +140,12 @@ class _Hdf5MotionDataset(Dataset[_MotionClipSample]):
         refs: list[_Hdf5ClipRef],
         shard_paths: list[Path],
         body_idx_np: np.ndarray,
-        body_names: np.ndarray,
         window_steps: tuple[int, ...],
     ) -> None:
         self.refs = refs
         self._shard_paths = shard_paths
         self.body_idx_np = body_idx_np
-        self.body_names = body_names
         self.window_steps = window_steps
-        self._fk_extractor = MotionFkExtractor()
         self._h5_handles: dict[int, h5py.File] = {}
 
     def __len__(self) -> int:
@@ -158,30 +155,27 @@ class _Hdf5MotionDataset(Dataset[_MotionClipSample]):
         ref = self.refs[int(index)]
         sl = slice(ref.start, ref.start + ref.length)
         h5 = self._h5_handle(ref.shard_index)
-        root_pos = np.asarray(h5["root_pos"][sl], dtype=np.float32)
-        root_quat_w = np.asarray(h5["root_quat_w"][sl], dtype=np.float32)
         joint_pos = np.asarray(h5["joint_pos"][sl], dtype=np.float32)
 
-        dt = 1.0 / float(ref.fps)
-        body_pos_w, body_quat_w = self._fk_extractor.extract(
-            root_pos,
-            root_quat_w,
-            joint_pos,
-            self.body_names,
-        )
-        body_lin_vel_w, body_ang_vel_w = compute_body_velocities(body_pos_w, body_quat_w, dt)
-        joint_vel = finite_diff_velocity(joint_pos, dt)
         sample_starts, sample_ends = compute_clip_sample_ranges(
             np.asarray([ref.length], dtype=np.int64),
             window_steps=self.window_steps,
         )
         tensors = {
             "joint_pos": torch.from_numpy(joint_pos),
-            "joint_vel": torch.from_numpy(joint_vel),
-            "body_pos_w": torch.from_numpy(body_pos_w[:, self.body_idx_np]),
-            "body_quat_w": torch.from_numpy(body_quat_w[:, self.body_idx_np]),
-            "body_lin_vel_w": torch.from_numpy(body_lin_vel_w[:, self.body_idx_np]),
-            "body_ang_vel_w": torch.from_numpy(body_ang_vel_w[:, self.body_idx_np]),
+            "joint_vel": torch.from_numpy(np.asarray(h5["joint_vel"][sl], dtype=np.float32)),
+            "body_pos_w": torch.from_numpy(
+                np.asarray(h5["body_pos_w"][sl], dtype=np.float32)[:, self.body_idx_np]
+            ),
+            "body_quat_w": torch.from_numpy(
+                np.asarray(h5["body_quat_w"][sl], dtype=np.float32)[:, self.body_idx_np]
+            ),
+            "body_lin_vel_w": torch.from_numpy(
+                np.asarray(h5["body_lin_vel_w"][sl], dtype=np.float32)[:, self.body_idx_np]
+            ),
+            "body_ang_vel_w": torch.from_numpy(
+                np.asarray(h5["body_ang_vel_w"][sl], dtype=np.float32)[:, self.body_idx_np]
+            ),
         }
         return _MotionClipSample(
             tensors=tensors,
@@ -263,10 +257,11 @@ class _Hdf5MotionCache:
         self._device = torch.device(device)
         self._copy_stream: torch.cuda.Stream | None = None
         self._next_ready_event: torch.cuda.Event | None = None
-        self._shard_paths = find_motion_shards(motion_dir)
-        stats = compute_dataset_stats(motion_dir)
+        self._shard_paths = find_precomputed_motion_shards(motion_dir)
+        stats = compute_dataset_stats(motion_dir, precomputed=True)
         self.body_names = np.asarray(stats["body_names"], dtype=str)
-        self._fk_extractor = MotionFkExtractor()
+        for shard_path in self._shard_paths:
+            validate_precomputed_motion_shard(shard_path)
         _LOG.info(
             "Motion dataset: root=%s shards=%d windows=%d source_clips=%d frames=%d fps=%s",
             motion_dir,
@@ -329,7 +324,6 @@ class _Hdf5MotionCache:
             refs=self.refs,
             shard_paths=self._shard_paths,
             body_idx_np=self.body_idx_np,
-            body_names=self.body_names,
             window_steps=self.window_steps,
         )
         self._sampler = _WeightedInfiniteClipBatchSampler(
@@ -409,7 +403,7 @@ class _Hdf5MotionCache:
             torch.cuda.current_stream(self._device).wait_event(self._next_ready_event)
         self._next_ready_event = None
 
-    def _materialize_legacy_batch(self, global_ids: torch.Tensor) -> _MotionBatch:
+    def _materialize_batch_by_global_ids(self, global_ids: torch.Tensor) -> _MotionBatch:
         samples = [self._dataset[int(idx)] for idx in global_ids.tolist()]
         batch = _collate_motion_clips(samples)
         return self._stage_batch(batch, wait=True)
@@ -419,10 +413,10 @@ class _Hdf5MotionCache:
         return torch.tensor(ids, dtype=torch.long)
 
     def _load_random_batch(self) -> _MotionBatch:
-        return self._materialize_legacy_batch(self._sample_global_ids())
+        return self._materialize_batch_by_global_ids(self._sample_global_ids())
 
     def _load_batch(self, global_ids: torch.Tensor) -> _MotionBatch:
-        return self._materialize_legacy_batch(global_ids.cpu().to(dtype=torch.long))
+        return self._materialize_batch_by_global_ids(global_ids.cpu().to(dtype=torch.long))
 
     def advance(self) -> None:
         start = time.perf_counter()
@@ -483,7 +477,7 @@ class MotionLib:
             raise FileNotFoundError(
                 f"motion_file must be a dataset root directory or .h5 shard, got: {motion_file}"
             )
-        stats = compute_dataset_stats(motion_path)
+        stats = compute_dataset_stats(motion_path, precomputed=True)
 
         if body_names is None:
             body_idx_np = body_indexes.cpu().numpy()

@@ -10,7 +10,7 @@ Usage:
     # Benchmark only (no video)
     python train_mimic/scripts/benchmark.py \
         --checkpoint logs/rsl_rl/g1_tracking/.../model_30000.pt \
-        --motion_file data/datasets/twist2 \
+        --motion_file data/datasets/seed_precomputed \
         --num_envs 1
 
     # Single video (one continuous clip)
@@ -40,7 +40,7 @@ from train_mimic.app import (
     validate_checkpoint_path,
     validate_motion_file,
 )
-from train_mimic.data.dataset_lib import find_motion_shards
+from train_mimic.data.dataset_lib import find_precomputed_motion_shards
 from teleopit.debug.rollout_trace import RolloutTraceWriter
 
 
@@ -144,7 +144,7 @@ def _stats(values: list[float]) -> dict[str, float]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark G1 tracking policy.")
     parser.add_argument("--checkpoint", type=str, required=True)
-    parser.add_argument("--motion_file", type=str, required=True, help="Path to dataset root containing Teleopit shard_*.h5 files")
+    parser.add_argument("--motion_file", type=str, required=True, help="Path to precomputed training dataset root containing Teleopit shard_*.h5 files")
     parser.add_argument("--num_envs", type=int, default=1)
     parser.add_argument("--num_eval_steps", type=int, default=2000,
                         help="Number of rollout steps for evaluation (default: 2000)")
@@ -176,7 +176,7 @@ def parse_args() -> argparse.Namespace:
 def _load_motion_dir_video_metadata(motion_dir: str) -> tuple[float, int]:
     clip_fps: float | None = None
     max_clip_frames = 0
-    for shard_path in find_motion_shards(motion_dir):
+    for shard_path in find_precomputed_motion_shards(motion_dir):
         with h5py.File(shard_path, "r") as h5:
             fps_arr = np.asarray(h5["clip_fps"], dtype=np.float32)
             if fps_arr.size == 0:

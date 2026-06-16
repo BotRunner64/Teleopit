@@ -25,14 +25,16 @@ python scripts/setup/download_assets.py --only robots gmr ckpt bvh
 
 ## Asset Inventory
 
-| Asset | Size | Purpose |
-|-------|------|---------|
-| `track.onnx` | 4 MB | ONNX inference model |
-| `track.pt` | 27 MB | PyTorch checkpoint (for resume training) |
-| `data/datasets/seed/shard_*.h5` | ~26 GB | Training dataset |
-| `data/sample_bvh/*.bvh` | 5 MB | Sample motion files |
-| `assets/robots/unitree_g1/` | ~52 MB | Canonical G1 XML and meshes used by training, sim2sim, retargeting, and FK validation |
-| `teleopit/retargeting/gmr/assets/` | ~1.2 GB | GMR retargeting assets, IK configs, and non-canonical robot descriptions |
+Downloaded file sizes change as checkpoints, datasets, and asset bundles are updated. Use the repository paths below as the stable contract.
+
+| Local Path | Purpose |
+|------------|---------|
+| `track.onnx` | ONNX inference model |
+| `track.pt` | PyTorch checkpoint for resume training |
+| `data/datasets/seed/shard_*.h5` | Minimal motion dataset; run precompute before training |
+| `data/sample_bvh/*.bvh` | Sample motion files |
+| `assets/robots/unitree_g1/` | Canonical G1 XML and meshes used by training, sim2sim, retargeting, and FK validation |
+| `teleopit/retargeting/gmr/assets/` | GMR retargeting assets, IK configs, and non-canonical robot descriptions |
 
 ## Asset Groups
 

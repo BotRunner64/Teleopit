@@ -7,13 +7,15 @@ sidebar_position: 3
 ## 下载预构建数据集（推荐）
 
 ```bash
-python scripts/setup/download_assets.py --only data
+python scripts/setup/download_assets.py --only robots data
 ```
 
-下载后直接传数据集根目录用于训练：
+下载后先生成预计算训练 shard，再把预计算数据集根目录用于训练：
 
 ```bash
-python train_mimic/scripts/train.py --motion_file data/datasets/seed
+python train_mimic/scripts/data/precompute_dataset.py \
+    data/datasets/seed --outdir data/datasets/seed_precomputed --jobs 8
+python train_mimic/scripts/train.py --motion_file data/datasets/seed_precomputed
 ```
 
 如需自定义构建，继续阅读下文。
@@ -46,7 +48,7 @@ python train_mimic/scripts/data/build_dataset.py \
 
 ## 自定义构建
 
-数据主线：`typed source YAML -> preprocess/filter -> minimal HDF5 shards`
+数据主线：`typed source YAML -> preprocess/filter -> minimal HDF5 shards -> precomputed training dataset`
 
 ```bash
 python train_mimic/scripts/data/build_dataset.py \
@@ -58,12 +60,17 @@ python train_mimic/scripts/data/build_dataset.py \
 ```text
 data/datasets/<dataset>/
 └── shard_*.h5
+
+data/datasets/<dataset>_precomputed/
+└── shard_*.h5
 ```
 
 - 若 spec 包含 `bvh` 或 `npz` source，完整 dataset builder 会在转换期间使用临时 `clips/` 目录，并在 shard 写入完成后删除。重新 build 不会复用已转换 clips。
 - 若 spec 全部是 `pkl` 或 `seed_csv` source，builder 会直接并行产出 shard，默认不写中间 clip 文件
-- 训练会递归发现指定根目录下的 `*.h5` shard，因此可以把多个数据集目录放到同一个父目录下完成合并
-- 训练时只从发现的 shard 加载一个 subset cache，在线派生 FK/速度，同时预加载下一个 cache，并在 PPO rollout barrier 处切换。
+- `build_dataset.py` 只写最小分发数据集，不执行 FK 预计算。
+- `precompute_dataset.py` 会写出独立的训练数据集，里面包含最小运动数据以及预计算的 joint velocity 和 body FK/velocity。
+- 训练只接受预计算后的数据集目录。它会递归发现指定根目录下的预计算 `*.h5` shard，因此可以把多个预计算数据集目录放到同一个父目录下完成合并。
+- 训练只会从发现的预计算 shard 中加载 subset cache，异步 staging 下一个 cache，并在 PPO rollout barrier 切换 cache。joint velocity 和 body FK/velocity 不会在训练时计算。
 
 ## YAML spec
 
@@ -104,13 +111,13 @@ sources:
 
 ## 转换规则
 
-所有 source 都会转换成标准训练 shard。每段 clip 会先经过预处理/过滤，再写入 shard：
+所有 source 都会转换成标准最小 shard。每段 clip 会先经过预处理/过滤，再写入 shard：
 
 - `bvh -> retarget pkl -> npz clip`
 - `pkl -> npz clip`（或在 pkl-only 数据集中直接 batch 写 shard）
 - `npz -> validate + copy/reuse`
 
-每个 shard 只保存最小运动数据：`root_pos`、`root_quat_w`、`joint_pos`、`body_names`、`clip_starts`、`clip_lengths` 和 `clip_fps`。Joint velocity 和 body FK/velocity 会在训练加载 cache 时计算。
+每个最小 shard 保存 `root_pos`、`root_quat_w`、`joint_pos`、`body_names`、`clip_starts`、`clip_lengths` 和 `clip_fps`。预计算训练 shard 保存 `joint_pos`、`joint_vel`、`body_pos_w`、`body_quat_w`、`body_lin_vel_w`、`body_ang_vel_w` 以及相同的元数据。如果 `--motion_file` 指向最小数据集而不是预计算训练数据集，训练会立即报错。
 
 ## 常用命令
 
@@ -131,6 +138,10 @@ python train_mimic/scripts/data/build_dataset.py \
 # 打印 build report
 python train_mimic/scripts/data/build_dataset.py \
     --spec train_mimic/configs/datasets/twist2.yaml --json
+
+# 从已有最小数据集生成预计算训练数据集
+python train_mimic/scripts/data/precompute_dataset.py \
+    data/datasets/twist2 --outdir data/datasets/twist2_precomputed --jobs 8 --force
 
 # 查看数据集统计
 python train_mimic/scripts/data/inspect_dataset.py data/datasets/twist2

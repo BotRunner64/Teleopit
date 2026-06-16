@@ -6,8 +6,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+import h5py
 
-from train_mimic.data.dataset_lib import write_hdf5_motion_shard
+from train_mimic.data.dataset_lib import (
+    PRECOMPUTED_MOTION_VERSION,
+    compute_dataset_stats,
+    write_precomputed_motion_shard,
+    write_hdf5_motion_shard,
+)
 from train_mimic.tasks.tracking.mdp.commands import MotionCommand, MotionLib
 
 
@@ -64,9 +70,35 @@ def _write_shard_dir(
     merged["clip_starts"] = clip_starts
     merged["clip_lengths"] = clip_lengths
     merged["clip_fps"] = np.full(len(clip_dicts), int(clip_dicts[0]["fps"]), dtype=np.int64)
-    shard_info = write_hdf5_motion_shard(merged, path / "shard_000.h5")
-    _ = shard_info
+    shard_path = path / "shard_000.h5"
+    _write_precomputed_from_merged(shard_path, merged)
     return path
+
+
+def _write_precomputed_from_merged(shard_path: Path, merged: dict[str, object]) -> None:
+    shard_path.parent.mkdir(parents=True, exist_ok=True)
+    str_dt = h5py.string_dtype(encoding="utf-8")
+    clip_starts = np.asarray(merged["clip_starts"], dtype=np.int64)
+    clip_lengths = np.asarray(merged["clip_lengths"], dtype=np.int64)
+    clip_fps = np.asarray(merged["clip_fps"], dtype=np.int64)
+    with h5py.File(shard_path, "w") as h5:
+        h5.attrs["format"] = "teleopit_precomputed_motion_hdf5"
+        h5.attrs["version"] = PRECOMPUTED_MOTION_VERSION
+        h5.create_dataset(
+            "body_names",
+            data=np.asarray(merged["body_names"]).astype(str).astype(object),
+            dtype=str_dt,
+        )
+        for key in ("joint_pos", "joint_vel", "body_pos_w", "body_quat_w", "body_lin_vel_w", "body_ang_vel_w"):
+            h5.create_dataset(key, data=np.asarray(merged[key], dtype=np.float32), chunks=True)
+        h5.create_dataset("clip_starts", data=clip_starts)
+        h5.create_dataset("clip_lengths", data=clip_lengths)
+        h5.create_dataset("clip_fps", data=clip_fps)
+        h5.create_dataset("source_clip_ids", data=np.arange(len(clip_lengths), dtype=np.int64))
+        h5.create_dataset("source_start_frames", data=np.zeros(len(clip_lengths), dtype=np.int64))
+        h5.create_dataset("source_clip_starts", data=clip_starts)
+        h5.create_dataset("source_clip_lengths", data=clip_lengths)
+        h5.create_dataset("source_clip_fps", data=clip_fps)
 
 
 def test_motion_lib_sample_times_respect_window_steps(tmp_path: Path) -> None:
@@ -177,6 +209,111 @@ def test_motion_lib_selects_bodies_by_dataset_names(tmp_path: Path) -> None:
     assert torch.isfinite(frames["body_pos_w"]).all()
 
 
+def test_motion_lib_rejects_minimal_motion_shards(tmp_path: Path) -> None:
+    path = tmp_path / "motion_minimal"
+    path.mkdir()
+    clip = _clip_dict()
+    merged = {
+        "fps": int(clip["fps"]),
+        "root_pos": np.asarray(clip["root_pos"]),
+        "root_quat_w": np.asarray(clip["root_quat_w"]),
+        "joint_pos": np.asarray(clip["joint_pos"]),
+        "body_names": np.asarray(clip["body_names"]),
+        "clip_starts": np.asarray([0], dtype=np.int64),
+        "clip_lengths": np.asarray([np.asarray(clip["joint_pos"]).shape[0]], dtype=np.int64),
+        "clip_fps": np.asarray([int(clip["fps"])], dtype=np.int64),
+    }
+    write_hdf5_motion_shard(merged, path / "shard_000.h5")
+
+    with pytest.raises(FileNotFoundError, match="precomputed Teleopit"):
+        MotionLib(
+            str(path),
+            body_indexes=torch.tensor([0, 1], dtype=torch.long),
+            window_steps=(0,),
+        )
+
+
+def test_precomputed_stats_preserve_source_clip_ids_for_windowed_shards(tmp_path: Path) -> None:
+    clip = _clip_dict(num_frames=12, fps=30)
+    shard_path = tmp_path / "motion" / "shard_000.h5"
+    shard_path.parent.mkdir(parents=True)
+    str_dt = h5py.string_dtype(encoding="utf-8")
+    with h5py.File(shard_path, "w") as h5:
+        h5.attrs["format"] = "teleopit_precomputed_motion_hdf5"
+        h5.attrs["version"] = PRECOMPUTED_MOTION_VERSION
+        h5.create_dataset("body_names", data=np.asarray(clip["body_names"]).astype(object), dtype=str_dt)
+        for key in ("joint_pos", "joint_vel", "body_pos_w", "body_quat_w", "body_lin_vel_w", "body_ang_vel_w"):
+            h5.create_dataset(key, data=np.asarray(clip[key], dtype=np.float32), chunks=True)
+        h5.create_dataset("clip_starts", data=np.asarray([0, 4, 8], dtype=np.int64))
+        h5.create_dataset("clip_lengths", data=np.asarray([6, 6, 4], dtype=np.int64))
+        h5.create_dataset("clip_fps", data=np.asarray([30, 30, 30], dtype=np.int64))
+        h5.create_dataset("source_clip_ids", data=np.asarray([0, 0, 0], dtype=np.int64))
+        h5.create_dataset("source_start_frames", data=np.asarray([0, 4, 8], dtype=np.int64))
+        h5.create_dataset("source_clip_starts", data=np.asarray([0], dtype=np.int64))
+        h5.create_dataset("source_clip_lengths", data=np.asarray([12], dtype=np.int64))
+        h5.create_dataset("source_clip_fps", data=np.asarray([30], dtype=np.int64))
+
+    stats = compute_dataset_stats(shard_path.parent, precomputed=True)
+
+    assert stats["windows"] == 3
+    assert stats["source_clips"] == 1
+    assert stats["duration_s"] == pytest.approx(12 / 30)
+
+
+def test_write_precomputed_motion_shard_copies_window_source_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeMotionFkExtractor:
+        def __init__(self, model_path: object = None) -> None:
+            del model_path
+
+        def extract(
+            self,
+            root_pos: np.ndarray,
+            root_quat_w: np.ndarray,
+            joint_pos: np.ndarray,
+            body_names: np.ndarray,
+        ) -> tuple[np.ndarray, np.ndarray]:
+            del joint_pos
+            bodies = int(len(body_names))
+            body_pos_w = np.repeat(np.asarray(root_pos, dtype=np.float32)[:, None, :], bodies, axis=1)
+            body_quat_w = np.repeat(np.asarray(root_quat_w, dtype=np.float32)[:, None, :], bodies, axis=1)
+            return body_pos_w, body_quat_w
+
+    monkeypatch.setattr("train_mimic.data.motion_fk.MotionFkExtractor", _FakeMotionFkExtractor)
+    clip = _clip_dict(num_frames=12, fps=30)
+    merged = {
+        "fps": int(clip["fps"]),
+        "root_pos": np.asarray(clip["root_pos"], dtype=np.float32),
+        "root_quat_w": np.asarray(clip["root_quat_w"], dtype=np.float32),
+        "joint_pos": np.asarray(clip["joint_pos"], dtype=np.float32),
+        "body_names": np.asarray(clip["body_names"]).astype(str),
+        "clip_starts": np.asarray([0], dtype=np.int64),
+        "clip_lengths": np.asarray([12], dtype=np.int64),
+        "clip_fps": np.asarray([30], dtype=np.int64),
+    }
+    minimal_path = tmp_path / "minimal" / "shard_000.h5"
+    precomputed_path = tmp_path / "precomputed" / "shard_000.h5"
+    write_hdf5_motion_shard(
+        merged,
+        minimal_path,
+        max_window_frames=6,
+        overlap_frames=2,
+    )
+
+    write_precomputed_motion_shard(minimal_path, precomputed_path)
+
+    with h5py.File(precomputed_path, "r") as h5:
+        assert h5.attrs["version"] == PRECOMPUTED_MOTION_VERSION
+        assert h5["clip_starts"][()].tolist() == [0, 4, 6]
+        assert h5["clip_lengths"][()].tolist() == [6, 6, 6]
+        assert h5["source_clip_ids"][()].tolist() == [0, 0, 0]
+        assert h5["source_start_frames"][()].tolist() == [0, 4, 6]
+        assert h5["source_clip_starts"][()].tolist() == [0]
+        assert h5["source_clip_lengths"][()].tolist() == [12]
+
+
 def test_motion_lib_window_start_and_end_times_follow_valid_center_range(tmp_path: Path) -> None:
     motion_path = _write_shard_dir(tmp_path / "motion_windowed", [_clip_dict()])
 
@@ -255,7 +392,8 @@ def test_motion_lib_rejects_shard_body_name_mismatch(tmp_path: Path) -> None:
     merged["clip_starts"] = np.asarray([0], dtype=np.int64)
     merged["clip_lengths"] = np.asarray([np.asarray(clip_bad["joint_pos"]).shape[0]], dtype=np.int64)
     merged["clip_fps"] = np.asarray([int(clip_bad["fps"])], dtype=np.int64)
-    write_hdf5_motion_shard(merged, motion_path / "shard_001.h5")
+    bad_shard = motion_path / "shard_001.h5"
+    _write_precomputed_from_merged(bad_shard, merged)
 
     with pytest.raises(ValueError, match="body_names"):
         MotionLib(

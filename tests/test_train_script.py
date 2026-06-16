@@ -8,11 +8,12 @@ import sys
 import types
 from pathlib import Path
 
+import h5py
 import numpy as np
 import pytest
 
 from train_mimic.app import DEFAULT_TASK, validate_checkpoint_path, validate_motion_file
-from train_mimic.data.dataset_lib import write_hdf5_motion_shard
+from train_mimic.data.dataset_lib import PRECOMPUTED_MOTION_VERSION
 from train_mimic.scripts import train
 from train_mimic.tasks.tracking.config.rl import make_general_tracking_ppo_runner_cfg
 
@@ -34,7 +35,7 @@ def _args(**overrides: object) -> argparse.Namespace:
         "seed": 42,
         "logger": "tensorboard",
         "experiment_name": None,
-        "motion_file": "data/datasets/twist2",
+        "motion_file": "data/datasets/seed_precomputed",
         "robot_xml": None,
         "resume": None,
         "sampling_mode": None,
@@ -263,19 +264,33 @@ def test_make_g1_training_robot_cfg_uses_requested_xml() -> None:
 
 def test_validate_motion_file_accepts_shard_directories(tmp_path: Path) -> None:
     num_frames = 3
-    write_hdf5_motion_shard(
-        {
-            "fps": 30,
-            "root_pos": np.zeros((num_frames, 3), dtype=np.float32),
-            "root_quat_w": np.tile(np.asarray([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32), (num_frames, 1)),
-            "joint_pos": np.zeros((num_frames, 29), dtype=np.float32),
-            "body_names": np.asarray(["pelvis"], dtype=str),
-            "clip_starts": np.asarray([0], dtype=np.int64),
-            "clip_lengths": np.asarray([num_frames], dtype=np.int64),
-            "clip_fps": np.asarray([30], dtype=np.int64),
-        },
-        tmp_path / "shard_000.h5",
-    )
+    shard_path = tmp_path / "shard_000.h5"
+    str_dt = h5py.string_dtype(encoding="utf-8")
+    with h5py.File(shard_path, "w") as h5:
+        h5.attrs["format"] = "teleopit_precomputed_motion_hdf5"
+        h5.attrs["version"] = PRECOMPUTED_MOTION_VERSION
+        h5.create_dataset("body_names", data=np.asarray(["pelvis"], dtype=object), dtype=str_dt)
+        h5.create_dataset("joint_pos", data=np.zeros((num_frames, 29), dtype=np.float32), chunks=True)
+        h5.create_dataset("joint_vel", data=np.zeros((num_frames, 29), dtype=np.float32), chunks=True)
+        h5.create_dataset("body_pos_w", data=np.zeros((num_frames, 1, 3), dtype=np.float32), chunks=True)
+        h5.create_dataset(
+            "body_quat_w",
+            data=np.tile(
+                np.asarray([[[1.0, 0.0, 0.0, 0.0]]], dtype=np.float32),
+                (num_frames, 1, 1),
+            ),
+            chunks=True,
+        )
+        h5.create_dataset("body_lin_vel_w", data=np.zeros((num_frames, 1, 3), dtype=np.float32), chunks=True)
+        h5.create_dataset("body_ang_vel_w", data=np.zeros((num_frames, 1, 3), dtype=np.float32), chunks=True)
+        h5.create_dataset("clip_starts", data=np.asarray([0], dtype=np.int64))
+        h5.create_dataset("clip_lengths", data=np.asarray([num_frames], dtype=np.int64))
+        h5.create_dataset("clip_fps", data=np.asarray([30], dtype=np.int64))
+        h5.create_dataset("source_clip_ids", data=np.asarray([0], dtype=np.int64))
+        h5.create_dataset("source_start_frames", data=np.asarray([0], dtype=np.int64))
+        h5.create_dataset("source_clip_starts", data=np.asarray([0], dtype=np.int64))
+        h5.create_dataset("source_clip_lengths", data=np.asarray([num_frames], dtype=np.int64))
+        h5.create_dataset("source_clip_fps", data=np.asarray([30], dtype=np.int64))
     validate_motion_file(str(tmp_path))
 
 

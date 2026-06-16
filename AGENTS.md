@@ -203,10 +203,11 @@ The single supported training task is `General-Tracking-G1` (experiment name: `g
 
 ### Dataset Pipeline
 - Dataset build spec supports a `preprocess` section for root-xy normalization, ground alignment, and basic clip filtering
-- Final training dataset outputs are minimal HDF5 shards directly under `data/datasets/<dataset>/` (recursive shard discovery is supported; no train/val split and no manifest file)
+- Final distributed dataset build outputs are minimal HDF5 shards directly under `data/datasets/<dataset>/` (recursive shard discovery is supported; no train/val split and no manifest file)
+- `train_mimic/scripts/data/precompute_dataset.py` converts a minimal dataset into a separate precomputed training dataset directory; `build_dataset.py` must not run precompute
 - Each shard stores only `root_pos`, `root_quat_w`, `joint_pos`, `body_names`, and clip-aware window metadata (`clip_starts`, `clip_lengths`, `clip_fps`); long clips are split into overlapping bounded windows
-- Training computes joint velocities and body FK/velocities online in PyTorch DataLoader workers when loading the motion cache
-- `MotionLib` loads only a configurable HDF5 subset cache into CPU/GPU memory, asynchronously stages the next cache, and swaps at the PPO rollout barrier
+- Training `motion_file` must point to a precomputed training dataset, not the minimal distributed dataset; training reads joint velocities and body FK/velocities from those precomputed shards and must not run MuJoCo FK while loading motion clips into the fixed-size cache
+- `MotionLib` loads only a configurable precomputed HDF5 subset cache into CPU/GPU memory, asynchronously stages the next cache, and swaps caches at the PPO rollout barrier
 - `MotionLib` samples only valid center frames for the configured `window_steps`; default is `window_steps=[0]`
 - Training supports `uniform` and `rewind` sampling on the active cache; in distributed training each rank sets a rank-offset `cache_seed`
 - `scripts/run/record_pico_motion.py` records Pico live body tracking as retargeted G1 motion NPZ clips in `data/pico_motion/clips/`; it opens a live `Retarget` viewer, uses terminal keys `R/S/D/N/Q`, stores semantic labels in filenames, and intentionally does not write per-clip JSON
@@ -218,7 +219,9 @@ Quick reference:
 python train_mimic/scripts/data/build_dataset.py --spec train_mimic/configs/datasets/twist2.yaml
 python scripts/run/record_pico_motion.py
 python train_mimic/scripts/data/build_dataset.py --spec data/pico_motion/pico_recorded.yaml --force
-python train_mimic/scripts/train.py --motion_file data/datasets/twist2
+python train_mimic/scripts/data/precompute_dataset.py data/datasets/seed --outdir data/datasets/seed_precomputed --jobs 8
+python train_mimic/scripts/train.py --motion_file data/datasets/seed_precomputed
+python train_mimic/scripts/data/precompute_dataset.py data/datasets/twist2 --outdir data/datasets/twist2_precomputed --jobs 8 --force
 python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt --output policy.onnx --history_length 10
 ```
 

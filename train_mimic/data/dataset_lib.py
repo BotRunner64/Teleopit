@@ -30,6 +30,13 @@ MOTION_ARRAY_KEYS = [
     "joint_pos", "joint_vel", "body_pos_w", "body_quat_w",
     "body_lin_vel_w", "body_ang_vel_w",
 ]
+PRECOMPUTED_MOTION_ARRAY_KEYS = [
+    "joint_vel",
+    "body_pos_w",
+    "body_quat_w",
+    "body_lin_vel_w",
+    "body_ang_vel_w",
+]
 MINIMAL_MOTION_ARRAY_KEYS = ["root_pos", "root_quat_w", "joint_pos"]
 FULL_CLIP_ARRAY_KEYS = [
     "root_pos",
@@ -42,6 +49,9 @@ FULL_CLIP_ARRAY_KEYS = [
     "body_ang_vel_w",
 ]
 HDF5_DATASET_VERSION = 1
+PRECOMPUTED_MOTION_VERSION = 2
+MINIMAL_HDF5_FORMAT = "teleopit_motion_hdf5"
+PRECOMPUTED_HDF5_FORMAT = "teleopit_precomputed_motion_hdf5"
 DEFAULT_HDF5_MAX_WINDOW_FRAMES = 512
 DEFAULT_HDF5_WINDOW_OVERLAP_FRAMES = 64
 
@@ -499,7 +509,7 @@ def write_hdf5_motion_shard(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     str_dt = h5py.string_dtype(encoding="utf-8")
     with h5py.File(output_path, "w") as h5:
-        h5.attrs["format"] = "teleopit_motion_hdf5"
+        h5.attrs["format"] = MINIMAL_HDF5_FORMAT
         h5.attrs["version"] = HDF5_DATASET_VERSION
         h5.attrs["fps"] = fps
         h5.attrs["max_window_frames"] = int(max_window_frames)
@@ -537,6 +547,232 @@ def read_hdf5_body_names(path: Path) -> list[str]:
             str(name.decode("utf-8") if isinstance(name, bytes) else name)
             for name in h5["body_names"][()]
         ]
+
+
+def _read_hdf5_string_list(h5: h5py.File, key: str) -> list[str]:
+    return [
+        str(name.decode("utf-8") if isinstance(name, bytes) else name)
+        for name in h5[key][()]
+    ]
+
+
+def validate_precomputed_motion_shard(
+    shard_path: str | Path,
+) -> None:
+    """Validate that a shard is a standalone precomputed training shard."""
+    shard = Path(shard_path).expanduser().resolve()
+    if not shard.is_file():
+        raise FileNotFoundError(f"precomputed motion shard not found: {shard}")
+
+    with h5py.File(shard, "r") as h5:
+        if h5.attrs.get("format") != PRECOMPUTED_HDF5_FORMAT:
+            raise ValueError(
+                f"motion dataset must be precomputed before training: {shard}. "
+                "Run: python train_mimic/scripts/data/precompute_dataset.py "
+                "<minimal_dataset> --outdir <precomputed_dataset>, then pass "
+                "--motion_file <precomputed_dataset>."
+            )
+        if int(h5.attrs.get("version", 0)) != PRECOMPUTED_MOTION_VERSION:
+            raise ValueError(
+                f"unsupported precomputed motion version in {shard}: "
+                f"{h5.attrs.get('version')}. Regenerate with precompute_dataset.py."
+            )
+        missing = [
+            key for key in [
+                "joint_pos",
+                *PRECOMPUTED_MOTION_ARRAY_KEYS,
+                "body_names",
+                "clip_starts",
+                "clip_lengths",
+                "clip_fps",
+                "source_clip_ids",
+                "source_start_frames",
+                "source_clip_starts",
+                "source_clip_lengths",
+                "source_clip_fps",
+            ]
+            if key not in h5
+        ]
+        if missing:
+            raise ValueError(
+                f"precomputed motion shard {shard} missing required datasets: {missing}. "
+                "Regenerate with precompute_dataset.py."
+            )
+
+        body_names = _read_hdf5_string_list(h5, "body_names")
+        frames = int(h5["joint_pos"].shape[0])
+        num_bodies = len(body_names)
+        expected_shapes = {
+            "joint_pos": (frames, NUM_ACTIONS),
+            "joint_vel": (frames, NUM_ACTIONS),
+            "body_pos_w": (frames, num_bodies, 3),
+            "body_quat_w": (frames, num_bodies, 4),
+            "body_lin_vel_w": (frames, num_bodies, 3),
+            "body_ang_vel_w": (frames, num_bodies, 3),
+        }
+        for key, shape in expected_shapes.items():
+            if h5[key].shape != shape:
+                raise ValueError(
+                    f"precomputed motion shard {shard} dataset {key} shape mismatch: "
+                    f"expected {shape}, got {h5[key].shape}. Regenerate with precompute_dataset.py."
+                )
+        windows = int(h5["clip_starts"].shape[0])
+        for key in ["clip_lengths", "clip_fps", "source_clip_ids", "source_start_frames"]:
+            if h5[key].shape != (windows,):
+                raise ValueError(
+                    f"precomputed motion shard {shard} dataset {key} shape mismatch: "
+                    f"expected {(windows,)}, got {h5[key].shape}. Regenerate with precompute_dataset.py."
+                )
+        source_clips = int(h5["source_clip_starts"].shape[0])
+        for key in ["source_clip_lengths", "source_clip_fps"]:
+            if h5[key].shape != (source_clips,):
+                raise ValueError(
+                    f"precomputed motion shard {shard} dataset {key} shape mismatch: "
+                    f"expected {(source_clips,)}, got {h5[key].shape}. Regenerate with precompute_dataset.py."
+                )
+
+
+def validate_precomputed_motion_dataset(dataset_dir_or_shard: str | Path) -> None:
+    for shard_path in find_precomputed_motion_shards(dataset_dir_or_shard):
+        validate_precomputed_motion_shard(shard_path)
+
+
+def write_precomputed_motion_shard(
+    shard_path: str | Path,
+    output_path: str | Path,
+    *,
+    force: bool = False,
+    model_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Write one standalone precomputed training shard from a minimal source shard."""
+    from train_mimic.data.motion_fk import (
+        MotionFkExtractor,
+        compute_body_velocities,
+        finite_diff_velocity,
+    )
+
+    source_path = Path(shard_path).expanduser().resolve()
+    output = Path(output_path).expanduser().resolve()
+    if output.is_file() and not force:
+        validate_precomputed_motion_shard(output)
+        return {
+            "shard": str(source_path),
+            "output": str(output),
+            "status": "existing",
+        }
+
+    extractor = MotionFkExtractor(model_path)
+    with h5py.File(source_path, "r") as source:
+        if source.attrs.get("format") != MINIMAL_HDF5_FORMAT:
+            raise ValueError(
+                f"precompute input must be a minimal Teleopit motion shard, got {source_path}"
+            )
+        required = [
+            "root_pos",
+            "root_quat_w",
+            "joint_pos",
+            "body_names",
+            "clip_starts",
+            "clip_lengths",
+            "clip_fps",
+            "source_clip_ids",
+            "source_start_frames",
+            "source_clip_starts",
+            "source_clip_lengths",
+            "source_clip_fps",
+        ]
+        missing = [key for key in required if key not in source]
+        if missing:
+            raise ValueError(
+                f"HDF5 shard {source_path} missing required datasets for precompute: {missing}. "
+                "Rebuild the dataset with the current HDF5 writer."
+            )
+
+        root_pos = np.asarray(source["root_pos"], dtype=np.float32)
+        root_quat_w = np.asarray(source["root_quat_w"], dtype=np.float32)
+        joint_pos = np.asarray(source["joint_pos"], dtype=np.float32)
+        body_names = np.asarray(_read_hdf5_string_list(source, "body_names"), dtype=str)
+        source_starts = np.asarray(source["source_clip_starts"], dtype=np.int64)
+        source_lengths = np.asarray(source["source_clip_lengths"], dtype=np.int64)
+        source_fps = np.asarray(source["source_clip_fps"], dtype=np.int64)
+
+        frames = int(joint_pos.shape[0])
+        num_bodies = int(body_names.shape[0])
+        joint_vel = np.empty_like(joint_pos, dtype=np.float32)
+        body_pos_w = np.empty((frames, num_bodies, 3), dtype=np.float32)
+        body_quat_w = np.empty((frames, num_bodies, 4), dtype=np.float32)
+        body_lin_vel_w = np.empty((frames, num_bodies, 3), dtype=np.float32)
+        body_ang_vel_w = np.empty((frames, num_bodies, 3), dtype=np.float32)
+
+        for start, length, fps in zip(source_starts, source_lengths, source_fps):
+            start_i = int(start)
+            length_i = int(length)
+            fps_i = int(fps)
+            if length_i <= 0:
+                raise ValueError(f"invalid source clip length {length_i} in {source_path}")
+            if fps_i <= 0:
+                raise ValueError(f"invalid source clip fps {fps_i} in {source_path}")
+            sl = slice(start_i, start_i + length_i)
+            dt = 1.0 / float(fps_i)
+            cur_body_pos_w, cur_body_quat_w = extractor.extract(
+                root_pos[sl],
+                root_quat_w[sl],
+                joint_pos[sl],
+                body_names,
+            )
+            cur_body_lin_vel_w, cur_body_ang_vel_w = compute_body_velocities(
+                cur_body_pos_w,
+                cur_body_quat_w,
+                dt,
+            )
+            joint_vel[sl] = finite_diff_velocity(joint_pos[sl], dt)
+            body_pos_w[sl] = cur_body_pos_w
+            body_quat_w[sl] = cur_body_quat_w
+            body_lin_vel_w[sl] = cur_body_lin_vel_w
+            body_ang_vel_w[sl] = cur_body_ang_vel_w
+
+        clip_starts = np.asarray(source["clip_starts"], dtype=np.int64)
+        clip_lengths = np.asarray(source["clip_lengths"], dtype=np.int64)
+        clip_fps = np.asarray(source["clip_fps"], dtype=np.int64)
+        source_clip_ids = np.asarray(source["source_clip_ids"], dtype=np.int64)
+        source_start_frames = np.asarray(source["source_start_frames"], dtype=np.int64)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output.with_suffix(f"{output.suffix}.tmp")
+    if tmp_path.exists():
+        tmp_path.unlink()
+    str_dt = h5py.string_dtype(encoding="utf-8")
+    with h5py.File(tmp_path, "w") as h5:
+        h5.attrs["format"] = PRECOMPUTED_HDF5_FORMAT
+        h5.attrs["version"] = PRECOMPUTED_MOTION_VERSION
+        h5.attrs["source_shard"] = str(source_path)
+        h5.attrs["created_at"] = utc_now_iso()
+        h5.create_dataset("body_names", data=body_names.astype(object), dtype=str_dt)
+        h5.create_dataset("joint_pos", data=joint_pos, chunks=True)
+        h5.create_dataset("joint_vel", data=joint_vel, chunks=True)
+        h5.create_dataset("body_pos_w", data=body_pos_w, chunks=True)
+        h5.create_dataset("body_quat_w", data=body_quat_w, chunks=True)
+        h5.create_dataset("body_lin_vel_w", data=body_lin_vel_w, chunks=True)
+        h5.create_dataset("body_ang_vel_w", data=body_ang_vel_w, chunks=True)
+        h5.create_dataset("clip_starts", data=clip_starts)
+        h5.create_dataset("clip_lengths", data=clip_lengths)
+        h5.create_dataset("clip_fps", data=clip_fps)
+        h5.create_dataset("source_clip_ids", data=source_clip_ids)
+        h5.create_dataset("source_start_frames", data=source_start_frames)
+        h5.create_dataset("source_clip_starts", data=source_starts)
+        h5.create_dataset("source_clip_lengths", data=source_lengths)
+        h5.create_dataset("source_clip_fps", data=source_fps)
+    tmp_path.replace(output)
+    validate_precomputed_motion_shard(output)
+
+    return {
+        "shard": str(source_path),
+        "output": str(output),
+        "status": "written",
+        "frames": frames,
+        "bodies": num_bodies,
+        "arrays": ["joint_pos", *PRECOMPUTED_MOTION_ARRAY_KEYS],
+    }
 
 
 def read_motion_clip(path: Path, clip_index: int) -> dict[str, Any]:
@@ -605,8 +841,12 @@ def read_hdf5_source_clip(path: Path, clip_index: int) -> dict[str, Any]:
     }
 
 
-def find_motion_shards(dataset_dir: str | Path) -> list[Path]:
-    """Recursively find Teleopit HDF5 motion shards under a root directory."""
+def _find_hdf5_shards_by_format(
+    dataset_dir: str | Path,
+    *,
+    expected_format: str,
+    label: str,
+) -> list[Path]:
     root = Path(dataset_dir).expanduser().resolve()
     if root.is_file():
         candidates = [root]
@@ -619,17 +859,40 @@ def find_motion_shards(dataset_dir: str | Path) -> list[Path]:
     for path in candidates:
         try:
             with h5py.File(path, "r") as h5:
-                if h5.attrs.get("format") == "teleopit_motion_hdf5":
+                if h5.attrs.get("format") == expected_format:
                     shards.append(path)
         except OSError:
             continue
     if not shards:
-        raise FileNotFoundError(f"no Teleopit HDF5 motion shards found under {dataset_dir}")
+        raise FileNotFoundError(f"no {label} HDF5 motion shards found under {dataset_dir}")
     return shards
 
 
-def compute_dataset_stats(dataset_dir: str | Path) -> dict[str, Any]:
-    shards = find_motion_shards(dataset_dir)
+def find_motion_shards(dataset_dir: str | Path) -> list[Path]:
+    """Recursively find minimal Teleopit HDF5 motion shards under a root directory."""
+    return _find_hdf5_shards_by_format(
+        dataset_dir,
+        expected_format=MINIMAL_HDF5_FORMAT,
+        label="minimal Teleopit",
+    )
+
+
+def find_precomputed_motion_shards(dataset_dir: str | Path) -> list[Path]:
+    """Recursively find precomputed Teleopit HDF5 training shards."""
+    return _find_hdf5_shards_by_format(
+        dataset_dir,
+        expected_format=PRECOMPUTED_HDF5_FORMAT,
+        label="precomputed Teleopit",
+    )
+
+
+def compute_dataset_stats(
+    dataset_dir: str | Path,
+    *,
+    precomputed: bool = False,
+) -> dict[str, Any]:
+    shards = find_precomputed_motion_shards(dataset_dir) if precomputed else find_motion_shards(dataset_dir)
+    array_keys = MOTION_ARRAY_KEYS if precomputed else MINIMAL_MOTION_ARRAY_KEYS
     total_windows = 0
     total_frames = 0
     total_duration_s = 0.0
@@ -642,11 +905,15 @@ def compute_dataset_stats(dataset_dir: str | Path) -> dict[str, Any]:
         with h5py.File(shard_path, "r") as h5:
             missing = [
                 key for key in [
-                    *MINIMAL_MOTION_ARRAY_KEYS,
+                    *array_keys,
                     "body_names",
                     "clip_starts",
                     "clip_lengths",
                     "clip_fps",
+                    "source_clip_ids",
+                    "source_clip_starts",
+                    "source_clip_lengths",
+                    "source_clip_fps",
                 ]
                 if key not in h5
             ]
@@ -661,22 +928,14 @@ def compute_dataset_stats(dataset_dir: str | Path) -> dict[str, Any]:
                 )
             lengths = np.asarray(h5["clip_lengths"], dtype=np.int64)
             fps_arr = np.asarray(h5["clip_fps"], dtype=np.int64)
-            source_ids = (
-                np.asarray(h5["source_clip_ids"], dtype=np.int64)
-                if "source_clip_ids" in h5
-                else np.arange(lengths.shape[0], dtype=np.int64)
-            )
+            source_ids = np.asarray(h5["source_clip_ids"], dtype=np.int64)
             fps_values.update(int(v) for v in np.unique(fps_arr))
             windows = int(lengths.shape[0])
             frames = int(np.asarray(h5["joint_pos"]).shape[0])
             source_clips = int(len(np.unique(source_ids)))
-            if "source_clip_lengths" in h5 and "source_clip_fps" in h5:
-                source_lengths = np.asarray(h5["source_clip_lengths"], dtype=np.float64)
-                source_fps = np.asarray(h5["source_clip_fps"], dtype=np.float64)
-                shard_duration_s = float(np.sum(source_lengths / np.maximum(source_fps, 1.0)))
-            else:
-                shard_fps = int(h5.attrs.get("fps", fps_arr[0] if fps_arr.shape[0] else 1))
-                shard_duration_s = float(frames / max(shard_fps, 1))
+            source_lengths = np.asarray(h5["source_clip_lengths"], dtype=np.float64)
+            source_fps = np.asarray(h5["source_clip_fps"], dtype=np.float64)
+            shard_duration_s = float(np.sum(source_lengths / np.maximum(source_fps, 1.0)))
             total_windows += windows
             total_frames += frames
             total_duration_s += shard_duration_s
@@ -692,8 +951,8 @@ def compute_dataset_stats(dataset_dir: str | Path) -> dict[str, Any]:
             })
 
     return {
-        "format": "teleopit_motion_hdf5",
-        "version": HDF5_DATASET_VERSION,
+        "format": PRECOMPUTED_HDF5_FORMAT if precomputed else MINIMAL_HDF5_FORMAT,
+        "version": PRECOMPUTED_MOTION_VERSION if precomputed else HDF5_DATASET_VERSION,
         "root": str(Path(dataset_dir).expanduser().resolve()),
         "shards": len(shards),
         "windows": total_windows,

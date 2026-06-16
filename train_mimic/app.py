@@ -11,20 +11,22 @@ from train_mimic.tasks.tracking.config.constants import (
     GENERAL_TRACKING_TASK,
     SUPPORTED_TASKS,
 )
-from train_mimic.data.dataset_lib import find_motion_shards
+from train_mimic.data.dataset_lib import find_precomputed_motion_shards, validate_precomputed_motion_dataset
 
 DEFAULT_TASK = GENERAL_TRACKING_TASK
 
 
 def validate_motion_file(motion_file: str) -> None:
     try:
-        find_motion_shards(Path(motion_file))
+        find_precomputed_motion_shards(Path(motion_file))
     except FileNotFoundError as exc:
         raise FileNotFoundError(
             f"Motion dataset not found: {motion_file}. Provide --motion_file pointing "
-            "to a dataset root directory containing Teleopit shard_*.h5 files "
-            f"(recursively allowed). Example: {DEFAULT_TRAIN_MOTION_FILE}"
+            "to a precomputed training dataset root produced by "
+            "train_mimic/scripts/data/precompute_dataset.py. Example: "
+            f"{DEFAULT_TRAIN_MOTION_FILE}"
         ) from exc
+    validate_precomputed_motion_dataset(Path(motion_file))
 
 
 def validate_checkpoint_path(checkpoint_path: str) -> None:
