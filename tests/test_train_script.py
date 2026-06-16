@@ -258,6 +258,9 @@ def test_make_g1_training_robot_cfg_uses_requested_xml() -> None:
 
     assert isinstance(robot_cfg.spec_fn, partial)
     assert robot_cfg.spec_fn.args == (xml_path,)
+    spec = robot_cfg.spec_fn()
+    assert len(spec.actuators) == 0
+    assert len(spec.keys) == 0
 
 
 def test_validate_motion_file_accepts_shard_directories(tmp_path: Path) -> None:

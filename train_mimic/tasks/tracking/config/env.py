@@ -69,6 +69,8 @@ def _get_g1_training_spec(robot_xml: str | Path | None = None) -> mujoco.MjSpec:
     spec = mujoco.MjSpec.from_file(str(xml_path))
     for actuator in list(spec.actuators):
         spec.delete(actuator)
+    for key in list(spec.keys):
+        spec.delete(key)
     return spec
 
 
