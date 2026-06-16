@@ -106,16 +106,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="Minimum policy steps to rewind for rewind sampling")
     parser.add_argument("--rewind_max_steps", type=int, default=None,
                         help="Maximum policy steps to rewind for rewind sampling")
-    parser.add_argument("--cache_num_clips", type=int, default=None,
-                        help="Number of HDF5 motion windows to keep in the active subset cache")
-    parser.add_argument("--cache_swap_interval_steps", type=int, default=None,
-                        help="Policy steps between HDF5 motion cache swaps; swaps occur at rollout barriers")
-    parser.add_argument("--cache_dataloader_num_workers", type=int, default=None,
-                        help="Number of PyTorch DataLoader workers for asynchronous HDF5 motion cache loading")
-    parser.add_argument("--cache_dataloader_prefetch_factor", type=int, default=None,
-                        help="PyTorch DataLoader prefetch factor for asynchronous HDF5 motion cache loading")
-    parser.add_argument("--cache_dataloader_pin_memory", action=argparse.BooleanOptionalAction, default=None,
-                        help="Pin CPU motion cache batches before asynchronous CUDA staging")
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument(
         "--gpu_ids",
@@ -392,7 +382,6 @@ def _run_worker(args: argparse.Namespace) -> None:
 
     # CLI overrides
     env_cfg.seed = _resolve_worker_seed(args.seed)
-    env_cfg.commands["motion"].cache_seed = env_cfg.seed
     robot_xml = resolve_g1_training_xml(args.robot_xml)
     if not robot_xml.is_file():
         raise FileNotFoundError(f"G1 training MuJoCo XML not found: {robot_xml}")
@@ -411,16 +400,6 @@ def _run_worker(args: argparse.Namespace) -> None:
         env_cfg.commands["motion"].rewind_min_steps = args.rewind_min_steps
     if args.rewind_max_steps is not None:
         env_cfg.commands["motion"].rewind_max_steps = args.rewind_max_steps
-    if args.cache_num_clips is not None:
-        env_cfg.commands["motion"].cache_num_clips = args.cache_num_clips
-    if args.cache_swap_interval_steps is not None:
-        env_cfg.commands["motion"].cache_swap_interval_steps = args.cache_swap_interval_steps
-    if args.cache_dataloader_num_workers is not None:
-        env_cfg.commands["motion"].cache_dataloader_num_workers = args.cache_dataloader_num_workers
-    if args.cache_dataloader_prefetch_factor is not None:
-        env_cfg.commands["motion"].cache_dataloader_prefetch_factor = args.cache_dataloader_prefetch_factor
-    if args.cache_dataloader_pin_memory is not None:
-        env_cfg.commands["motion"].cache_dataloader_pin_memory = args.cache_dataloader_pin_memory
     if args.max_iterations is not None:
         agent_cfg.max_iterations = args.max_iterations
     if args.experiment_name is not None:

@@ -161,7 +161,7 @@ def test_motion_lib_get_window_frames_returns_requested_offsets(tmp_path: Path) 
     assert torch.allclose(current["joint_pos"][0, :1], torch.tensor([2.0], dtype=torch.float32))
 
 
-def test_motion_lib_flat_cache_offsets_select_requested_clip(tmp_path: Path) -> None:
+def test_motion_lib_frame_offsets_select_requested_clip(tmp_path: Path) -> None:
     clip0 = _clip_dict(num_frames=3)
     clip1 = _clip_dict(num_frames=7)
     clip1["root_pos"] = np.asarray(clip1["root_pos"]).copy()
@@ -176,11 +176,7 @@ def test_motion_lib_flat_cache_offsets_select_requested_clip(tmp_path: Path) -> 
         str(motion_path),
         body_indexes=torch.tensor([0, 1], dtype=torch.long),
         window_steps=(0,),
-        cache_num_clips=2,
-        cache_seed=0,
-        dataloader_num_workers=0,
     )
-    motion._set_batch(motion._cache._load_batch(torch.tensor([0, 1], dtype=torch.long)))
 
     frames = motion.get_frames(
         torch.tensor([1], dtype=torch.long),
@@ -328,7 +324,7 @@ def test_motion_lib_window_start_and_end_times_follow_valid_center_range(tmp_pat
     assert torch.allclose(motion.clip_sample_end_s[motion_ids], torch.tensor([3.0]))
 
 
-def test_motion_lib_global_cache_sampling_weights_follow_valid_duration(tmp_path: Path) -> None:
+def test_motion_lib_sampling_weights_follow_valid_duration(tmp_path: Path) -> None:
     motion_path = _write_shard_dir(
         tmp_path / "motion_weighted",
         [
@@ -345,12 +341,12 @@ def test_motion_lib_global_cache_sampling_weights_follow_valid_duration(tmp_path
     )
 
     assert torch.allclose(
-        motion._cache.global_sample_weights,
-        torch.tensor([0.2, 0.5, 1.0], dtype=torch.float32),
+        motion.sample_weights,
+        torch.tensor([0.2 / 1.7, 0.5 / 1.7, 1.0 / 1.7], dtype=torch.float32),
     )
 
 
-def test_motion_cache_sampler_draws_global_ids_randomly_by_valid_duration(tmp_path: Path) -> None:
+def test_motion_lib_samples_ids_randomly_by_valid_duration(tmp_path: Path) -> None:
     motion_path = _write_shard_dir(
         tmp_path / "motion_weighted_global",
         [
@@ -365,7 +361,7 @@ def test_motion_cache_sampler_draws_global_ids_randomly_by_valid_duration(tmp_pa
         window_steps=(0,),
     )
 
-    ids = torch.cat([motion._cache._sample_global_ids() for _ in range(256)])
+    ids = motion.sample_motion_ids(2048)
     counts = torch.bincount(ids.cpu(), minlength=2).float()
 
     assert counts[1] > counts[0] * 3.0

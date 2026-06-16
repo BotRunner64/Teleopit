@@ -42,8 +42,6 @@ def _args(**overrides: object) -> argparse.Namespace:
         "rewind_prob": None,
         "rewind_min_steps": None,
         "rewind_max_steps": None,
-        "cache_num_clips": None,
-        "cache_swap_interval_steps": None,
         "device": None,
         "gpu_ids": None,
         "master_port": 29500,

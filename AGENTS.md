@@ -206,10 +206,10 @@ The single supported training task is `General-Tracking-G1` (experiment name: `g
 - Final distributed dataset build outputs are minimal HDF5 shards directly under `data/datasets/<dataset>/` (recursive shard discovery is supported; no train/val split and no manifest file)
 - `train_mimic/scripts/data/precompute_dataset.py` converts a minimal dataset into a separate precomputed training dataset directory; `build_dataset.py` must not run precompute
 - Each shard stores only `root_pos`, `root_quat_w`, `joint_pos`, `body_names`, and clip-aware window metadata (`clip_starts`, `clip_lengths`, `clip_fps`); long clips are split into overlapping bounded windows
-- Training `motion_file` must point to a precomputed training dataset, not the minimal distributed dataset; training reads joint velocities and body FK/velocities from those precomputed shards and must not run MuJoCo FK while loading motion clips into the fixed-size cache
-- `MotionLib` loads only a configurable precomputed HDF5 subset cache into CPU/GPU memory, asynchronously stages the next cache, and swaps caches at the PPO rollout barrier
+- Training `motion_file` must point to a precomputed training dataset, not the minimal distributed dataset; training reads joint velocities and body FK/velocities from those precomputed shards and must not run MuJoCo FK while loading motion clips
+- `MotionLib` loads all discovered precomputed HDF5 motion windows into CPU/GPU memory at startup
 - `MotionLib` samples only valid center frames for the configured `window_steps`; default is `window_steps=[0]`
-- Training supports `uniform` and `rewind` sampling on the active cache; in distributed training each rank sets a rank-offset `cache_seed`
+- Training supports `uniform` and `rewind` sampling over the fully loaded precomputed dataset
 - `scripts/run/record_pico_motion.py` records Pico live body tracking as retargeted G1 motion NPZ clips in `data/pico_motion/clips/`; it opens a live `Retarget` viewer, uses terminal keys `R/S/D/N/Q`, stores semantic labels in filenames, and intentionally does not write per-clip JSON
 - Build Pico-recorded clips into shards with `python train_mimic/scripts/data/build_dataset.py --spec data/pico_motion/pico_recorded.yaml --force`
 

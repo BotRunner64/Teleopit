@@ -84,7 +84,7 @@ torchrun \
 - 默认日志工具为 TensorBoard。使用 `--logger wandb` 或 `--logger swanlab` 可选择 W&B 或 SwanLab；项目名默认使用 `experiment_name`
 - `--motion_file` 接受预计算训练数据集根目录或单个预计算 `.h5` shard；shard 会递归发现
 - 如果只有最小分发 shard，先运行 `python train_mimic/scripts/data/precompute_dataset.py <minimal_dataset> --outdir <precomputed_dataset>`，再把预计算输出传给训练。
-- `--cache_num_clips` 控制加载到 active subset cache 的预计算 HDF5 motion window 数量；下一个 cache 会异步 staging，并在 rollout barrier 切换。
+- 训练会在启动时把所有发现的预计算 motion window 全量加载到内存中。
 - `--max_iterations` 表示追加迭代次数；例如从 `model_12000.pt` 恢复训练并设置 `--max_iterations 18000`，最终将训练到 `model_30000.pt`
 
 ## 导出 ONNX

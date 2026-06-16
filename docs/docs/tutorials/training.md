@@ -84,7 +84,7 @@ torchrun \
 - Default logger is TensorBoard. Use `--logger wandb` or `--logger swanlab` to select W&B or SwanLab; the project name defaults to `experiment_name`
 - `--motion_file` accepts a precomputed training dataset root directory or a single precomputed `.h5` shard; shard discovery is recursive
 - If you only have the minimal distributed shards, first run `python train_mimic/scripts/data/precompute_dataset.py <minimal_dataset> --outdir <precomputed_dataset>` and pass the precomputed output to training.
-- `--cache_num_clips` controls how many precomputed HDF5 motion windows are loaded into the active subset cache; the next cache is staged asynchronously and swapped at rollout barriers.
+- Training loads all discovered precomputed motion windows into memory at startup.
 - `--max_iterations` means additional iterations; resuming from `model_12000.pt` with `--max_iterations 18000` trains to `model_30000.pt`
 
 ## Export ONNX

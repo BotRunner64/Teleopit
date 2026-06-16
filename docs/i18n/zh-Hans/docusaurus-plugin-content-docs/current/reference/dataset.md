@@ -70,7 +70,7 @@ data/datasets/<dataset>_precomputed/
 - `build_dataset.py` 只写最小分发数据集，不执行 FK 预计算。
 - `precompute_dataset.py` 会写出独立的训练数据集，里面包含最小运动数据以及预计算的 joint velocity 和 body FK/velocity。
 - 训练只接受预计算后的数据集目录。它会递归发现指定根目录下的预计算 `*.h5` shard，因此可以把多个预计算数据集目录放到同一个父目录下完成合并。
-- 训练只会从发现的预计算 shard 中加载 subset cache，异步 staging 下一个 cache，并在 PPO rollout barrier 切换 cache。joint velocity 和 body FK/velocity 不会在训练时计算。
+- 训练会在启动时把所有发现的预计算 motion window 全量加载到内存中。joint velocity 和 body FK/velocity 不会在训练时计算。
 
 ## YAML spec
 

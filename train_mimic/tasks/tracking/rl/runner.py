@@ -2,7 +2,6 @@ import os
 import pathlib
 import statistics
 import time
-from typing import cast
 
 import torch
 from rsl_rl.env.vec_env import VecEnv
@@ -10,7 +9,6 @@ from rsl_rl.env.vec_env import VecEnv
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.rl.runner import MjlabOnPolicyRunner
 from rsl_rl.utils import check_nan
-from train_mimic.tasks.tracking.mdp import MotionCommand
 
 
 def _one_based_iteration_range(start_iteration: int, total_iterations: int) -> range:
@@ -55,9 +53,6 @@ class MotionTrackingOnPolicyRunner(MjlabOnPolicyRunner):
         super().__init__(env, train_cfg, log_dir, device)
         self.registry_name = registry_name
 
-    def _motion_command(self) -> MotionCommand:
-        return cast(MotionCommand, self.env.unwrapped.command_manager.get_term("motion"))
-
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
         """Run the learning loop using 1-based iteration numbering."""
         if init_at_random_ep_len:
@@ -93,9 +88,6 @@ class MotionTrackingOnPolicyRunner(MjlabOnPolicyRunner):
                 collect_time = stop - start
                 start = stop
                 self.alg.compute_returns(obs)
-                cmd = self._motion_command()
-                if cmd.apply_cache_swap_if_pending_barrier():
-                    obs = self.env.get_observations().to(self.device)
 
             loss_dict = self.alg.update()
 

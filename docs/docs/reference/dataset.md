@@ -72,7 +72,7 @@ data/datasets/<dataset>_precomputed/
 - `build_dataset.py` only writes the minimal distributable dataset. It does not run FK precompute.
 - `precompute_dataset.py` writes a separate training dataset containing the minimal motion plus precomputed joint velocities and body FK/velocities.
 - Training accepts only the precomputed dataset directory. It recursively discovers precomputed `*.h5` shards below the specified root, so precomputed datasets can be merged by placing multiple shard directories under one parent.
-- Training loads only a subset cache from the discovered precomputed shards, stages the next cache asynchronously, and swaps caches at the PPO rollout barrier. Joint velocities and body FK/velocities are not computed during training.
+- Training loads all discovered precomputed motion windows into memory at startup. Joint velocities and body FK/velocities are not computed during training.
 
 ## YAML Spec Format
 
