@@ -931,7 +931,7 @@ def compute_dataset_stats(
             source_ids = np.asarray(h5["source_clip_ids"], dtype=np.int64)
             fps_values.update(int(v) for v in np.unique(fps_arr))
             windows = int(lengths.shape[0])
-            frames = int(np.asarray(h5["joint_pos"]).shape[0])
+            frames = int(h5["joint_pos"].shape[0])
             source_clips = int(len(np.unique(source_ids)))
             source_lengths = np.asarray(h5["source_clip_lengths"], dtype=np.float64)
             source_fps = np.asarray(h5["source_clip_fps"], dtype=np.float64)

@@ -65,13 +65,6 @@ def _batched_quat_slerp(
     return result / result.norm(dim=-1, keepdim=True)
 
 
-@dataclass(frozen=True)
-class _Hdf5ClipRef:
-    start: int
-    length: int
-    fps: int
-
-
 @dataclass
 class _MotionBatch:
     tensors: dict[str, torch.Tensor]
@@ -80,6 +73,35 @@ class _MotionBatch:
     fps: torch.Tensor
     sample_starts: torch.Tensor
     sample_ends: torch.Tensor
+
+
+def _read_selected_body_array(
+    h5: h5py.File,
+    key: str,
+    body_idx_np: np.ndarray,
+) -> torch.Tensor:
+    """Read only the requested body axis while preserving caller order."""
+    dataset = h5[key]
+    idx = np.asarray(body_idx_np, dtype=np.int64)
+    if idx.ndim != 1:
+        raise ValueError(f"body indexes must be 1-D, got {idx.shape}")
+    if idx.size == 0:
+        frames = int(dataset.shape[0])
+        width = int(dataset.shape[2])
+        return torch.empty((frames, 0, width), dtype=torch.float32)
+
+    if np.any(idx < 0) or np.any(idx >= dataset.shape[1]):
+        raise IndexError(
+            f"body indexes out of range for {key}: indexes={idx.tolist()}, "
+            f"num_bodies={dataset.shape[1]}"
+        )
+
+    parts = [
+        np.asarray(dataset[:, int(body_idx) : int(body_idx) + 1, :], dtype=np.float32)
+        for body_idx in idx
+    ]
+    arr = np.concatenate(parts, axis=1)
+    return torch.from_numpy(arr)
 
 
 def _load_all_precomputed_motion(
@@ -112,56 +134,60 @@ def _load_all_precomputed_motion(
     fps_out: list[int] = []
     sample_starts_out: list[int] = []
     sample_ends_out: list[int] = []
+    frame_offsets_out: list[int] = []
     skipped_short = 0
+    loaded_frames = 0
     for shard_path in shard_paths:
         with h5py.File(shard_path, "r") as h5:
             starts = np.asarray(h5["clip_starts"], dtype=np.int64)
             lengths = np.asarray(h5["clip_lengths"], dtype=np.int64)
             fps = np.asarray(h5["clip_fps"], dtype=np.int64)
-            for start, length, cur_fps in zip(starts, lengths, fps):
-                if int(length) < min_clip_length:
-                    skipped_short += 1
-                    continue
-                ref = _Hdf5ClipRef(
-                    start=int(start),
-                    length=int(length),
-                    fps=int(cur_fps),
+            frames = int(h5["joint_pos"].shape[0])
+            if np.any(starts < 0) or np.any(starts + lengths > frames):
+                raise ValueError(
+                    f"HDF5 shard {shard_path} has clip windows outside joint_pos "
+                    f"frame range: frames={frames}"
                 )
-                sl = slice(ref.start, ref.start + ref.length)
-                sample_starts, sample_ends = compute_clip_sample_ranges(
-                    np.asarray([ref.length], dtype=np.int64),
-                    window_steps=window_steps,
-                )
-                arrays["joint_pos"].append(
-                    torch.from_numpy(np.asarray(h5["joint_pos"][sl], dtype=np.float32))
-                )
-                arrays["joint_vel"].append(
-                    torch.from_numpy(np.asarray(h5["joint_vel"][sl], dtype=np.float32))
-                )
-                arrays["body_pos_w"].append(
-                    torch.from_numpy(
-                        np.asarray(h5["body_pos_w"][sl], dtype=np.float32)[:, body_idx_np]
-                    )
-                )
-                arrays["body_quat_w"].append(
-                    torch.from_numpy(
-                        np.asarray(h5["body_quat_w"][sl], dtype=np.float32)[:, body_idx_np]
-                    )
-                )
-                arrays["body_lin_vel_w"].append(
-                    torch.from_numpy(
-                        np.asarray(h5["body_lin_vel_w"][sl], dtype=np.float32)[:, body_idx_np]
-                    )
-                )
-                arrays["body_ang_vel_w"].append(
-                    torch.from_numpy(
-                        np.asarray(h5["body_ang_vel_w"][sl], dtype=np.float32)[:, body_idx_np]
-                    )
-                )
-                lengths_out.append(ref.length)
-                fps_out.append(ref.fps)
-                sample_starts_out.append(int(sample_starts[0]))
-                sample_ends_out.append(int(sample_ends[0]))
+
+            valid_mask = lengths >= min_clip_length
+            skipped_short += int(np.count_nonzero(~valid_mask))
+            if not np.any(valid_mask):
+                continue
+
+            shard_frame_base = loaded_frames
+            arrays["joint_pos"].append(
+                torch.from_numpy(np.asarray(h5["joint_pos"], dtype=np.float32))
+            )
+            arrays["joint_vel"].append(
+                torch.from_numpy(np.asarray(h5["joint_vel"], dtype=np.float32))
+            )
+            arrays["body_pos_w"].append(
+                _read_selected_body_array(h5, "body_pos_w", body_idx_np)
+            )
+            arrays["body_quat_w"].append(
+                _read_selected_body_array(h5, "body_quat_w", body_idx_np)
+            )
+            arrays["body_lin_vel_w"].append(
+                _read_selected_body_array(h5, "body_lin_vel_w", body_idx_np)
+            )
+            arrays["body_ang_vel_w"].append(
+                _read_selected_body_array(h5, "body_ang_vel_w", body_idx_np)
+            )
+            loaded_frames += frames
+
+            valid_starts = starts[valid_mask]
+            valid_lengths = lengths[valid_mask]
+            valid_fps = fps[valid_mask]
+            sample_starts, sample_ends = compute_clip_sample_ranges(
+                valid_lengths,
+                window_steps=window_steps,
+            )
+            valid_frame_offsets = (shard_frame_base + valid_starts).astype(np.int64)
+            frame_offsets_out.extend(int(offset) for offset in valid_frame_offsets)
+            lengths_out.extend(int(length) for length in valid_lengths)
+            fps_out.extend(int(cur_fps) for cur_fps in valid_fps)
+            sample_starts_out.extend(int(start) for start in sample_starts)
+            sample_ends_out.extend(int(end) for end in sample_ends)
     if not lengths_out:
         raise ValueError(f"HDF5 motion dataset is empty: {motion_dir}")
     if skipped_short > 0:
@@ -174,9 +200,7 @@ def _load_all_precomputed_motion(
 
     device_obj = torch.device(device)
     lengths = torch.tensor(lengths_out, dtype=torch.long)
-    frame_offsets = torch.zeros(len(lengths_out), dtype=torch.long)
-    if len(lengths_out) > 1:
-        frame_offsets[1:] = torch.cumsum(lengths[:-1], dim=0)
+    frame_offsets = torch.tensor(frame_offsets_out, dtype=torch.long)
     return _MotionBatch(
         tensors={
             key: torch.cat(values, dim=0).to(device_obj)

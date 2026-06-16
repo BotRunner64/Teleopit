@@ -187,6 +187,48 @@ def test_motion_lib_frame_offsets_select_requested_clip(tmp_path: Path) -> None:
     assert torch.allclose(frames["body_pos_w"][0, 0], torch.tensor([102.0, 0.0, 0.0]))
 
 
+def test_motion_lib_uses_original_window_starts_for_overlapped_shards(tmp_path: Path) -> None:
+    motion_path = tmp_path / "motion_overlapped_offsets"
+    motion_path.mkdir()
+    clip = _clip_dict(num_frames=12)
+    shard_path = motion_path / "shard_000.h5"
+    merged = {
+        "fps": int(clip["fps"]),
+        "root_pos": np.asarray(clip["root_pos"]),
+        "root_quat_w": np.asarray(clip["root_quat_w"]),
+        "joint_pos": np.asarray(clip["joint_pos"]),
+        "joint_vel": np.asarray(clip["joint_vel"]),
+        "body_pos_w": np.asarray(clip["body_pos_w"]),
+        "body_quat_w": np.asarray(clip["body_quat_w"]),
+        "body_lin_vel_w": np.asarray(clip["body_lin_vel_w"]),
+        "body_ang_vel_w": np.asarray(clip["body_ang_vel_w"]),
+        "body_names": np.asarray(clip["body_names"]),
+        "clip_starts": np.asarray([0, 4, 8], dtype=np.int64),
+        "clip_lengths": np.asarray([6, 6, 4], dtype=np.int64),
+        "clip_fps": np.asarray([1, 1, 1], dtype=np.int64),
+    }
+    _write_precomputed_from_merged(shard_path, merged)
+
+    motion = MotionLib(
+        str(motion_path),
+        body_indexes=torch.tensor([0, 1], dtype=torch.long),
+        window_steps=(0,),
+    )
+
+    assert motion.clip_frame_offsets.cpu().tolist() == [0, 4, 8]
+    assert motion._joint_pos_t.shape[0] == 12
+
+    frames = motion.get_frames(
+        torch.tensor([0, 1, 2], dtype=torch.long),
+        torch.tensor([2.0, 2.0, 2.0], dtype=torch.float32),
+    )
+
+    assert torch.allclose(
+        frames["joint_pos"][:, 0],
+        torch.tensor([2.0, 6.0, 10.0], dtype=torch.float32),
+    )
+
+
 def test_motion_lib_selects_bodies_by_dataset_names(tmp_path: Path) -> None:
     motion_path = _write_shard_dir(tmp_path / "motion_named_bodies", [_clip_dict()])
 
