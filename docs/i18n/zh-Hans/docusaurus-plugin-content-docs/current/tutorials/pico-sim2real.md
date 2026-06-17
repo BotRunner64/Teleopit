@@ -137,13 +137,14 @@ Pico 暂停/恢复是 mocap-session control event。
 恢复时请保持静止，并尽量接近暂停时的姿态。这样可以减少实时追踪恢复时的参考突变。
 :::
 
-## 可选 LinkerHand L6 控制
+## 可选 LinkerHand 控制
 
-Pico sim2real 可以用两种模式控制 LinkerHand L6：
+Pico sim2real 可以用 Pico 输入控制 LinkerHand：
 
 - `gripper`：按住同侧 grip 作为 deadman，同侧 trigger 控制对应手闭合。
-  该模式使用配置的 `hands.linkerhand_l6.speed`，默认值为 50。
-- `vr_hand_pose`：通过 somehand 重定向 Pico 手部 pose，并下发连续 L6 手部目标。
+  该模式支持 `hands.driver=linkerhand_l6` 和 `hands.driver=linkerhand_o6`；
+  速度和张开/闭合姿态来自对应 driver 配置。
+- `vr_hand_pose`：只支持 L6，通过 somehand 重定向 Pico 手部 pose，并下发连续 L6 手部目标。
   如果某侧手部 pose 消失，该侧会保持上一条手势命令。这个模式使用 Teleopit 的
   Pico landmark 适配器和 somehand 0.2.0 公开的 `somehand.api`，并始终将 L6
   速度设为最大值。默认配置使用 60 Hz 的低延时 somehand 路径并减少平滑，所以响应会更快，
@@ -165,7 +166,7 @@ sudo /usr/sbin/ip link set can0 up type can bitrate 1000000
 sudo /usr/sbin/ip link set can1 up type can bitrate 1000000
 ```
 
-启用完整 sim2real 前，先用独立开合测试验证灵巧手连接：
+启用完整 sim2real 前，先用独立开合测试验证灵巧手连接。测试默认一直运行到 Ctrl-C：
 
 ```bash
 python scripts/dev/test_linkerhand_l6.py \
@@ -174,19 +175,43 @@ python scripts/dev/test_linkerhand_l6.py \
     --right-can can1
 ```
 
-然后在 Pico sim2real 中启用 L6 控制：
+O6 独立开合测试需要加上 O6 driver：
+
+```bash
+python scripts/dev/test_linkerhand_l6.py \
+    --driver linkerhand_o6 \
+    --hand-type both \
+    --left-can can0 \
+    --right-can can1
+```
+
+如果要用实时 Pico gripper 输入测试 O6，再加 `--mode gripper`。
+
+然后在 Pico sim2real 中启用 L6 gripper 控制：
 
 ```bash
 hands.enabled=true
+hands.driver=linkerhand_l6
 hands.mode=gripper
 hands.linkerhand_l6.left_can=can0
 hands.linkerhand_l6.right_can=can1
+```
+
+O6 gripper 控制使用：
+
+```bash
+hands.enabled=true
+hands.driver=linkerhand_o6
+hands.mode=gripper
+hands.linkerhand_o6.left_can=can0
+hands.linkerhand_o6.right_can=can1
 ```
 
 连续 VR 手部 pose 控制使用：
 
 ```bash
 hands.enabled=true
+hands.driver=linkerhand_l6
 hands.mode=vr_hand_pose
 hands.linkerhand_l6.left_can=can0
 hands.linkerhand_l6.right_can=can1
@@ -225,8 +250,9 @@ mocap_switch.check_frames=10
 # 更换 Pico 暂停键
 input.pause_button=right_axis_click
 
-# 开启 LinkerHand L6 控制
+# 开启 LinkerHand gripper 控制
 hands.enabled=true
+hands.driver=linkerhand_l6
 hands.mode=gripper
 
 # 开启头显视频预览
@@ -242,5 +268,5 @@ input.video.enabled=true
 | 无法进入 debug mode | Unitree mode 释放失败 | 停止其他机器人模式后再次按 `Start` |
 | 机器人进入 `STANDING` 但不进入 `MOCAP` | 动捕验证失败 | 保持追踪稳定，查看 `mocap_switch.check_frames` 日志 |
 | Pico 暂停没有返回 `STANDING` | 这是预期行为 | Pico 暂停只冻结 mocap；按遥控器 `X` 返回 `STANDING` |
-| LinkerHand 不动 | `hands.enabled=false`、模式为 `off`、不在 `MOCAP`、gripper deadman 未按住、SDK/资产未安装，或 CAN 通道错误 | 设置 `hands.enabled=true` 和 `hands.mode`，进入 `MOCAP`，运行 `scripts/dev/test_linkerhand_l6.py`，并检查 `hands.linkerhand_l6.left_can` / `right_can` |
+| LinkerHand 不动 | `hands.enabled=false`、不在 `MOCAP`、gripper deadman 未按住、SDK/资产未安装，或 CAN 通道错误 | 设置 `hands.enabled=true` 和 `hands.mode`，进入 `MOCAP`，运行 `scripts/dev/test_linkerhand_l6.py`，并检查所选 driver 的 `left_can` / `right_can` |
 | 视频预览不可用 | RealSense 或视频源失败 | 检查相机权限、`input.video.source` 和日志 |

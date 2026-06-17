@@ -146,18 +146,19 @@ Resume while standing still and close to the paused pose. This reduces sudden
 reference changes when live tracking resumes.
 :::
 
-## Optional LinkerHand L6 Control
+## Optional LinkerHand Control
 
-Pico sim2real can drive LinkerHand L6 hands in two modes:
+Pico sim2real can drive LinkerHand hands from Pico input:
 
 - `gripper`: hold the matching side grip as a deadman switch; the matching
-  trigger closes that hand. This mode uses the configured
-  `hands.linkerhand_l6.speed`, which defaults to 50.
-- `vr_hand_pose`: retarget Pico hand pose through somehand and command the
-  continuous L6 hand target. If a hand pose disappears, that side keeps its last
-  commanded pose. This mode uses Teleopit's Pico landmark adapter and the
-  public `somehand.api` from somehand 0.2.0. It always sets L6 speed to the
-  maximum.
+  trigger closes that hand. This mode supports `hands.driver=linkerhand_l6` and
+  `hands.driver=linkerhand_o6`; speed and open/close poses come from the matching
+  driver config.
+- `vr_hand_pose`: L6-only mode that retargets Pico hand pose through somehand and
+  commands the continuous L6 hand target. If a hand pose disappears, that side
+  keeps its last commanded pose. This mode uses Teleopit's Pico landmark adapter
+  and the public `somehand.api` from somehand 0.2.0. It always sets L6 speed to
+  the maximum.
 
 Hand control is active in `MOCAP` and `ARMS`. It sends the open pose in
 `STANDING`, `DAMPING`, paused mocap, and shutdown.
@@ -178,7 +179,7 @@ sudo /usr/sbin/ip link set can1 up type can bitrate 1000000
 ```
 
 Before enabling full sim2real, verify the hand connection with a standalone
-open/close test:
+open/close test. The test runs until Ctrl-C:
 
 ```bash
 python scripts/dev/test_linkerhand_l6.py \
@@ -187,19 +188,43 @@ python scripts/dev/test_linkerhand_l6.py \
     --right-can can1
 ```
 
-Then enable L6 control in Pico sim2real:
+For an O6 standalone open/close test, add the O6 driver:
+
+```bash
+python scripts/dev/test_linkerhand_l6.py \
+    --driver linkerhand_o6 \
+    --hand-type both \
+    --left-can can0 \
+    --right-can can1
+```
+
+To test O6 with live Pico gripper input, add `--mode gripper`.
+
+Then enable L6 gripper control in Pico sim2real:
 
 ```bash
 hands.enabled=true
+hands.driver=linkerhand_l6
 hands.mode=gripper
 hands.linkerhand_l6.left_can=can0
 hands.linkerhand_l6.right_can=can1
+```
+
+For O6 gripper control, use:
+
+```bash
+hands.enabled=true
+hands.driver=linkerhand_o6
+hands.mode=gripper
+hands.linkerhand_o6.left_can=can0
+hands.linkerhand_o6.right_can=can1
 ```
 
 For continuous VR hand-pose control, use:
 
 ```bash
 hands.enabled=true
+hands.driver=linkerhand_l6
 hands.mode=vr_hand_pose
 hands.linkerhand_l6.left_can=can0
 hands.linkerhand_l6.right_can=can1
@@ -238,8 +263,9 @@ mocap_switch.check_frames=10
 # Change Pico pause button
 input.pause_button=right_axis_click
 
-# Enable LinkerHand L6 control
+# Enable LinkerHand gripper control
 hands.enabled=true
+hands.driver=linkerhand_l6
 hands.mode=gripper
 
 # Enable headset video preview
@@ -255,5 +281,5 @@ input.video.enabled=true
 | Cannot enter debug mode | Unitree mode release failed | Stop other robot modes and press `Start` again |
 | Robot enters `STANDING` but not `MOCAP` | Mocap validation failed | Keep tracking active and stable; check `mocap_switch.check_frames` logs |
 | Pico pause does not return to `STANDING` | Expected behavior | Pico pause freezes mocap; press remote `X` for `STANDING` |
-| LinkerHand does not move | `hands.enabled=false`, not in `MOCAP`, gripper deadman released, SDK/assets not installed, or CAN channel wrong | Enable `hands.enabled`, enter `MOCAP`, run `scripts/dev/test_linkerhand_l6.py`, and check `hands.linkerhand_l6.left_can` / `right_can` |
+| LinkerHand does not move | `hands.enabled=false`, not in `MOCAP`, gripper deadman released, SDK/assets not installed, or CAN channel wrong | Enable `hands.enabled`, enter `MOCAP`, run `scripts/dev/test_linkerhand_l6.py`, and check the selected driver's `left_can` / `right_can` |
 | Video preview is unavailable | RealSense or video source failed | Check camera permissions, `input.video.source`, and logs |

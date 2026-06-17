@@ -14,6 +14,11 @@ from teleopit.sim2real.hands.linkerhand_l6 import (
     parse_linkerhand_l6_config,
     trigger_to_pose,
 )
+from teleopit.sim2real.hands.linkerhand_o6 import (
+    CLOSE_POSE as O6_CLOSE_POSE,
+    LinkerHandO6Device,
+    parse_linkerhand_o6_config,
+)
 from teleopit.sim2real.hands.pico_landmarks import pico_hand_to_landmarks
 from teleopit.sim2real.hands.worker import HandRuntime
 
@@ -21,9 +26,13 @@ from teleopit.sim2real.hands.worker import HandRuntime
 class FakeInnerHand:
     def __init__(self) -> None:
         self.close_calls = 0
+        self.close_can_interface_calls = 0
 
     def close(self) -> None:
         self.close_calls += 1
+
+    def close_can_interface(self) -> None:
+        self.close_can_interface_calls += 1
 
 
 class FakeLinkerHandApi:
@@ -37,6 +46,7 @@ class FakeLinkerHandApi:
         self.hand = FakeInnerHand()
         self.speed: list[int] | None = None
         self.poses: list[list[int]] = []
+        self.close_can_calls = 0
         FakeLinkerHandApi.instances.append(self)
 
     def set_speed(self, speed: list[int]) -> None:
@@ -44,6 +54,9 @@ class FakeLinkerHandApi:
 
     def finger_move(self, pose: list[int]) -> None:
         self.poses.append(list(pose))
+
+    def close_can(self) -> None:
+        self.close_can_calls += 1
 
 
 def _cfg(mode: str = "gripper") -> dict[str, object]:
@@ -70,6 +83,27 @@ def _cfg(mode: str = "gripper") -> dict[str, object]:
                 "max_iterations": 12,
                 "temporal_filter_alpha": 1.0,
                 "output_alpha": 1.0,
+            },
+        },
+    }
+
+
+def _o6_cfg(mode: str = "gripper") -> dict[str, object]:
+    return {
+        "input": {"provider": "pico4"},
+        "hands": {
+            "enabled": True,
+            "driver": "linkerhand_o6",
+            "mode": mode,
+            "sides": ["left", "right"],
+            "rate_hz": 30.0,
+            "frame_timeout_s": 0.3,
+            "linkerhand_o6": {
+                "left_can": "can0",
+                "right_can": "can1",
+                "modbus": "None",
+                "trigger_deadzone": 0.05,
+                "deadman_threshold": 0.5,
             },
         },
     }
@@ -140,6 +174,15 @@ def test_trigger_to_pose_applies_deadzone_and_fixed_thumb_yaw() -> None:
     ) == [164, 10, 125, 125, 125, 125]
 
 
+def test_trigger_to_pose_can_interpolate_thumb_yaw_for_o6() -> None:
+    assert trigger_to_pose(
+        1.0,
+        open_pose=[250, 250, 250, 250, 250, 250],
+        close_pose=[86, 73, 118, 111, 110, 111],
+        deadzone=0.05,
+    ) == list(O6_CLOSE_POSE)
+
+
 def test_linkerhand_l6_device_starts_sdk(monkeypatch) -> None:
     FakeLinkerHandApi.instances = []
     monkeypatch.setitem(
@@ -158,6 +201,51 @@ def test_linkerhand_l6_device_starts_sdk(monkeypatch) -> None:
     assert FakeLinkerHandApi.instances[0].speed == [50, 50, 50, 50, 50, 50]
     assert FakeLinkerHandApi.instances[0].poses[-2] == list(cfg.close_pose)
     assert [hand.hand.close_calls for hand in FakeLinkerHandApi.instances] == [1, 1]
+
+
+def test_linkerhand_o6_gripper_defaults_to_reference_grasp_pose() -> None:
+    cfg = parse_linkerhand_o6_config(_o6_cfg())
+    mapper = GripperMapper(cfg)
+    snapshot = PicoControllerSnapshot(
+        left=PicoControllerState(raw=True, grip=1.0, trigger=1.0, present=True),
+        right=PicoControllerState(raw=True, grip=0.1, trigger=1.0, present=True),
+        timestamp_s=10.0,
+        seq=1,
+    )
+
+    commands = mapper.map(controller_snapshot=snapshot, hand_snapshot=None, active=True, now_s=10.0)
+
+    assert cfg.close_pose == O6_CLOSE_POSE
+    assert commands[0].pose == O6_CLOSE_POSE
+    assert commands[1].pose == cfg.open_pose
+
+
+def test_linkerhand_o6_device_starts_sdk(monkeypatch) -> None:
+    FakeLinkerHandApi.instances = []
+    monkeypatch.setitem(
+        sys.modules,
+        "LinkerHand.linker_hand_api",
+        SimpleNamespace(LinkerHandApi=FakeLinkerHandApi),
+    )
+    cfg = parse_linkerhand_o6_config(_o6_cfg())
+    device = LinkerHandO6Device(cfg)
+
+    device.connect()
+    device.send_pose("left", cfg.close_pose)
+    device.close()
+
+    assert [hand.hand_joint for hand in FakeLinkerHandApi.instances] == ["O6", "O6"]
+    assert [hand.can for hand in FakeLinkerHandApi.instances] == ["can0", "can1"]
+    assert FakeLinkerHandApi.instances[0].speed == [255, 255, 255, 255, 255, 255]
+    assert FakeLinkerHandApi.instances[0].poses[-2] == list(O6_CLOSE_POSE)
+    assert [hand.close_can_calls for hand in FakeLinkerHandApi.instances] == [0, 0]
+    assert [hand.hand.close_can_interface_calls for hand in FakeLinkerHandApi.instances] == [1, 1]
+    assert [hand.hand.close_calls for hand in FakeLinkerHandApi.instances] == [0, 0]
+
+
+def test_linkerhand_o6_rejects_vr_hand_pose() -> None:
+    with pytest.raises(ValueError, match="supports only hands.mode=gripper"):
+        parse_linkerhand_o6_config(_o6_cfg(mode="vr_hand_pose"))
 
 
 def test_hand_runtime_closes_device_when_mapper_start_fails() -> None:

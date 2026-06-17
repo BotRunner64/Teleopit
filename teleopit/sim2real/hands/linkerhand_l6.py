@@ -48,6 +48,7 @@ class LinkerHandL6Config:
     speed: tuple[int, ...]
     open_pose: tuple[int, ...]
     close_pose: tuple[int, ...]
+    fixed_thumb_yaw: int | None
     print_input: bool
     somehand_config_path: str
     somehand_rate_hz: float
@@ -86,6 +87,7 @@ def parse_linkerhand_l6_config(cfg: Any) -> LinkerHandL6Config:
         speed=tuple(speed),
         open_pose=tuple(open_pose),
         close_pose=tuple(close_pose),
+        fixed_thumb_yaw=thumb_yaw,
         print_input=bool(cfg_get(l6_cfg, "print_input", False)),
         somehand_config_path=str(cfg_get(somehand_cfg, "config_path", DEFAULT_SOMEHAND_CONFIG)),
         somehand_rate_hz=_positive_float(cfg_get(somehand_cfg, "rate_hz", cfg_get(somehand_cfg, "rate", 60.0)), "somehand.rate_hz"),
@@ -155,8 +157,9 @@ class LinkerHandL6Device(HandDevice):
 
 
 class GripperMapper(HandInputMapper):
-    def __init__(self, config: LinkerHandL6Config):
+    def __init__(self, config: Any):
         self.config = config
+        self._fixed_thumb_yaw = getattr(config, "fixed_thumb_yaw", getattr(config, "thumb_yaw_center", None))
         self._active = False
         self._next_tick_s = 0.0
 
@@ -192,7 +195,7 @@ class GripperMapper(HandInputMapper):
                 open_pose=self.config.open_pose,
                 close_pose=self.config.close_pose,
                 deadzone=self.config.trigger_deadzone,
-                thumb_yaw_default=self.config.thumb_yaw_center,
+                fixed_thumb_yaw=self._fixed_thumb_yaw,
             )
             commands.append(HandPoseCommand(side, tuple(pose), False, "controller"))
         return tuple(commands)
@@ -311,10 +314,21 @@ def build_linkerhand_l6(cfg: Any) -> tuple[HandDevice, HandInputMapper]:
     return device, mapper
 
 
-def trigger_to_pose(trigger: float, *, open_pose: Sequence[int], close_pose: Sequence[int], deadzone: float, thumb_yaw_default: int) -> list[int]:
+def trigger_to_pose(
+    trigger: float,
+    *,
+    open_pose: Sequence[int],
+    close_pose: Sequence[int],
+    deadzone: float,
+    fixed_thumb_yaw: int | None = None,
+    thumb_yaw_default: int | None = None,
+) -> list[int]:
+    if fixed_thumb_yaw is None:
+        fixed_thumb_yaw = thumb_yaw_default
     alpha = _normalize_trigger(trigger, deadzone)
     pose = [int(round(float(a) + alpha * (float(b) - float(a)))) for a, b in zip(open_pose, close_pose)]
-    pose[1] = int(thumb_yaw_default)
+    if fixed_thumb_yaw is not None:
+        pose[1] = int(fixed_thumb_yaw)
     return pose
 
 

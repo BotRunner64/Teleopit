@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise LinkerHand L6 dexterous-hand control modes."""
+"""Exercise LinkerHand dexterous-hand control modes."""
 
 from __future__ import annotations
 
@@ -24,35 +24,24 @@ from teleopit.inputs.pico4_provider import (  # noqa: E402
     Pico4InputProvider,
 )
 from teleopit.sim2real.hands.linkerhand_l6 import VR_HAND_POSE_SPEED, build_linkerhand_l6  # noqa: E402
+from teleopit.sim2real.hands.linkerhand_o6 import build_linkerhand_o6  # noqa: E402
 
 
 THUMB_YAW_DEFAULT = 10
 OPEN_POSE = [250, THUMB_YAW_DEFAULT, 250, 250, 250, 250]
 CLOSE_POSE = [79, THUMB_YAW_DEFAULT, 0, 0, 0, 0]
 DEFAULT_SPEED = [50, 50, 50, 50, 50, 50]
+O6_OPEN_POSE = [250, 250, 250, 250, 250, 250]
+O6_CLOSE_POSE = [86, 73, 118, 111, 110, 111]
+O6_DEFAULT_SPEED = [255, 255, 255, 255, 255, 255]
 DEFAULT_SOMEHAND_CONFIG_PATH = "third_party/somehand/configs/retargeting/bihand/linkerhand_l6_bihand.yaml"
-DEFAULT_LINKERHAND_SDK_ROOT = "third_party/linkerhand-python-sdk"
-
-
-def uint8(value: str) -> int:
-    parsed = int(value)
-    if parsed < 0 or parsed > 255:
-        raise argparse.ArgumentTypeError("value must be in range 0-255")
-    return parsed
-
-
-def positive_float(value: str) -> float:
-    parsed = float(value)
-    if parsed <= 0.0:
-        raise argparse.ArgumentTypeError("value must be greater than 0")
-    return parsed
-
-
-def positive_int(value: str) -> int:
-    parsed = int(value)
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("value must be greater than 0")
-    return parsed
+OPEN_CLOSE_HOLD_S = 1.0
+GRIPPER_RATE_HZ = 30.0
+VR_HAND_POSE_RATE_HZ = 60.0
+PICO_START_TIMEOUT_S = 60.0
+FRAME_TIMEOUT_S = 0.3
+TRIGGER_DEADZONE = 0.05
+DEADMAN_THRESHOLD = 0.5
 
 
 def selected_hand_types(hand_type: str) -> tuple[str, ...]:
@@ -62,7 +51,13 @@ def selected_hand_types(hand_type: str) -> tuple[str, ...]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Test LinkerHand L6 dexterous-hand control modes")
+    parser = argparse.ArgumentParser(description="Test LinkerHand dexterous-hand control modes")
+    parser.add_argument(
+        "--driver",
+        choices=["linkerhand_l6", "linkerhand_o6"],
+        default="linkerhand_l6",
+        help="Hand driver to test. O6 currently supports open_close and gripper only.",
+    )
     parser.add_argument(
         "--mode",
         choices=["open_close", "gripper", "vr_hand_pose"],
@@ -81,91 +76,57 @@ def parse_args() -> argparse.Namespace:
         default="None",
         help='RS485 serial port such as /dev/ttyUSB0; "None" uses CAN',
     )
-    parser.add_argument("--cycles", type=positive_int, default=3)
-    parser.add_argument("--hold-s", type=positive_float, default=1.0)
-    parser.add_argument(
-        "--duration-s",
-        type=positive_float,
-        default=30.0,
-        help="Live Pico test duration for gripper/vr_hand_pose modes.",
-    )
-    parser.add_argument("--rate", type=positive_float, default=30.0)
-    parser.add_argument("--frame-timeout", type=positive_float, default=0.3)
-    parser.add_argument("--trigger-deadzone", type=float, default=0.05)
-    parser.add_argument("--deadman-threshold", type=float, default=0.5)
-    parser.add_argument("--thumb-yaw-center", type=uint8, default=THUMB_YAW_DEFAULT)
-    parser.add_argument("--print-input", action="store_true")
-    parser.add_argument(
-        "--speed",
-        type=uint8,
-        nargs=6,
-        default=DEFAULT_SPEED,
-        help="L6 speed for open_close and gripper modes. vr_hand_pose always uses max speed.",
-        metavar=("THUMB_PITCH", "THUMB_YAW", "INDEX", "MIDDLE", "RING", "LITTLE"),
-    )
-    parser.add_argument(
-        "--open-pose",
-        type=uint8,
-        nargs=6,
-        default=OPEN_POSE,
-        metavar=("THUMB_PITCH", "THUMB_YAW", "INDEX", "MIDDLE", "RING", "LITTLE"),
-    )
-    parser.add_argument(
-        "--close-pose",
-        type=uint8,
-        nargs=6,
-        default=CLOSE_POSE,
-        metavar=("THUMB_PITCH", "THUMB_YAW", "INDEX", "MIDDLE", "RING", "LITTLE"),
-    )
-    parser.add_argument("--somehand-config-path", default=DEFAULT_SOMEHAND_CONFIG_PATH)
-    parser.add_argument("--somehand-sdk-root", default=DEFAULT_LINKERHAND_SDK_ROOT)
-    parser.add_argument("--bridge-host", default="0.0.0.0")
-    parser.add_argument("--bridge-port", type=positive_int, default=63901)
-    parser.add_argument("--bridge-advertise-ip", default=None)
-    parser.add_argument("--bridge-start-timeout", type=positive_float, default=10.0)
-    parser.add_argument("--no-bridge-discovery", action="store_true")
     args = parser.parse_args()
-    args.open_pose[1] = args.thumb_yaw_center
-    args.close_pose[1] = args.thumb_yaw_center
-    if args.trigger_deadzone < 0.0 or args.trigger_deadzone >= 0.5:
-        raise SystemExit("--trigger-deadzone must be in [0, 0.5)")
-    if args.deadman_threshold <= 0.0 or args.deadman_threshold >= 1.0:
-        raise SystemExit("--deadman-threshold must be in (0, 1)")
+    if args.driver == "linkerhand_o6" and args.mode == "vr_hand_pose":
+        raise SystemExit("hands.driver=linkerhand_o6 supports only --mode open_close or gripper")
+    args.speed = list(O6_DEFAULT_SPEED if args.driver == "linkerhand_o6" else DEFAULT_SPEED)
+    args.open_pose = list(O6_OPEN_POSE if args.driver == "linkerhand_o6" else OPEN_POSE)
+    args.close_pose = list(O6_CLOSE_POSE if args.driver == "linkerhand_o6" else CLOSE_POSE)
     return args
 
 
 def make_config(args: argparse.Namespace, *, mode: str) -> dict[str, object]:
     speed = VR_HAND_POSE_SPEED if mode == "vr_hand_pose" else args.speed
+    rate_hz = VR_HAND_POSE_RATE_HZ if mode == "vr_hand_pose" else GRIPPER_RATE_HZ
+    driver_section = "linkerhand_o6" if args.driver == "linkerhand_o6" else "linkerhand_l6"
+    driver_cfg = {
+        "left_can": args.left_can,
+        "right_can": args.right_can,
+        "modbus": args.modbus,
+        "trigger_deadzone": TRIGGER_DEADZONE,
+        "deadman_threshold": DEADMAN_THRESHOLD,
+        "speed": list(speed),
+        "open_pose": list(args.open_pose),
+        "close_pose": list(args.close_pose),
+        "print_input": False,
+    }
+    if args.driver == "linkerhand_l6":
+        driver_cfg["thumb_yaw_center"] = THUMB_YAW_DEFAULT
     return {
         "input": {"provider": "pico4"},
         "hands": {
             "enabled": True,
-            "driver": "linkerhand_l6",
+            "driver": args.driver,
             "mode": mode,
             "sides": list(selected_hand_types(args.hand_type)),
-            "rate_hz": args.rate,
-            "frame_timeout_s": args.frame_timeout,
-            "linkerhand_l6": {
-                "left_can": args.left_can,
-                "right_can": args.right_can,
-                "modbus": args.modbus,
-                "trigger_deadzone": args.trigger_deadzone,
-                "deadman_threshold": args.deadman_threshold,
-                "thumb_yaw_center": args.thumb_yaw_center,
-                "speed": list(speed),
-                "open_pose": list(args.open_pose),
-                "close_pose": list(args.close_pose),
-                "print_input": args.print_input,
-            },
+            "rate_hz": rate_hz,
+            "frame_timeout_s": FRAME_TIMEOUT_S,
+            driver_section: driver_cfg,
             "somehand": {
-                "config_path": args.somehand_config_path,
-                "rate_hz": args.rate,
+                "config_path": DEFAULT_SOMEHAND_CONFIG_PATH,
+                "rate_hz": VR_HAND_POSE_RATE_HZ,
                 "max_iterations": 12,
                 "temporal_filter_alpha": 1.0,
                 "output_alpha": 1.0,
             },
         },
     }
+
+
+def build_driver_runtime(config: dict[str, object], *, driver: str):
+    if driver == "linkerhand_o6":
+        return build_linkerhand_o6(config)
+    return build_linkerhand_l6(config)
 
 
 def send_all(hands: dict[str, object], pose: Sequence[int], *, label: str) -> None:
@@ -175,15 +136,15 @@ def send_all(hands: dict[str, object], pose: Sequence[int], *, label: str) -> No
         hand.finger_move(pose=list(pose))
 
 
-def make_pico_provider(args: argparse.Namespace) -> Pico4InputProvider:
+def make_pico_provider() -> Pico4InputProvider:
     return Pico4InputProvider(
-        timeout=args.duration_s,
+        timeout=PICO_START_TIMEOUT_S,
         pause_button=None,
-        bridge_host=args.bridge_host,
-        bridge_port=args.bridge_port,
-        bridge_discovery=not args.no_bridge_discovery,
-        bridge_advertise_ip=args.bridge_advertise_ip,
-        bridge_start_timeout=args.bridge_start_timeout,
+        bridge_host="0.0.0.0",
+        bridge_port=63901,
+        bridge_discovery=True,
+        bridge_advertise_ip=None,
+        bridge_start_timeout=10.0,
         bridge_video=None,
         bridge_video_enabled=False,
     )
@@ -193,14 +154,12 @@ def run_live_until_done(
     runtime: object,
     *,
     provider: Pico4InputProvider,
-    duration_s: float,
     mode_label: str,
     rate_hz: float,
 ) -> None:
-    deadline = time.monotonic() + duration_s
     last_seq: int | None = None
-    print(f"Running {mode_label} for {duration_s:.1f}s; press Ctrl-C to stop early.", flush=True)
-    while time.monotonic() < deadline:
+    print(f"Running {mode_label}; press Ctrl-C to stop.", flush=True)
+    while True:
         now_s = time.monotonic()
         controller_snapshot = provider.get_controller_snapshot()
         hand_snapshot = provider.get_hand_snapshot()
@@ -233,7 +192,7 @@ def run_open_close(args: argparse.Namespace) -> None:
     hands: dict[str, object] = {}
 
     print(
-        "Testing LinkerHand L6 | "
+        f"Testing {args.driver} | "
         f"hands={','.join(hand_types)} | "
         f"can={','.join(f'{hand}:{can_channels[hand]}' for hand in hand_types)} | "
         f"modbus={args.modbus}",
@@ -242,7 +201,7 @@ def run_open_close(args: argparse.Namespace) -> None:
     try:
         for hand_type in hand_types:
             hand = LinkerHandApi(
-                hand_joint="L6",
+                hand_joint="O6" if args.driver == "linkerhand_o6" else "L6",
                 hand_type=hand_type,
                 modbus=args.modbus,
                 can=can_channels[hand_type],
@@ -251,13 +210,15 @@ def run_open_close(args: argparse.Namespace) -> None:
             hands[hand_type] = hand
 
         send_all(hands, args.open_pose, label="startup open")
-        time.sleep(args.hold_s)
-        for cycle in range(args.cycles):
-            print(f"cycle {cycle + 1}/{args.cycles}", flush=True)
+        time.sleep(OPEN_CLOSE_HOLD_S)
+        cycle = 0
+        while True:
+            cycle += 1
+            print(f"cycle {cycle}", flush=True)
             send_all(hands, args.close_pose, label="close")
-            time.sleep(args.hold_s)
+            time.sleep(OPEN_CLOSE_HOLD_S)
             send_all(hands, args.open_pose, label="open")
-            time.sleep(args.hold_s)
+            time.sleep(OPEN_CLOSE_HOLD_S)
     except KeyboardInterrupt:
         print("Interrupted; opening hands before exit", flush=True)
     finally:
@@ -272,8 +233,8 @@ def run_open_close(args: argparse.Namespace) -> None:
 
 def run_gripper(args: argparse.Namespace) -> None:
     config = make_config(args, mode="gripper")
-    provider = make_pico_provider(args)
-    device, mapper = build_linkerhand_l6(config)
+    provider = make_pico_provider()
+    device, mapper = build_driver_runtime(config, driver=args.driver)
     from teleopit.sim2real.hands.worker import HandRuntime
     runtime = HandRuntime(device, mapper)
 
@@ -284,7 +245,12 @@ def run_gripper(args: argparse.Namespace) -> None:
     )
     try:
         runtime.start()
-        run_live_until_done(runtime, provider=provider, duration_s=args.duration_s, mode_label="gripper", rate_hz=args.rate)
+        run_live_until_done(
+            runtime,
+            provider=provider,
+            mode_label="gripper",
+            rate_hz=GRIPPER_RATE_HZ,
+        )
     except KeyboardInterrupt:
         print("Interrupted; opening hands before exit", flush=True)
     finally:
@@ -298,8 +264,8 @@ def run_vr_hand_pose(args: argparse.Namespace) -> None:
         raise SystemExit("hands.mode=vr_hand_pose currently requires --hand-type both")
 
     config = make_config(args, mode="vr_hand_pose")
-    provider = make_pico_provider(args)
-    device, mapper = build_linkerhand_l6(config)
+    provider = make_pico_provider()
+    device, mapper = build_driver_runtime(config, driver=args.driver)
     from teleopit.sim2real.hands.worker import HandRuntime
     runtime = HandRuntime(device, mapper)
 
@@ -310,7 +276,12 @@ def run_vr_hand_pose(args: argparse.Namespace) -> None:
     )
     try:
         runtime.start()
-        run_live_until_done(runtime, provider=provider, duration_s=args.duration_s, mode_label="vr_hand_pose", rate_hz=args.rate)
+        run_live_until_done(
+            runtime,
+            provider=provider,
+            mode_label="vr_hand_pose",
+            rate_hz=VR_HAND_POSE_RATE_HZ,
+        )
     except KeyboardInterrupt:
         print("Interrupted; opening hands before exit", flush=True)
     finally:

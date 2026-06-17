@@ -56,7 +56,7 @@ teleopit/                 # Core inference package
 │   └── loop.py           # SimulationLoop — PD control at 1000Hz, policy at 50Hz
 ├── sim2real/
 │   ├── mp/               # Process-isolated sim2real runtime and IPC
-│   └── hands/            # Optional LinkerHand L6 driver/mapper plugins
+│   └── hands/            # Optional LinkerHand driver/mapper plugins
 └── recording/            # HDF5Recorder and Pico motion NPZ recording helpers
 scripts/
 ├── run/run_sim.py        # Offline sim2sim pipeline
@@ -145,13 +145,14 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - Pico4 sim2sim/sim2real support `ARMS` mode toggled from `MOCAP` with Pico/controller `B`; retargeting continues, while the control loop sends the motion tracker a composed reference with stand-pose body/legs/waist and live retargeted arms
 - `ARMS` entering/exiting/resume resets policy/reference alignment and uses Kp ramp; offline BVH sim2real does not use `ARMS`, and Unitree remote `B` remains BVH replay
 - Realtime mode switches and pause/resume use a retargeter-preserving soft reset: policy/reference state, smoothers, and reference alignment are reset, while the GMR IK warm-start is retained
-- Optional LinkerHand L6 control uses `hands.enabled=true` and `hands.mode=gripper|vr_hand_pose`; default is disabled
-- `gripper` mode reuses `Pico4InputProvider.get_controller_snapshot()` for Pico grip/trigger open-close control
+- Optional LinkerHand control uses `hands.enabled=true`, `hands.driver=linkerhand_l6|linkerhand_o6`, and `hands.mode=gripper|vr_hand_pose`; default is disabled
+- `gripper` mode reuses `Pico4InputProvider.get_controller_snapshot()` for Pico grip/trigger open-close control and supports LinkerHand L6 and O6
 - `vr_hand_pose` mode reuses `Pico4InputProvider.get_hand_snapshot()` and somehand 0.2.0 public `somehand.api` for continuous Pico hand-pose retargeting; do not start a second `PicoBridge` for hand control
 - Teleopit owns Pico 26-joint hand-state to 21-landmark conversion; do not import `somehand.pico_input`
-- `gripper` mode uses the configured `hands.linkerhand_l6.speed` (default `[50]*6`); `vr_hand_pose` always sets LinkerHand L6 speed to `[255]*6`
+- LinkerHand O6 supports only `hands.mode=gripper`; its default `close_pose` is `[86, 73, 118, 111, 110, 111]`
+- L6 `gripper` mode uses the configured `hands.linkerhand_l6.speed` (default `[50]*6`); O6 `gripper` mode uses `hands.linkerhand_o6.speed` (default `[255]*6`); `vr_hand_pose` always sets LinkerHand L6 speed to `[255]*6`
 - `vr_hand_pose` defaults to a low-latency somehand path: `hands.somehand.rate_hz=60`, `max_iterations=12`, `temporal_filter_alpha=1.0`, and `output_alpha=1.0`; this prioritizes response speed over smoothing
-- LinkerHand L6 control is active in sim2real `MOCAP` and `ARMS`; `STANDING`, `DAMPING`, mocap pause, and shutdown must send the configured open pose
+- LinkerHand control is active in sim2real `MOCAP` and `ARMS`; `STANDING`, `DAMPING`, mocap pause, and shutdown must send the configured open pose
 - In `vr_hand_pose` mode, missing/inactive hand pose holds the last commanded pose for that side instead of opening the hand
 
 ### SimulationLoop Runtime Behavior
@@ -236,7 +237,7 @@ python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_general_trac
 - `assets/robots/unitree_g1/g1_29dof.xml` and its meshes are the canonical G1 robot model assets; they are downloaded from the `robots` asset group and are not tracked in Git
 - `teleopit/retargeting/gmr/assets/` is gitignored; downloaded at runtime
 - `train_mimic/assets/` is no longer tracked; FK tooling reuses `assets/robots/unitree_g1/g1_29dof.xml`
-- `third_party/linkerhand-python-sdk` and `third_party/somehand` support optional LinkerHand L6 sim2real control
+- `third_party/linkerhand-python-sdk` and `third_party/somehand` support optional LinkerHand sim2real control
 - Run `python scripts/check_large_tracked_files.py` before pushing
 
 Assets are split across two ModelScope repos by type:

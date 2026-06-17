@@ -7,6 +7,7 @@ from typing import Any
 from teleopit.runtime.common import cfg_get
 from teleopit.sim2real.hands.base import HandDevice, HandInputMapper
 from teleopit.sim2real.hands.linkerhand_l6 import build_linkerhand_l6
+from teleopit.sim2real.hands.linkerhand_o6 import build_linkerhand_o6
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,10 @@ def build_hand_runtime(cfg: Any) -> HandRuntime | DisabledHandRuntime:
     if not bool(cfg_get(hands_cfg, "enabled", False)):
         return DisabledHandRuntime()
     driver = str(cfg_get(hands_cfg, "driver", "linkerhand_l6")).strip().lower()
-    if driver != "linkerhand_l6":
-        raise ValueError(f"Unsupported hands.driver={driver!r}; only linkerhand_l6 is implemented")
-    device, mapper = build_linkerhand_l6(cfg)
+    if driver == "linkerhand_l6":
+        device, mapper = build_linkerhand_l6(cfg)
+    elif driver == "linkerhand_o6":
+        device, mapper = build_linkerhand_o6(cfg)
+    else:
+        raise ValueError(f"Unsupported hands.driver={driver!r}; supported drivers: linkerhand_l6, linkerhand_o6")
     return HandRuntime(device, mapper)

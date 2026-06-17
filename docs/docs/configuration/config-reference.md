@@ -124,16 +124,17 @@ Realtime Pico resume re-centers heading and ground-plane position before trackin
 ### Dexterous Hand (Pico sim2real)
 
 `hands.enabled=true` requires `input.provider=pico4` and the optional `dexhand`
-extra. Control is active in `MOCAP` and `ARMS`; inactive modes send the open pose. In
-`vr_hand_pose`, missing hand pose holds the last command for that side.
-`gripper` uses the configured `hands.linkerhand_l6.speed`; `vr_hand_pose`
-always sets LinkerHand L6 speed to the maximum. Teleopit converts Pico hand
-state to 21 landmarks and embeds somehand 0.2.0 through `somehand.api` only.
+extra. Control is active in `MOCAP` and `ARMS`; inactive modes send the open pose.
+`gripper` supports `linkerhand_l6` and `linkerhand_o6` by interpolating Pico
+trigger input between the configured open and close poses. `vr_hand_pose` is
+L6-only: missing hand pose holds the last command for that side, L6 speed is
+set to the maximum, and Teleopit converts Pico hand state to 21 landmarks before
+calling somehand 0.2.0 through `somehand.api` only.
 
 | Field | Description | Default |
 |-------|-------------|---------|
 | `hands.enabled` | Enable optional hand worker | `false` |
-| `hands.driver` | Hand driver plugin | `linkerhand_l6` |
+| `hands.driver` | Hand driver plugin: `linkerhand_l6` or `linkerhand_o6` | `linkerhand_l6` |
 | `hands.mode` | `gripper` or `vr_hand_pose` | `gripper` |
 | `hands.sides` | Controlled sides | `[left, right]` |
 | `hands.rate_hz` | Maximum gripper command rate in Hz | `30.0` |
@@ -141,6 +142,9 @@ state to 21 landmarks and embeds somehand 0.2.0 through `somehand.api` only.
 | `hands.linkerhand_l6.left_can` / `right_can` | CAN channels for each hand | `can0` / `can1` |
 | `hands.linkerhand_l6.speed` | L6 speed used by `gripper`; `vr_hand_pose` overrides this to maximum speed | see config |
 | `hands.linkerhand_l6.open_pose` / `close_pose` | Six-value L6 open/closed poses | see config |
+| `hands.linkerhand_o6.left_can` / `right_can` | CAN channels for each O6 hand | `can0` / `can1` |
+| `hands.linkerhand_o6.speed` | O6 speed used by `gripper` | see config |
+| `hands.linkerhand_o6.open_pose` / `close_pose` | Six-value O6 open/closed poses | see config |
 | `hands.somehand.config_path` | Official somehand 0.2.0 bi-hand L6 config used by `vr_hand_pose` | see config |
 | `hands.somehand.rate_hz` | Low-latency `vr_hand_pose` command rate in Hz | `60.0` |
 | `hands.somehand.max_iterations` | somehand solver iteration cap for `vr_hand_pose` | `12` |
