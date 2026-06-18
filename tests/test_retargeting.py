@@ -5,12 +5,14 @@ pipeline are guarded with skipif markers. We test the module-level import,
 the RetargetingModule.retarget output contract via a mock GMR, and the
 extract_mimic_obs helper.
 """
+import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
-from conftest import requires_mink, requires_mujoco
+from conftest import find_g1_xml_path, requires_mink, requires_mujoco
 
 
 class TestRetargetingModuleImport:
@@ -123,3 +125,30 @@ class TestRetargetingModuleInit:
                 robot_name="nonexistent_robot_xyz",
                 human_format="nonexistent_format",
             )
+
+    def test_pico_bridge_g1_ik_frames_exist_in_canonical_xml(self):
+        import mujoco
+
+        from teleopit.retargeting.gmr.params import IK_CONFIG_DICT, ROBOT_XML_DICT
+
+        robot_name = "unitree_g1"
+        xml_path = find_g1_xml_path()
+        if xml_path is None:
+            pytest.skip("G1 robot XML asset not available; run scripts/setup/download_assets.py --only robots gmr")
+
+        assert Path(xml_path).resolve() == Path(ROBOT_XML_DICT[robot_name]).resolve()
+        model = mujoco.MjModel.from_xml_path(xml_path)
+        with open(IK_CONFIG_DICT["pico_bridge"][robot_name], encoding="utf-8") as f:
+            ik_config = json.load(f)
+
+        missing = []
+        for table_name in ("ik_match_table1", "ik_match_table2"):
+            for frame_name, entry in ik_config[table_name].items():
+                _, pos_weight, rot_weight, _, _ = entry
+                if pos_weight == 0 and rot_weight == 0:
+                    continue
+                frame_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, frame_name)
+                if frame_id < 0:
+                    missing.append(f"{table_name}:{frame_name}")
+
+        assert missing == []

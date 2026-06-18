@@ -107,6 +107,15 @@ class GeneralMotionRetargeting:
         self._warmup_max_iter = 200
         self._warmup_dt = 0.1  # large integration step for fast convergence during warmup
 
+    def _validate_body_frame(self, frame_name, table_name):
+        if mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_BODY, frame_name) >= 0:
+            return
+        available = ", ".join(self.robot_body_names.keys())
+        raise ValueError(
+            f"IK config {table_name} references body '{frame_name}', but it does not exist "
+            f"in robot model '{self.xml_file}'. Update the IK config to use one of: {available}"
+        )
+
     def reset_configuration(self):
         """Reset the IK configuration to the model's default qpos.
 
@@ -130,6 +139,7 @@ class GeneralMotionRetargeting:
         for frame_name, entry in self.ik_match_table1.items():
             body_name, pos_weight, rot_weight, pos_offset, rot_offset = entry
             if pos_weight != 0 or rot_weight != 0:
+                self._validate_body_frame(frame_name, "ik_match_table1")
                 task = mink.FrameTask(
                     frame_name=frame_name,
                     frame_type="body",
@@ -148,6 +158,7 @@ class GeneralMotionRetargeting:
         for frame_name, entry in self.ik_match_table2.items():
             body_name, pos_weight, rot_weight, pos_offset, rot_offset = entry
             if pos_weight != 0 or rot_weight != 0:
+                self._validate_body_frame(frame_name, "ik_match_table2")
                 task = mink.FrameTask(
                     frame_name=frame_name,
                     frame_type="body",
