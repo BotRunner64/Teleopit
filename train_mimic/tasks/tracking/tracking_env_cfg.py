@@ -269,7 +269,7 @@ def make_tracking_env_cfg() -> ManagerBasedRlEnvCfg:
             params={"command_name": "motion", "std": 3.0},
         ),
         "survival": RewardTermCfg(func=mdp.survival, weight=3.0),
-        "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-1e-1),
+        "action_rate_l2": RewardTermCfg(func=mdp.action_rate_l2, weight=-0.5),
         "joint_limit": RewardTermCfg(
             func=mdp.joint_pos_limits,
             weight=-10.0,
