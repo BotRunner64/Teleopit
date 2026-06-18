@@ -141,14 +141,32 @@ class TestRetargetingModuleInit:
         with open(IK_CONFIG_DICT["pico_bridge"][robot_name], encoding="utf-8") as f:
             ik_config = json.load(f)
 
+        object_types = {
+            "body": mujoco.mjtObj.mjOBJ_BODY,
+            "geom": mujoco.mjtObj.mjOBJ_GEOM,
+            "site": mujoco.mjtObj.mjOBJ_SITE,
+        }
         missing = []
         for table_name in ("ik_match_table1", "ik_match_table2"):
             for frame_name, entry in ik_config[table_name].items():
-                _, pos_weight, rot_weight, _, _ = entry
+                _, pos_weight, rot_weight, _, _, *rest = entry
                 if pos_weight == 0 and rot_weight == 0:
                     continue
-                frame_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, frame_name)
+                frame_type = rest[0] if rest else "body"
+                frame_id = mujoco.mj_name2id(model, object_types[frame_type], frame_name)
                 if frame_id < 0:
-                    missing.append(f"{table_name}:{frame_name}")
+                    missing.append(f"{table_name}:{frame_type}:{frame_name}")
 
         assert missing == []
+
+    def test_pico_bridge_g1_foot_ik_uses_canonical_foot_sites(self):
+        from teleopit.retargeting.gmr.params import IK_CONFIG_DICT
+
+        with open(IK_CONFIG_DICT["pico_bridge"]["unitree_g1"], encoding="utf-8") as f:
+            ik_config = json.load(f)
+
+        for table_name in ("ik_match_table1", "ik_match_table2"):
+            assert ik_config[table_name]["left_foot"][-1] == "site"
+            assert ik_config[table_name]["left_foot"][0] == "Left_Foot"
+            assert ik_config[table_name]["right_foot"][-1] == "site"
+            assert ik_config[table_name]["right_foot"][0] == "Right_Foot"
