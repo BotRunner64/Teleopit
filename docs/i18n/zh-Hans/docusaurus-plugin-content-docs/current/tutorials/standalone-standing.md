@@ -5,8 +5,8 @@ sidebar_position: 3
 # 独立站立测试
 
 在接入完整 sim2real 控制之前，如果正在调试新机器人、网络配置或 policy，先运行此测试。
-它不使用 Pico、BVH 回放、retargeting，也不走完整 Teleopit mocap pipeline，只验证 G1 bridge
-和 RL standing 路径。
+它不使用 Pico、BVH 回放、retargeting，也不走完整 mocap pipeline，只验证 G1 bridge
+和 sim2real 使用的同一条 RL standing 路径。
 
 ```text
 G1 LowState -> standing observation -> RL policy -> G1 LowCmd targets
@@ -57,8 +57,10 @@ python scripts/run/standalone_standing.py \
     --network-interface eth0
 ```
 
-standalone standing 使用与 sim2real 相同的 Kp ramp 语义：锁住当前关节后立即发送
-policy target，同时在 2 秒内把 Kp 从 10% 逐步升到配置的增益。可以这样调整启动行为：
+standalone standing 复用 sim2real standing 组件：`UnitreeG1Robot`、
+`Sim2RealSafetyManager`、`RLPolicyController`、`VelCmdObservationBuilder` 和
+`Sim2RealReferenceProcessor`。锁住当前关节后发送 policy target，同时在 2 秒内把 Kp
+从 10% 逐步升到配置的增益。可以这样调整启动行为：
 
 ```bash
 python scripts/run/standalone_standing.py \
@@ -74,6 +76,8 @@ python scripts/run/standalone_standing.py \
 - 能从机器人收到 LowState。
 - dual-input ONNX policy 能运行 standing observation 路径。
 - 能通过 C++ bridge 发布 low-level position targets。
+- observation 构建、action scale、默认站姿、Kp ramp 和 joint-limit clipping 与 sim2real
+  standing runtime 保持一致。
 
 ## 下一步
 

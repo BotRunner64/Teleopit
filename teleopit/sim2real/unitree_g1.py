@@ -30,6 +30,7 @@ class UnitreeG1Robot:
 
     def __init__(self, cfg: Any) -> None:
         self._network_interface: str = str(cfg_get(cfg, "network_interface", "eth0"))
+        self._publish_hz: int = int(cfg_get(cfg, "publish_hz", 200))
         self._kp = np.asarray(cfg_get(cfg, "kp_real", [100] * NUM_JOINTS), dtype=np.float32)
         self._kd = np.asarray(cfg_get(cfg, "kd_real", [2] * NUM_JOINTS), dtype=np.float32)
 
@@ -40,7 +41,7 @@ class UnitreeG1Robot:
 
         import g1_bridge_sdk
 
-        self._bridge = g1_bridge_sdk.G1Bridge(self._network_interface)
+        self._bridge = g1_bridge_sdk.G1Bridge(self._network_interface, self._publish_hz)
         self._publishing: bool = False
 
         if not self._bridge.wait_for_state(3.0):
