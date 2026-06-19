@@ -174,10 +174,20 @@ class _StandaloneTimingReporter:
 class StandaloneStandingController:
     """Small wrapper around the production sim2real STANDING implementation."""
 
-    def __init__(self, cfg: Any, *, dry_run: bool = False, no_policy: bool = False) -> None:
+    def __init__(
+        self,
+        cfg: Any,
+        *,
+        dry_run: bool = False,
+        no_policy: bool = False,
+        obs_delay_s: float = 0.0,
+        command_delay_s: float = 0.0,
+    ) -> None:
         self.cfg = cfg
         self.dry_run = dry_run
         self.no_policy = no_policy
+        self.obs_delay_s = self._validate_delay_s(obs_delay_s, name="obs_delay_s")
+        self.command_delay_s = self._validate_delay_s(command_delay_s, name="command_delay_s")
         self.shutdown_requested = False
 
         self.policy_hz = float(cfg_get(cfg, "policy_hz", DEFAULT_POLICY_HZ))
@@ -221,6 +231,20 @@ class StandaloneStandingController:
         self._last_target: np.ndarray | None = None
         self._step_count = 0
         self._timing = _StandaloneTimingReporter(target_period_s=self.dt)
+
+        if self.obs_delay_s > 0.0 or self.command_delay_s > 0.0:
+            logger.info(
+                "Diagnostic delay injection enabled | obs_delay=%.3fms command_delay=%.3fms",
+                self.obs_delay_s * 1000.0,
+                self.command_delay_s * 1000.0,
+            )
+
+    @staticmethod
+    def _validate_delay_s(value: float, *, name: str) -> float:
+        delay_s = float(value)
+        if not np.isfinite(delay_s) or delay_s < 0.0:
+            raise ValueError(f"{name} must be finite and >= 0, got {value!r}")
+        return delay_s
 
     def _build_policy_and_obs(self) -> tuple[Any, Any]:
         controller_cfg = cfg_get(self.cfg, "controller")
@@ -293,6 +317,8 @@ class StandaloneStandingController:
         t0 = time.monotonic()
         robot_state = self.robot.get_state()
         t_state = time.monotonic()
+        if self.obs_delay_s > 0.0:
+            time.sleep(self.obs_delay_s)
         qpos = self._standing_qpos.copy()
         motion_joint_vel = np.zeros(self.num_actions, dtype=np.float32)
         motion_qpos = np.asarray(qpos[: ROOT_DIM + self.num_actions], dtype=np.float32)
@@ -319,6 +345,8 @@ class StandaloneStandingController:
         if self.dry_run:
             self._log_step(robot_state.qvel, action, target_dof_pos, dry=True)
         else:
+            if self.command_delay_s > 0.0:
+                time.sleep(self.command_delay_s)
             self.safety.send_positions(target_dof_pos)
             self._log_step(robot_state.qvel, action, target_dof_pos, dry=False)
         t_send = time.monotonic()
@@ -452,12 +480,26 @@ def main() -> None:
     parser.add_argument("--kp-ramp-duration", type=float, default=2.0, help="Startup Kp ramp duration in seconds")
     parser.add_argument("--kp-ramp-floor-ratio", type=float, default=0.1, help="Initial Kp ratio during startup")
     parser.add_argument("--joint-vel-limit", type=float, default=10.0, help="Damp if any joint exceeds this velocity")
+    parser.add_argument(
+        "--obs-delay-ms",
+        type=float,
+        default=0.0,
+        help="Diagnostic delay after LowState read, before observation build/inference",
+    )
+    parser.add_argument(
+        "--command-delay-ms",
+        type=float,
+        default=0.0,
+        help="Diagnostic delay after target computation, before C++ bridge set_target",
+    )
     args = parser.parse_args()
 
     controller = StandaloneStandingController(
         _build_cfg(args),
         dry_run=bool(args.dry_run),
         no_policy=bool(args.no_policy),
+        obs_delay_s=float(args.obs_delay_ms) / 1000.0,
+        command_delay_s=float(args.command_delay_ms) / 1000.0,
     )
     controller.run()
 
