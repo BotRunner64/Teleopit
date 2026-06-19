@@ -385,7 +385,10 @@ def _run_worker(args: argparse.Namespace) -> None:
     robot_xml = resolve_g1_training_xml(args.robot_xml)
     if not robot_xml.is_file():
         raise FileNotFoundError(f"G1 training MuJoCo XML not found: {robot_xml}")
-    env_cfg.scene.entities["robot"] = make_g1_training_robot_cfg(robot_xml)
+    env_cfg.scene.entities["robot"] = make_g1_training_robot_cfg(
+        robot_xml,
+        action_latency_randomization=True,
+    )
     env_cfg.robot_xml = str(robot_xml)
     if args.num_envs is not None:
         env_cfg.scene.num_envs = args.num_envs

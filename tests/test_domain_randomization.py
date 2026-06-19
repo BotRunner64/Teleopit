@@ -83,3 +83,45 @@ def test_play_env_disables_training_only_domain_randomization() -> None:
     assert "physics_material" not in play_cfg.events
     assert "randomize_rigid_body_mass" not in play_cfg.events
     assert play_cfg.events == {}
+
+
+def test_general_tracking_enables_action_latency_randomization_for_training_only() -> None:
+    import mjlab.tasks  # noqa: F401
+    import train_mimic.tasks  # noqa: F401
+    from mjlab.actuator.delayed_actuator import DelayedActuatorCfg
+    from mjlab.tasks.registry import load_env_cfg
+
+    env_cfg = load_env_cfg(DEFAULT_TASK)
+    for group_name in ("actor", "actor_history", "critic", "critic_history"):
+        for term_name, term_cfg in env_cfg.observations[group_name].terms.items():
+            assert term_cfg.delay_min_lag == 0, (group_name, term_name)
+            assert term_cfg.delay_max_lag == 0, (group_name, term_name)
+
+    actuators = env_cfg.scene.entities["robot"].articulation.actuators
+    assert actuators
+    assert all(isinstance(actuator, DelayedActuatorCfg) for actuator in actuators)
+    assert all(actuator.delay_target == "position" for actuator in actuators)
+    assert all(actuator.delay_min_lag == 0 for actuator in actuators)
+    assert all(actuator.delay_max_lag == 1 for actuator in actuators)
+    assert all(actuator.delay_hold_prob == 0.8 for actuator in actuators)
+    assert all(actuator.delay_update_period == 4 for actuator in actuators)
+
+    play_cfg = load_env_cfg(DEFAULT_TASK, play=True)
+    for group_name in ("actor", "actor_history", "critic", "critic_history"):
+        for term_name, term_cfg in play_cfg.observations[group_name].terms.items():
+            assert term_cfg.delay_max_lag == 0, (group_name, term_name)
+    assert not any(
+        isinstance(actuator, DelayedActuatorCfg)
+        for actuator in play_cfg.scene.entities["robot"].articulation.actuators
+    )
+
+
+def test_g1_training_robot_cfg_can_enable_action_latency_randomization() -> None:
+    from mjlab.actuator.delayed_actuator import DelayedActuatorCfg
+    from train_mimic.tasks.tracking.config.env import make_g1_training_robot_cfg
+
+    robot_cfg = make_g1_training_robot_cfg(action_latency_randomization=True)
+
+    actuators = robot_cfg.articulation.actuators
+    assert actuators
+    assert all(isinstance(actuator, DelayedActuatorCfg) for actuator in actuators)
