@@ -1,6 +1,6 @@
 """Base motion tracking task configuration.
 
-Copied from mjlab 1.2.0 ``mjlab.tasks.tracking.tracking_env_cfg`` for local
+Copied from mjlab 1.4.0 ``mjlab.tasks.tracking.tracking_env_cfg`` for local
 customisation.  All observation / reward / termination / event terms still
 reference ``mjlab.tasks.tracking.mdp`` — only the *wiring* lives here.
 """

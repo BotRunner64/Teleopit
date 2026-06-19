@@ -8,7 +8,6 @@ from pathlib import Path
 
 import mujoco
 
-from mjlab.actuator.delayed_actuator import DelayedActuatorCfg
 from mjlab.asset_zoo.robots import G1_ACTION_SCALE, get_g1_robot_cfg
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp.actions import JointPositionActionCfg
@@ -101,16 +100,18 @@ def _enable_robot_action_latency_randomization(robot_cfg) -> None:
             "G1 robot cfg must define articulation actuators before enabling action latency randomization"
         )
     articulation.actuators = tuple(
-        DelayedActuatorCfg(
-            base_cfg=actuator,
-            delay_target="position",
-            delay_min_lag=_ACTION_LATENCY_RANDOMIZATION_MIN_LAG_PHYSICS_STEPS,
-            delay_max_lag=_ACTION_LATENCY_RANDOMIZATION_MAX_LAG_PHYSICS_STEPS,
-            delay_hold_prob=_ACTION_LATENCY_RANDOMIZATION_HOLD_PROB,
-            delay_update_period=_ACTION_LATENCY_RANDOMIZATION_UPDATE_PERIOD_PHYSICS_STEPS,
-        )
+        _with_action_latency_randomization(actuator)
         for actuator in articulation.actuators
     )
+
+
+def _with_action_latency_randomization(actuator):
+    actuator = deepcopy(actuator)
+    actuator.delay_min_lag = _ACTION_LATENCY_RANDOMIZATION_MIN_LAG_PHYSICS_STEPS
+    actuator.delay_max_lag = _ACTION_LATENCY_RANDOMIZATION_MAX_LAG_PHYSICS_STEPS
+    actuator.delay_hold_prob = _ACTION_LATENCY_RANDOMIZATION_HOLD_PROB
+    actuator.delay_update_period = _ACTION_LATENCY_RANDOMIZATION_UPDATE_PERIOD_PHYSICS_STEPS
+    return actuator
 
 
 def _apply_play_mode_overrides(cfg: ManagerBasedRlEnvCfg) -> None:

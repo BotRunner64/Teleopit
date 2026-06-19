@@ -41,11 +41,11 @@ sim2real = [
     #   bash scripts/setup/setup_g1_bridge.sh
 ]
 train = [
-    "torch>=2.0.0",
+    "torch>=2.7.0",
     "numpy>=1.20.0",
-    "rsl-rl-lib",
-    "mjlab>=1.2.0",
-    "wandb>=0.15.0",
+    "rsl-rl-lib==5.2.0",
+    "mjlab==1.4.0",
+    "wandb>=0.22.3",
     "swanlab",
     "tqdm>=4.65.0",
 ]

@@ -88,7 +88,6 @@ def test_play_env_disables_training_only_domain_randomization() -> None:
 def test_general_tracking_enables_action_latency_randomization_for_training_only() -> None:
     import mjlab.tasks  # noqa: F401
     import train_mimic.tasks  # noqa: F401
-    from mjlab.actuator.delayed_actuator import DelayedActuatorCfg
     from mjlab.tasks.registry import load_env_cfg
 
     env_cfg = load_env_cfg(DEFAULT_TASK)
@@ -99,8 +98,6 @@ def test_general_tracking_enables_action_latency_randomization_for_training_only
 
     actuators = env_cfg.scene.entities["robot"].articulation.actuators
     assert actuators
-    assert all(isinstance(actuator, DelayedActuatorCfg) for actuator in actuators)
-    assert all(actuator.delay_target == "position" for actuator in actuators)
     assert all(actuator.delay_min_lag == 0 for actuator in actuators)
     assert all(actuator.delay_max_lag == 1 for actuator in actuators)
     assert all(actuator.delay_hold_prob == 0.8 for actuator in actuators)
@@ -110,18 +107,17 @@ def test_general_tracking_enables_action_latency_randomization_for_training_only
     for group_name in ("actor", "actor_history", "critic", "critic_history"):
         for term_name, term_cfg in play_cfg.observations[group_name].terms.items():
             assert term_cfg.delay_max_lag == 0, (group_name, term_name)
-    assert not any(
-        isinstance(actuator, DelayedActuatorCfg)
+    assert all(
+        actuator.delay_max_lag == 0
         for actuator in play_cfg.scene.entities["robot"].articulation.actuators
     )
 
 
 def test_g1_training_robot_cfg_can_enable_action_latency_randomization() -> None:
-    from mjlab.actuator.delayed_actuator import DelayedActuatorCfg
     from train_mimic.tasks.tracking.config.env import make_g1_training_robot_cfg
 
     robot_cfg = make_g1_training_robot_cfg(action_latency_randomization=True)
 
     actuators = robot_cfg.articulation.actuators
     assert actuators
-    assert all(isinstance(actuator, DelayedActuatorCfg) for actuator in actuators)
+    assert all(actuator.delay_max_lag == 1 for actuator in actuators)
