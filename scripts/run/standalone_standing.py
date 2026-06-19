@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import logging
 import signal
 import time
@@ -30,6 +31,144 @@ DEFAULT_POLICY_HZ = 50.0
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _StepTiming:
+    state_s: float
+    obs_s: float
+    infer_s: float
+    target_s: float
+    send_s: float
+    action_delta: float | None
+    target_delta: float | None
+    qvel_norm: float
+    ang_vel_norm: float
+
+
+class _StandaloneTimingReporter:
+    def __init__(
+        self,
+        *,
+        target_period_s: float,
+        log_interval_s: float = 1.0,
+        deadline_miss_tolerance_s: float = 0.001,
+    ) -> None:
+        self._target_period_s = float(target_period_s)
+        self._log_interval_s = float(log_interval_s)
+        self._deadline_miss_tolerance_s = float(deadline_miss_tolerance_s)
+        self._window_start_s: float | None = None
+        self._loop_ms: list[float] = []
+        self._late_ms: list[float] = []
+        self._work_ms: list[float] = []
+        self._state_ms: list[float] = []
+        self._obs_ms: list[float] = []
+        self._infer_ms: list[float] = []
+        self._target_ms: list[float] = []
+        self._send_ms: list[float] = []
+        self._action_delta: list[float] = []
+        self._target_delta: list[float] = []
+        self._qvel_norm: list[float] = []
+        self._ang_vel_norm: list[float] = []
+        self._deadline_miss_count = 0
+        self._work_overrun_count = 0
+
+    def record(
+        self,
+        *,
+        loop_start_s: float,
+        work_elapsed_s: float,
+        cycle_elapsed_s: float,
+        step: _StepTiming,
+    ) -> None:
+        if self._window_start_s is None:
+            self._window_start_s = float(loop_start_s)
+        self._loop_ms.append(float(cycle_elapsed_s) * 1000.0)
+        self._late_ms.append(max(0.0, float(cycle_elapsed_s) - self._target_period_s) * 1000.0)
+        self._work_ms.append(float(work_elapsed_s) * 1000.0)
+        self._state_ms.append(float(step.state_s) * 1000.0)
+        self._obs_ms.append(float(step.obs_s) * 1000.0)
+        self._infer_ms.append(float(step.infer_s) * 1000.0)
+        self._target_ms.append(float(step.target_s) * 1000.0)
+        self._send_ms.append(float(step.send_s) * 1000.0)
+        if step.action_delta is not None:
+            self._action_delta.append(float(step.action_delta))
+        if step.target_delta is not None:
+            self._target_delta.append(float(step.target_delta))
+        self._qvel_norm.append(float(step.qvel_norm))
+        self._ang_vel_norm.append(float(step.ang_vel_norm))
+        if cycle_elapsed_s > self._target_period_s + self._deadline_miss_tolerance_s:
+            self._deadline_miss_count += 1
+        if work_elapsed_s > self._target_period_s + 1e-9:
+            self._work_overrun_count += 1
+        if loop_start_s - self._window_start_s >= self._log_interval_s:
+            self._emit(loop_start_s)
+
+    def _emit(self, end_s: float) -> None:
+        sample_count = len(self._loop_ms)
+        if sample_count <= 0:
+            self._reset(end_s)
+            return
+        logger.info(
+            "Standalone timing | samples=%d window=%.1fs | "
+            "loop_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f | "
+            "late_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f deadline_miss(>%.2fms)=%d/%d | "
+            "work_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f work_overrun=%d/%d | "
+            "state_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f | "
+            "obs_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f | "
+            "infer_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f | "
+            "target_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f | "
+            "send_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f | "
+            "action_delta p50=%.4f p95=%.4f p99=%.4f max=%.4f | "
+            "target_delta p50=%.4f p95=%.4f p99=%.4f max=%.4f | "
+            "qvel_norm p50=%.4f p95=%.4f p99=%.4f max=%.4f | "
+            "ang_vel_norm p50=%.4f p95=%.4f p99=%.4f max=%.4f",
+            sample_count,
+            end_s - float(self._window_start_s),
+            *self._summarize(self._loop_ms),
+            *self._summarize(self._late_ms),
+            self._deadline_miss_tolerance_s * 1000.0,
+            self._deadline_miss_count,
+            sample_count,
+            *self._summarize(self._work_ms),
+            self._work_overrun_count,
+            sample_count,
+            *self._summarize(self._state_ms),
+            *self._summarize(self._obs_ms),
+            *self._summarize(self._infer_ms),
+            *self._summarize(self._target_ms),
+            *self._summarize(self._send_ms),
+            *self._summarize(self._action_delta),
+            *self._summarize(self._target_delta),
+            *self._summarize(self._qvel_norm),
+            *self._summarize(self._ang_vel_norm),
+        )
+        self._reset(end_s)
+
+    def _reset(self, window_start_s: float) -> None:
+        self._window_start_s = float(window_start_s)
+        self._loop_ms.clear()
+        self._late_ms.clear()
+        self._work_ms.clear()
+        self._state_ms.clear()
+        self._obs_ms.clear()
+        self._infer_ms.clear()
+        self._target_ms.clear()
+        self._send_ms.clear()
+        self._action_delta.clear()
+        self._target_delta.clear()
+        self._qvel_norm.clear()
+        self._ang_vel_norm.clear()
+        self._deadline_miss_count = 0
+        self._work_overrun_count = 0
+
+    @staticmethod
+    def _summarize(samples: list[float]) -> tuple[float, float, float, float]:
+        if not samples:
+            return 0.0, 0.0, 0.0, 0.0
+        values = np.asarray(samples, dtype=np.float64)
+        p50, p95, p99 = np.percentile(values, [50.0, 95.0, 99.0])
+        return float(p50), float(p95), float(p99), float(np.max(values))
 
 
 class StandaloneStandingController:
@@ -79,7 +218,9 @@ class StandaloneStandingController:
         self._standing_qpos[3] = 1.0
         self._standing_qpos[ROOT_DIM:FULL_QPOS_DIM] = self.default_angles.astype(np.float64)
         self._last_action = np.zeros(self.num_actions, dtype=np.float32)
+        self._last_target: np.ndarray | None = None
         self._step_count = 0
+        self._timing = _StandaloneTimingReporter(target_period_s=self.dt)
 
     def _build_policy_and_obs(self) -> tuple[Any, Any]:
         controller_cfg = cfg_get(self.cfg, "controller")
@@ -138,11 +279,20 @@ class StandaloneStandingController:
                 self.shutdown_requested = True
                 break
 
-            self._standing_step()
-            self._sleep_until(t0)
+            step_timing = self._standing_step()
+            work_elapsed_s = time.monotonic() - t0
+            cycle_elapsed_s = self._sleep_until(t0)
+            self._timing.record(
+                loop_start_s=t0,
+                work_elapsed_s=work_elapsed_s,
+                cycle_elapsed_s=cycle_elapsed_s,
+                step=step_timing,
+            )
 
-    def _standing_step(self) -> None:
+    def _standing_step(self) -> _StepTiming:
+        t0 = time.monotonic()
         robot_state = self.robot.get_state()
+        t_state = time.monotonic()
         qpos = self._standing_qpos.copy()
         motion_joint_vel = np.zeros(self.num_actions, dtype=np.float32)
         motion_qpos = np.asarray(qpos[: ROOT_DIM + self.num_actions], dtype=np.float32)
@@ -159,14 +309,32 @@ class StandaloneStandingController:
             reference_window=reference_window,
         )
         obs = self.ref_proc.validate_observation(obs)
+        t_obs = time.monotonic()
         action = np.zeros(self.num_actions, dtype=np.float32) if self.no_policy else self.policy.compute_action(obs)
+        t_infer = time.monotonic()
         target_dof_pos = self.safety.clip_to_joint_limits(self.policy.get_target_dof_pos(action))
+        t_target = time.monotonic()
+        action_delta = float(np.linalg.norm(action - self._last_action))
+        target_delta = None if self._last_target is None else float(np.linalg.norm(target_dof_pos - self._last_target))
         if self.dry_run:
             self._log_step(robot_state.qvel, action, target_dof_pos, dry=True)
         else:
             self.safety.send_positions(target_dof_pos)
             self._log_step(robot_state.qvel, action, target_dof_pos, dry=False)
+        t_send = time.monotonic()
         self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
+        self._last_target = np.asarray(target_dof_pos, dtype=np.float32).reshape(-1).copy()
+        return _StepTiming(
+            state_s=t_state - t0,
+            obs_s=t_obs - t_state,
+            infer_s=t_infer - t_obs,
+            target_s=t_target - t_infer,
+            send_s=t_send - t_target,
+            action_delta=action_delta,
+            target_delta=target_delta,
+            qvel_norm=float(np.linalg.norm(robot_state.qvel)),
+            ang_vel_norm=float(np.linalg.norm(robot_state.ang_vel)),
+        )
 
     def _run_dry(self) -> None:
         logger.info("=== DRY-RUN MODE: no motor commands will be sent ===")
@@ -176,8 +344,15 @@ class StandaloneStandingController:
         self._reset_policy_state()
         while not self.shutdown_requested:
             t0 = time.monotonic()
-            self._standing_step()
-            self._sleep_until(t0)
+            step_timing = self._standing_step()
+            work_elapsed_s = time.monotonic() - t0
+            cycle_elapsed_s = self._sleep_until(t0)
+            self._timing.record(
+                loop_start_s=t0,
+                work_elapsed_s=work_elapsed_s,
+                cycle_elapsed_s=cycle_elapsed_s,
+                step=step_timing,
+            )
 
     def _set_default_standing_reference(self, state: object) -> None:
         self._standing_qpos[:] = 0.0
@@ -192,6 +367,7 @@ class StandaloneStandingController:
         self.ref_proc.reset_alignment()
         self.policy.reset()
         self.obs_builder.reset()
+        self._last_target = None
 
     def _warmup_policy(self) -> None:
         if self.no_policy:
@@ -217,10 +393,11 @@ class StandaloneStandingController:
             np.array2string(target[:6], precision=4, separator=","),
         )
 
-    def _sleep_until(self, t0: float) -> None:
+    def _sleep_until(self, t0: float) -> float:
         remaining = self.dt - (time.monotonic() - t0)
         if remaining > 0.0:
             time.sleep(remaining)
+        return time.monotonic() - t0
 
     def _signal_handler(self, _signum: int, _frame: object) -> None:
         logger.info("Shutdown signal received")
