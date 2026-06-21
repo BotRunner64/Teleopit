@@ -48,12 +48,6 @@ _TRAIN_ONLY_EVENTS = (
     "randomize_rigid_body_mass",
 )
 
-_ACTION_LATENCY_RANDOMIZATION_MIN_LAG_PHYSICS_STEPS = 0
-_ACTION_LATENCY_RANDOMIZATION_MAX_LAG_PHYSICS_STEPS = 1
-_ACTION_LATENCY_RANDOMIZATION_HOLD_PROB = 0.8
-_ACTION_LATENCY_RANDOMIZATION_UPDATE_PERIOD_PHYSICS_STEPS = 4
-
-
 def resolve_g1_training_xml(robot_xml: str | Path | None = None) -> Path:
     """Resolve the MuJoCo XML used for G1 policy training."""
     if robot_xml is None or str(robot_xml).strip() == "":
@@ -79,39 +73,12 @@ def _get_g1_training_spec(robot_xml: str | Path | None = None) -> mujoco.MjSpec:
     return spec
 
 
-def make_g1_training_robot_cfg(
-    robot_xml: str | Path | None = None,
-    *,
-    action_latency_randomization: bool = False,
-):
+def make_g1_training_robot_cfg(robot_xml: str | Path | None = None):
     robot_cfg = get_g1_robot_cfg()
     robot_cfg.articulation = deepcopy(robot_cfg.articulation)
-    if action_latency_randomization:
-        _enable_robot_action_latency_randomization(robot_cfg)
     xml_path = resolve_g1_training_xml(robot_xml)
     robot_cfg.spec_fn = partial(_get_g1_training_spec, xml_path)
     return robot_cfg
-
-
-def _enable_robot_action_latency_randomization(robot_cfg) -> None:
-    articulation = robot_cfg.articulation
-    if articulation is None:
-        raise ValueError(
-            "G1 robot cfg must define articulation actuators before enabling action latency randomization"
-        )
-    articulation.actuators = tuple(
-        _with_action_latency_randomization(actuator)
-        for actuator in articulation.actuators
-    )
-
-
-def _with_action_latency_randomization(actuator):
-    actuator = deepcopy(actuator)
-    actuator.delay_min_lag = _ACTION_LATENCY_RANDOMIZATION_MIN_LAG_PHYSICS_STEPS
-    actuator.delay_max_lag = _ACTION_LATENCY_RANDOMIZATION_MAX_LAG_PHYSICS_STEPS
-    actuator.delay_hold_prob = _ACTION_LATENCY_RANDOMIZATION_HOLD_PROB
-    actuator.delay_update_period = _ACTION_LATENCY_RANDOMIZATION_UPDATE_PERIOD_PHYSICS_STEPS
-    return actuator
 
 
 def _apply_play_mode_overrides(cfg: ManagerBasedRlEnvCfg) -> None:
@@ -252,11 +219,7 @@ def make_general_tracking_env_cfg(
     """Create the General-Tracking-G1 training env."""
     cfg = make_tracking_env_cfg()
 
-    cfg.scene.entities = {
-        "robot": make_g1_training_robot_cfg(
-            action_latency_randomization=not play,
-        )
-    }
+    cfg.scene.entities = {"robot": make_g1_training_robot_cfg()}
 
     joint_pos_action = cfg.actions["joint_pos"]
     assert isinstance(joint_pos_action, JointPositionActionCfg)
