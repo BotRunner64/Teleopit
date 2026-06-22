@@ -123,8 +123,9 @@ Realtime Pico resume re-centers heading and ground-plane position before trackin
 
 ### Dexterous Hand (Pico sim2real)
 
-`hands.enabled=true` requires `input.provider=pico4` and the optional `dexhand`
-extra. Control is active in `MOCAP` and `ARMS`; inactive modes send the open pose.
+`hands.enabled=true` requires `input.provider=pico4` plus local editable
+installs of `third_party/linkerhand-python-sdk` and `third_party/somehand`.
+Control is active in `MOCAP` and `ARMS`; inactive modes send the open pose.
 `gripper` supports `linkerhand_l6` and `linkerhand_o6` by interpolating Pico
 trigger input between the configured open and close poses. `vr_hand_pose` is
 L6-only: missing hand pose holds the last command for that side, L6 speed is

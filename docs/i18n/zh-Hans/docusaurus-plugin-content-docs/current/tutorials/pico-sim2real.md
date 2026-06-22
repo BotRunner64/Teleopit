@@ -175,10 +175,12 @@ Pico sim2real 可以用 Pico 输入控制 LinkerHand：
 
 手控在 `MOCAP` 和 `ARMS` 中生效；在 `STANDING`、`DAMPING`、mocap 暂停和退出时都会发送张开姿态。
 
-如果主 Pico profile 没有包含手控支持，先安装 dexhand extra：
+如果主 Pico profile 没有包含手控支持，先安装本地手控包：
 
 ```bash
-pip install -e '.[dexhand]'
+git submodule update --init --recursive
+pip install -e third_party/linkerhand-python-sdk
+pip install -e third_party/somehand
 scripts/setup/download_somehand_l6_assets.sh
 ```
 

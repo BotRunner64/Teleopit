@@ -60,10 +60,7 @@ recording = [
     "opencv-python",
     "imageio[ffmpeg]",
 ]
-dexhand = [
-    "linkerhand-python-sdk @ file:third_party/linkerhand-python-sdk",
-    "somehand @ file:third_party/somehand",
-]
+dexhand = []
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -61,17 +61,17 @@ The receiver can run on a workstation PC or the robot onboard computer.
 See [Pico Sim2Sim](../tutorials/pico-sim2sim) and
 [Pico Sim2Real](../tutorials/pico-sim2real) for the full setup guides.
 
-Optional LinkerHand control for Pico sim2real is installed through the
-`dexhand` extra. It includes the LinkerHand SDK submodule and the remote
-somehand package used by the L6 VR hand-pose mode:
+Optional LinkerHand control for Pico sim2real uses local third-party packages.
+Install those packages directly after initializing the submodules:
 
 ```bash
 git submodule update --init --recursive
-pip install -e '.[dexhand]'
+pip install -e third_party/linkerhand-python-sdk
+pip install -e third_party/somehand
 scripts/setup/download_somehand_l6_assets.sh
 ```
 
-This extra is only required when `hands.enabled=true`.
+These packages are only required when `hands.enabled=true`.
 
 ### Sim2Real Recording
 

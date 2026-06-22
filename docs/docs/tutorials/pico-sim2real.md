@@ -187,11 +187,13 @@ Pico sim2real can drive LinkerHand hands from Pico input:
 Hand control is active in `MOCAP` and `ARMS`. It sends the open pose in
 `STANDING`, `DAMPING`, paused mocap, and shutdown.
 
-Install the dexhand extra first if it was not installed with the main Pico
-profile:
+Install the local hand-control packages first if they were not installed with
+the main Pico profile:
 
 ```bash
-pip install -e '.[dexhand]'
+git submodule update --init --recursive
+pip install -e third_party/linkerhand-python-sdk
+pip install -e third_party/somehand
 scripts/setup/download_somehand_l6_assets.sh
 ```
 
