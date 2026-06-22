@@ -12,13 +12,13 @@ from teleopit.controllers.observation import align_motion_qpos_yaw
 from teleopit.runtime.reference_config import parse_reference_config
 from teleopit.runtime.arm_mocap import compose_arm_reference, parse_arm_joint_indices
 from teleopit.inputs.realtime_packet import RealtimeInputPacket
-from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Recorder, Retargeter, Robot, RobotState
+from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Retargeter, Robot, RobotState
 from teleopit.sim.reference_timeline import (
     ReferenceWindow,
     ReferenceWindowBuilder,
 )
 from teleopit.sim.realtime_utils import RealtimeReferenceDiagnostics
-from teleopit.sim.runtime_components import MotionPreparation, PolicyStepRunner, RunRecorder, RuntimePublisher, ViewerManager
+from teleopit.sim.runtime_components import MotionPreparation, PolicyStepRunner, RuntimePublisher, ViewerManager
 from teleopit.sim.viewer_subprocess import mocap_viewer_proc, start_camera_viewer, start_robot_viewer
 from teleopit.runtime.mocap_session import MocapSessionManager
 from teleopit.runtime.offline_playback import OfflinePlaybackController
@@ -111,7 +111,7 @@ class SimulationLoop:
             )
 
     def _init_components(self, viewers: set[str] | None) -> None:
-        """Build PolicyStepRunner, publisher, recorder helper, and viewer manager."""
+        """Build PolicyStepRunner, publisher, and viewer manager."""
         self._viewers: set[str] = set(viewers or set())
         self._step_runner = PolicyStepRunner(
             robot=self.robot,
@@ -128,7 +128,6 @@ class SimulationLoop:
             reference_anchor_velocity_smoothing_alpha=self._ref_cfg.reference_anchor_velocity_smoothing_alpha,
         )
         self._publisher = RuntimePublisher(self.bus)
-        self._recorder_helper = RunRecorder()
         self._viewer_manager = ViewerManager(
             robot=self.robot,
             viewers=self._viewers,
@@ -142,11 +141,10 @@ class SimulationLoop:
         input_provider: InputProvider,
         retargeter: Retargeter,
         num_steps: int,
-        recorder: Recorder | None = None,
     ) -> dict[str, float | int]:
         from teleopit.sim.session import SimLoopSession
 
-        session = SimLoopSession(self, input_provider, retargeter, num_steps, recorder)
+        session = SimLoopSession(self, input_provider, retargeter, num_steps)
         return session.run()
 
     def run_headless(
@@ -154,9 +152,8 @@ class SimulationLoop:
         input_provider: InputProvider,
         retargeter: Retargeter,
         num_steps: int,
-        recorder: Recorder | None = None,
     ) -> dict[str, float | int]:
-        return self.run(input_provider=input_provider, retargeter=retargeter, num_steps=num_steps, recorder=recorder)
+        return self.run(input_provider=input_provider, retargeter=retargeter, num_steps=num_steps)
 
     def _compute_target_dof_pos(self, action: Float32Array) -> Float32Array:
         return self._step_runner.compute_target_dof_pos(action)
@@ -327,17 +324,6 @@ class SimulationLoop:
 
     def _publish(self, mimic_obs: Float32Array, action: Float32Array, robot_state: object) -> None:
         self._publisher.publish(mimic_obs, action, robot_state)
-
-    def _record(
-        self,
-        recorder: Recorder | None,
-        state: object,
-        mimic_obs: Float32Array,
-        action: Float32Array,
-        target_dof_pos: Float32Array,
-        torque: Float32Array,
-    ) -> None:
-        self._recorder_helper.record(recorder, state, mimic_obs, action, target_dof_pos, torque)
 
     def _retarget_to_qpos(self, retargeted: object) -> Float64Array:
         return self._step_runner._retarget_to_qpos(retargeted)

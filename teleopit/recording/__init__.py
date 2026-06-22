@@ -1,4 +1,3 @@
-from teleopit.recording.hdf5_recorder import HDF5Recorder
 from teleopit.recording.pico_motion import (
     PicoDatasetSpec,
     RecordingState,
@@ -10,7 +9,6 @@ from teleopit.recording.pico_motion import (
 )
 
 __all__ = [
-    "HDF5Recorder",
     "PicoDatasetSpec",
     "RecordingState",
     "ensure_pico_dataset_spec",

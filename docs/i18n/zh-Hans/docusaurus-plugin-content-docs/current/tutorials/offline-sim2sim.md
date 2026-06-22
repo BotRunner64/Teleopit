@@ -68,20 +68,6 @@ viewers=none             # 无头模式（不显示窗口）
 当所有 Viewer 窗口被关闭后，仿真会自动结束。
 :::
 
-## 录制
-
-将仿真数据录制为 HDF5 文件：
-
-```bash
-python scripts/run/run_sim.py \
-    controller.policy_path=track.onnx \
-    input.bvh_file=data/sample_bvh/aiming1_subject1.bvh \
-    +record=true \
-    recording.output_path=outputs/session.h5
-```
-
-录制包含以下字段：`joint_pos`、`joint_vel`、`mimic_obs`、`action`、`target_dof_pos`、`torque`、`timestamp`。
-
 ## 离线渲染
 
 在无头模式下将仿真渲染为视频：

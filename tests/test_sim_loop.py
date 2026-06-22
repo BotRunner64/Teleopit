@@ -127,14 +127,6 @@ class _DummyRetargeter:
         self.reset_calls += 1
 
 
-class _DummyRecorder:
-    def __init__(self) -> None:
-        self.frames: list[dict[str, object]] = []
-
-    def add_frame(self, data: dict[str, object]) -> None:
-        self.frames.append(data)
-
-
 def _quat_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     aw, ax, ay, az = a
     bw, bx, by, bz = b
@@ -226,7 +218,7 @@ def test_standing_reference_is_fixed_after_initialization() -> None:
 
 
 @requires_mujoco
-def test_simulation_loop_runs_and_records_without_viewers() -> None:
+def test_simulation_loop_runs_without_viewers() -> None:
     from teleopit.sim.loop import SimulationLoop
 
     bus = InProcessBus()
@@ -240,16 +232,13 @@ def test_simulation_loop_runs_and_records_without_viewers() -> None:
         viewers=set(),
     )
 
-    recorder = _DummyRecorder()
     result = loop.run(
         input_provider=_DummyInputProvider(),
         retargeter=_DummyRetargeter(),
         num_steps=2,
-        recorder=recorder,
     )
 
     assert result["steps"] == 2
-    assert len(recorder.frames) == 2
 
     latest_action = bus.get_latest(TOPIC_ACTION)
     latest_mimic = bus.get_latest(TOPIC_MIMIC_OBS)
@@ -260,9 +249,6 @@ def test_simulation_loop_runs_and_records_without_viewers() -> None:
     assert isinstance(latest_mimic, np.ndarray)
     assert latest_mimic.shape == (35,)
     assert latest_state is not None
-
-    target = np.asarray(recorder.frames[-1]["target_dof_pos"], dtype=np.float32)
-    np.testing.assert_allclose(target, np.array([0.6, -0.6], dtype=np.float32))
 
 
 @requires_mujoco

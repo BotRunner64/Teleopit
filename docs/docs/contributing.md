@@ -34,7 +34,7 @@ teleopit/           # Core inference & deployment package
 ├── retargeting/    # GMR motion retargeting
 ├── sim/            # SimulationLoop, reference motion utilities
 ├── sim2real/       # Hardware state machines
-├── recording/      # HDF5Recorder
+├── recording/      # Pico motion recording helpers
 ├── runtime/        # Config parsing, factories, external assets
 ├── bus/            # InProcessBus for inter-component communication
 └── configs/        # Hydra YAML configurations

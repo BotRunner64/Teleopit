@@ -40,7 +40,7 @@ train_mimic/scripts/data
 
 | 模块 | 职责 |
 |------|------|
-| `teleopit/interfaces.py` | 稳定协议：InputProvider、Retargeter、Controller、Robot、ObservationBuilder、Recorder |
+| `teleopit/interfaces.py` | 稳定协议：InputProvider、Retargeter、Controller、Robot、ObservationBuilder |
 | `teleopit/runtime/` | 配置解析、路径规范化、组件装配、CLI 校验 |
 | `teleopit/pipeline.py` | 离线仿真的轻量 facade |
 | `teleopit/sim2real/mp/` | 进程隔离的 sim2real 状态机、IPC 和机器人控制循环 |

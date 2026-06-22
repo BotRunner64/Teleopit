@@ -6,7 +6,6 @@ from teleopit.interfaces import (
     InputProvider,
     MessageBus,
     ObservationBuilder,
-    Recorder,
     RealtimeInputProvider,
     Retargeter,
     Robot,
@@ -127,11 +126,6 @@ class _FakeMessageBus:
         return None
 
 
-class _FakeRecorder:
-    def add_frame(self, data):
-        pass
-
-
 class _FakeObservationBuilder:
     def build_observation(self, state, history, action_mimic):
         return np.zeros(10)
@@ -168,9 +162,6 @@ class TestProtocolSubtyping:
 
     def test_message_bus_isinstance(self):
         assert isinstance(_FakeMessageBus(), MessageBus)
-
-    def test_recorder_isinstance(self):
-        assert isinstance(_FakeRecorder(), Recorder)
 
     def test_observation_builder_isinstance(self):
         assert isinstance(_FakeObservationBuilder(), ObservationBuilder)

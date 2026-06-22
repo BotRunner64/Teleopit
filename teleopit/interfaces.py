@@ -123,15 +123,6 @@ class MessageBus(Protocol):
 
 
 @runtime_checkable
-class Recorder(Protocol):
-    """Records teleoperation data."""
-
-    def add_frame(self, data: Dict[str, Any]) -> None:
-        """Record a single frame of data."""
-        ...
-
-
-@runtime_checkable
 class ObservationBuilder(Protocol):
     """Builds observations for controller from robot state."""
 

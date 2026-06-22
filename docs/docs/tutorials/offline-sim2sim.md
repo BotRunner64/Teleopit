@@ -68,20 +68,6 @@ viewers=none             # Headless
 When all active viewer windows are closed, the simulation ends automatically.
 :::
 
-## Recording
-
-Record simulation data to HDF5:
-
-```bash
-python scripts/run/run_sim.py \
-    controller.policy_path=track.onnx \
-    input.bvh_file=data/sample_bvh/aiming1_subject1.bvh \
-    +record=true \
-    recording.output_path=outputs/session.h5
-```
-
-Recorded fields: `joint_pos`, `joint_vel`, `mimic_obs`, `action`, `target_dof_pos`, `torque`, `timestamp`.
-
 ## Offline Rendering
 
 Render simulation to video (headless):

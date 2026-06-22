@@ -19,7 +19,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from teleopit.debug.rollout_trace import RolloutTraceWriter
-from teleopit.interfaces import InputProvider, Recorder, Retargeter, RobotState
+from teleopit.interfaces import InputProvider, Retargeter, RobotState
 from teleopit.sim.reference_motion import (
     OfflineReferenceMotion,
     interpolate_human_frames,
@@ -64,12 +64,10 @@ class SimLoopSession:
         input_provider: InputProvider,
         retargeter: Retargeter,
         num_steps: int,
-        recorder: Recorder | None,
     ) -> None:
         self._loop = loop
         self._input_provider = input_provider
         self._retargeter = retargeter
-        self._recorder = recorder
 
         # Convenience aliases for heavily-used loop attributes
         self._step_runner = loop._step_runner
@@ -659,7 +657,6 @@ class SimLoopSession:
                 target_dof_pos = self._step_runner.compute_target_dof_pos(action)
                 torque, final_state = self._step_runner.apply_control(target_dof_pos)
                 loop._publisher.publish(preparation.mimic_obs, action, final_state)
-                loop._recorder_helper.record(self._recorder, final_state, preparation.mimic_obs, action, target_dof_pos, torque)
                 self._viewer_manager.write_sim2sim(loop.robot)
                 self._viewer_manager.write_camera(loop.robot)
                 if loop._video_runtime is not None:

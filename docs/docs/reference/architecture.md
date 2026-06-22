@@ -40,7 +40,7 @@ train_mimic/scripts/data
 
 | Module | Role |
 |--------|------|
-| `teleopit/interfaces.py` | Stable protocols: InputProvider, Retargeter, Controller, Robot, ObservationBuilder, Recorder |
+| `teleopit/interfaces.py` | Stable protocols: InputProvider, Retargeter, Controller, Robot, ObservationBuilder |
 | `teleopit/runtime/` | Config parsing, path normalization, component assembly, CLI validation |
 | `teleopit/pipeline.py` | Lightweight facade for offline sim |
 | `teleopit/sim2real/mp/` | Process-isolated sim2real state machine, IPC, and robot-control loop |

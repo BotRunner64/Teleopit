@@ -15,7 +15,7 @@ from teleopit.constants import FULL_QPOS_DIM
 from teleopit.bus.topics import TOPIC_ACTION, TOPIC_MIMIC_OBS, TOPIC_ROBOT_STATE
 from teleopit.controllers.observation import VelCmdObservationBuilder
 from teleopit.controllers import reference_processing as ref_proc
-from teleopit.interfaces import MessageBus, ObservationBuilder, Recorder, Robot, RobotState
+from teleopit.interfaces import MessageBus, ObservationBuilder, Robot, RobotState
 from teleopit.retargeting.core import extract_mimic_obs
 from teleopit.sim.reference_timeline import ReferenceWindow
 from teleopit.sim.reference_utils import obs_builder_requires_reference_window
@@ -52,31 +52,6 @@ class RuntimePublisher:
         self._bus.publish(TOPIC_MIMIC_OBS, mimic_obs)
         self._bus.publish(TOPIC_ACTION, action)
         self._bus.publish(TOPIC_ROBOT_STATE, robot_state)
-
-
-class RunRecorder:
-    def record(
-        self,
-        recorder: Recorder | None,
-        state: RobotState,
-        mimic_obs: Float32Array,
-        action: Float32Array,
-        target_dof_pos: Float32Array,
-        torque: Float32Array,
-    ) -> None:
-        if recorder is None:
-            return
-
-        payload: dict[str, object] = {
-            "joint_pos": np.asarray(state.qpos, dtype=np.float32),
-            "joint_vel": np.asarray(state.qvel, dtype=np.float32),
-            "mimic_obs": mimic_obs.astype(np.float32, copy=False),
-            "action": action.astype(np.float32, copy=False),
-            "target_dof_pos": target_dof_pos.astype(np.float32, copy=False),
-            "torque": torque.astype(np.float32, copy=False),
-            "timestamp": np.asarray(float(state.timestamp), dtype=np.float64),
-        }
-        recorder.add_frame(payload)
 
 
 class PolicyStepRunner:

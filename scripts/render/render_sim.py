@@ -297,7 +297,6 @@ def render_sim2sim(
             "policy_hz": POLICY_HZ,
             "pd_hz": PD_HZ,
             "debug_trace_path": debug_trace_path,
-            "recording": {"output_path": "/tmp/teleopit_render.h5"},
         }
     )
     pipeline = TeleopPipeline(cfg)

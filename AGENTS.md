@@ -57,7 +57,7 @@ teleopit/                 # Core inference package
 ├── sim2real/
 │   ├── mp/               # Process-isolated sim2real runtime and IPC
 │   └── hands/            # Optional LinkerHand driver/mapper plugins
-└── recording/            # HDF5Recorder and Pico motion NPZ recording helpers
+└── recording/            # Pico motion NPZ recording helpers
 scripts/
 ├── run/run_sim.py        # Offline sim2sim pipeline
 ├── run/run_sim2real.py   # G1 sim2real control; supports offline BVH playback and Pico4

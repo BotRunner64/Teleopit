@@ -27,11 +27,10 @@ def main(cfg: DictConfig) -> None:
     validate_policy_path(cfg, "run_sim.py")
     pipeline = TeleopPipeline(cfg)
     num_steps = int(cfg.get("num_steps", 0))
-    record = bool(cfg.get("record", False))
     if cfg.input.get("provider") == "pico4":
         print("Waiting for Pico4 body tracking data...")
     _print_sim_controls(cfg)
-    result = pipeline.run(num_steps=num_steps, record=record)
+    result = pipeline.run(num_steps=num_steps)
     print(result)
 
 
