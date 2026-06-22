@@ -18,6 +18,27 @@ reference_anchor_velocity_smoothing_alpha: 0.25
 reference_steps: [0]
 reference_debug_log: false
 
+recording:
+  enabled: false
+  format: lerobot_v3
+  output_dir: data/lerobot
+  dataset_name: null
+  repo_id: null
+  task: demo
+  fps: 30
+  control: terminal
+  min_episode_seconds: 1.0
+  discard_on_shutdown: true
+  record_modes: [standing, mocap, arms, pause]
+  camera:
+    enabled: true
+    key: observation.images.d435i_rgb
+    source: realsense
+    width: 640
+    height: 480
+    fps: 30
+    device: null
+
 runtime:
   host: 127.0.0.1
   base_port: 39700

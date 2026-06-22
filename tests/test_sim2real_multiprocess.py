@@ -11,13 +11,26 @@ import pytest
 from teleopit.runtime.mocap_session import MocapSessionState
 from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType
 from teleopit.runtime.arm_mocap import compose_arm_reference, compose_arm_reference_window
+from teleopit.recording.lerobot_v3 import (
+    ACTION_KEY,
+    IMAGE_KEY,
+    MODE_KEY,
+    STATE_KEY,
+    build_mode_observation,
+    build_observation_state,
+    build_recording_schema,
+    lerobot_features,
+    modality_sidecar,
+)
 from teleopit.sim2real.mp.ipc import HEALTH_TOPIC, LatestSubscriber, ZmqPublisher
-from teleopit.sim2real.mp.messages import ReferencePacket, SharedFrameDescriptor
+from teleopit.sim2real.mp.messages import RecordStepPacket, ReferencePacket, SharedFrameDescriptor
 from teleopit.sim.reference_timeline import ReferenceSample, ReferenceWindow
 from teleopit.sim2real.mp.runtime import (
+    map_recording_key_to_command,
     RobotMode,
     Sim2RealRuntime,
     _LoopTimingReporter,
+    _RecordingWorker,
     _RobotControlWorker,
     _human_frame_is_valid,
 )
@@ -57,6 +70,26 @@ def test_sim2real_runtime_rejects_hands_without_pico_provider() -> None:
         "hands": {"enabled": True, "driver": "linkerhand_l6", "mode": "gripper"},
     }
     with pytest.raises(ValueError, match="hands.enabled=true requires input.provider=pico4"):
+        Sim2RealRuntime(cfg)
+
+
+def test_sim2real_runtime_rejects_recording_without_pico_provider() -> None:
+    cfg = {
+        "input": {"provider": "bvh"},
+        "runtime": {"shutdown_timeout_s": 0.01},
+        "recording": {"enabled": True},
+    }
+    with pytest.raises(ValueError, match="recording.enabled=true requires input.provider=pico4"):
+        Sim2RealRuntime(cfg)
+
+
+def test_sim2real_runtime_rejects_recording_without_input_video() -> None:
+    cfg = {
+        "input": {"provider": "pico4", "video": {"enabled": False, "source": "realsense"}},
+        "runtime": {"shutdown_timeout_s": 0.01},
+        "recording": {"enabled": True},
+    }
+    with pytest.raises(ValueError, match="recording.enabled=true requires input.video.enabled=true"):
         Sim2RealRuntime(cfg)
 
 
@@ -211,6 +244,84 @@ def test_pico_video_does_not_spawn_separate_video_worker() -> None:
     runtime._start_processes()
 
     assert started_names == ["pico_input", "reference", "robot_control"]
+
+
+def test_recording_enabled_adds_recording_worker(monkeypatch) -> None:
+    started_names: list[str] = []
+
+    class FakeProcess:
+        def __init__(self, *, name: str, target: object, args: tuple[object, ...]) -> None:
+            del target, args
+            self.name = name
+            self.exitcode = 0
+
+        def start(self) -> None:
+            started_names.append(self.name)
+
+    class FakeContext:
+        def Event(self) -> object:
+            return SimpleNamespace(set=lambda: None, is_set=lambda: False)
+
+        def Process(self, *, name: str, target: object, args: tuple[object, ...]) -> FakeProcess:
+            return FakeProcess(name=name, target=target, args=args)
+
+    cfg = {
+        "input": {
+            "provider": "pico4",
+            "video": {"enabled": True, "source": "realsense", "width": 640, "height": 480, "fps": 30},
+        },
+        "runtime": {"shutdown_timeout_s": 0.01},
+        "recording": {"enabled": True},
+    }
+    monkeypatch.setattr("teleopit.sim2real.mp.runtime._require_recording_dependencies", lambda: None)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    runtime = Sim2RealRuntime(cfg)
+    runtime._ctx = FakeContext()  # type: ignore[assignment]
+
+    runtime._start_processes()
+
+    assert started_names == ["pico_input", "reference", "robot_control", "recording_worker"]
+
+
+def test_recording_key_mapping() -> None:
+    assert map_recording_key_to_command("R") == "record_start"
+    assert map_recording_key_to_command("s") == "record_save"
+    assert map_recording_key_to_command("D") == "record_discard"
+    assert map_recording_key_to_command("q") == "shutdown"
+    assert map_recording_key_to_command("x") is None
+
+
+def test_lerobot_recording_schema_and_modality_sidecar() -> None:
+    schema = build_recording_schema({"width": 640, "height": 480, "key": IMAGE_KEY})
+    features = lerobot_features(schema)
+    sidecar = modality_sidecar(schema)
+
+    assert features[IMAGE_KEY]["shape"] == (480, 640, 3)
+    assert features[STATE_KEY]["shape"] == (68,)
+    assert features[MODE_KEY]["shape"] == (1,)
+    assert features[ACTION_KEY]["shape"] == (36,)
+    assert sidecar["features"][STATE_KEY]["slices"]["joint_pos"] == [0, 29]
+    assert sidecar["features"][STATE_KEY]["slices"]["projected_gravity"] == [65, 68]
+    assert sidecar["features"][MODE_KEY]["codes"]["pause"] == 3
+    assert sidecar["features"][ACTION_KEY]["slices"]["joint_pos"] == [7, 36]
+
+
+def test_record_observation_state_concat_order() -> None:
+    state = SimpleNamespace(
+        qpos=np.arange(29, dtype=np.float32),
+        qvel=np.arange(29, dtype=np.float32) + 100.0,
+        quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        ang_vel=np.array([1.0, 2.0, 3.0], dtype=np.float32),
+    )
+
+    out = build_observation_state(state)
+
+    assert out.shape == (68,)
+    np.testing.assert_allclose(out[0:29], state.qpos)
+    np.testing.assert_allclose(out[29:58], state.qvel)
+    np.testing.assert_allclose(out[58:62], state.quat)
+    np.testing.assert_allclose(out[62:65], state.ang_vel)
+    np.testing.assert_allclose(out[65:68], np.array([0.0, 0.0, -1.0], dtype=np.float32))
 
 
 def test_human_frame_validation_rejects_bad_inputs() -> None:
@@ -478,3 +589,178 @@ def test_robot_worker_mode_state_marks_arms_as_mocap_active() -> None:
     assert packet.mode == "arms"
     assert packet.mocap_active is True
     assert packet.mocap_paused is False
+
+
+def test_robot_worker_publish_record_step() -> None:
+    worker = object.__new__(_RobotControlWorker)
+    worker.mode = RobotMode.ARMS
+    worker._mocap_session = SimpleNamespace(state=MocapSessionState.ACTIVE)
+    worker._mode_seq = 7
+    published: list[tuple[str, object]] = []
+    worker._record_pub = SimpleNamespace(publish=lambda topic, packet: published.append((topic, packet)))
+    robot_state = SimpleNamespace(
+        qpos=np.arange(29, dtype=np.float32),
+        qvel=np.arange(29, dtype=np.float32) + 10.0,
+        quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        ang_vel=np.array([0.1, 0.2, 0.3], dtype=np.float32),
+    )
+    reference_qpos = np.arange(36, dtype=np.float64)
+
+    worker._publish_record_step(robot_state=robot_state, reference_qpos=reference_qpos)
+
+    assert len(published) == 1
+    packet = published[0][1]
+    assert isinstance(packet, RecordStepPacket)
+    assert packet.mode == "arms"
+    assert packet.mocap_active is True
+    assert packet.recordable is True
+    assert packet.observation_state.shape == (68,)
+    assert packet.observation_mode.shape == (1,)
+    assert packet.action_reference_qpos.shape == (36,)
+    np.testing.assert_allclose(packet.observation_mode, build_mode_observation("arms"))
+    np.testing.assert_allclose(packet.action_reference_qpos, reference_qpos.astype(np.float32))
+
+
+def test_robot_worker_enter_damping_publishes_non_recordable_packet() -> None:
+    worker = object.__new__(_RobotControlWorker)
+    worker.mode = RobotMode.MOCAP
+    worker._mode_seq = 9
+    worker._mocap_reentry_armed = True
+    worker._last_commanded_motion_qpos = np.ones(36, dtype=np.float64)
+    worker._last_mocap_hold_reason = "stale"
+    worker._default_root_pos = np.zeros(3, dtype=np.float64)
+    worker.num_actions = 29
+    worker._mocap_session = SimpleNamespace(reset=lambda: None)
+    worker._ref_proc = SimpleNamespace(last_reference_qpos=np.zeros(36, dtype=np.float64))
+    robot_state = SimpleNamespace(
+        qpos=np.arange(29, dtype=np.float32),
+        qvel=np.arange(29, dtype=np.float32) + 10.0,
+        quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        ang_vel=np.array([0.1, 0.2, 0.3], dtype=np.float32),
+        base_pos=np.array([0.0, 0.0, 0.8], dtype=np.float32),
+    )
+    worker.robot = SimpleNamespace(
+        set_damping=lambda: None,
+        exit_debug_mode=lambda: None,
+        get_state=lambda: robot_state,
+    )
+    published: list[tuple[str, object]] = []
+    worker._record_pub = SimpleNamespace(publish=lambda topic, packet: published.append((topic, packet)))
+
+    worker._enter_damping()
+
+    assert worker.mode == RobotMode.DAMPING
+    assert published
+    packet = published[-1][1]
+    assert isinstance(packet, RecordStepPacket)
+    assert packet.mode == "damping"
+    assert packet.recordable is False
+    assert packet.mocap_active is False
+    np.testing.assert_allclose(packet.observation_mode, np.array([-1.0], dtype=np.float32))
+
+
+def test_recording_worker_start_save_discard_with_fake_adapter() -> None:
+    from teleopit.sim2real.mp.ipc import default_endpoints
+
+    calls: list[str] = []
+    frames: list[dict[str, np.ndarray]] = []
+
+    class FakeRecorder:
+        def start_episode(self) -> None:
+            calls.append("start")
+
+        def add_frame(
+            self,
+            *,
+            image: np.ndarray,
+            state: np.ndarray,
+            mode: np.ndarray,
+            action: np.ndarray,
+            task: str,
+        ) -> None:
+            calls.append(f"frame:{task}")
+            frames.append({"image": image.copy(), "state": state.copy(), "mode": mode.copy(), "action": action.copy()})
+
+        def save_episode(self) -> None:
+            calls.append("save")
+
+        def discard_episode(self) -> None:
+            calls.append("discard")
+
+        def finalize(self) -> None:
+            calls.append("finalize")
+
+    def fake_factory(**_kwargs: object) -> FakeRecorder:
+        return FakeRecorder()
+
+    stop_event = SimpleNamespace(is_set=lambda: False, set=lambda: None)
+    endpoints = default_endpoints(base_port=39850)
+    worker = _RecordingWorker(
+        {
+            "recording": {
+                "enabled": True,
+                "task": "walk",
+                "fps": 30,
+                "min_episode_seconds": 0.0,
+                "camera": {"width": 2, "height": 2, "key": IMAGE_KEY},
+            }
+        },
+        endpoints,
+        stop_event,  # type: ignore[arg-type]
+        recorder_factory=fake_factory,
+    )
+    writer = SharedFrameRingWriter(shape=(2, 2, 3), dtype=np.uint8, slots=2)
+    try:
+        worker._latest_record = RecordStepPacket(
+            timestamp_s=1.0,
+            mode="damping",
+            mocap_active=False,
+            recordable=False,
+            observation_state=np.ones(68, dtype=np.float32),
+            observation_mode=build_mode_observation("standing"),
+            action_reference_qpos=np.ones(36, dtype=np.float32),
+            seq=1,
+        )
+        worker._start_episode()
+        assert calls == []
+
+        worker._latest_record = RecordStepPacket(
+            timestamp_s=2.0,
+            mode="standing",
+            mocap_active=False,
+            recordable=True,
+            observation_state=np.arange(68, dtype=np.float32),
+            observation_mode=build_mode_observation("standing"),
+            action_reference_qpos=np.arange(36, dtype=np.float32),
+            seq=2,
+        )
+        worker._start_episode()
+        desc = writer.write(np.full((2, 2, 3), 5, dtype=np.uint8), timestamp_s=2.1)
+        worker._handle_video(desc)
+        worker._save_episode()
+
+        assert calls == ["start", "frame:walk", "save"]
+        assert frames[0]["image"].shape == (2, 2, 3)
+        np.testing.assert_allclose(frames[0]["state"], np.arange(68, dtype=np.float32))
+        np.testing.assert_allclose(frames[0]["mode"], build_mode_observation("standing"))
+        np.testing.assert_allclose(frames[0]["action"], np.arange(36, dtype=np.float32))
+
+        worker._latest_record = RecordStepPacket(
+            timestamp_s=3.0,
+            mode="pause",
+            mocap_active=False,
+            recordable=True,
+            observation_state=np.zeros(68, dtype=np.float32),
+            observation_mode=build_mode_observation("pause"),
+            action_reference_qpos=np.zeros(36, dtype=np.float32),
+            seq=3,
+        )
+        worker._start_episode()
+        worker._discard_episode("test")
+        assert calls[-2:] == ["start", "discard"]
+    finally:
+        writer.close(unlink=True)
+        worker._record_sub.close()
+        worker._video_sub.close()
+        worker._command_sub.close()
+        worker._frame_reader.close()

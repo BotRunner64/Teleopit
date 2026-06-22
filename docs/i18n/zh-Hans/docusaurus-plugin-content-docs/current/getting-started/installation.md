@@ -72,6 +72,15 @@ scripts/setup/download_somehand_l6_assets.sh
 
 只有在 `hands.enabled=true` 时才需要安装这个 extra。
 
+### Sim2Real 录制
+
+```bash
+pip install -e '.[recording]'
+```
+
+该配置包含 Pico sim2real 栈，以及 `sim2real_record.yaml` 使用的 LeRobot、
+RealSense 和视频编码依赖。
+
 ## 验证安装
 
 ```bash

@@ -91,6 +91,29 @@ python scripts/run/run_sim2real.py \
     real_robot.network_interface=eth0
 ```
 
+## 可选 LeRobot 录制
+
+在负责 Pico 输入和 RealSense 的机器上安装 recording extra：
+
+```bash
+pip install -e '.[recording]'
+```
+
+运行录制配置：
+
+```bash
+python scripts/run/run_sim2real.py \
+    --config-name sim2real_record \
+    controller.policy_path=track.onnx \
+    real_robot.network_interface=enp130s0 \
+    recording.task="walk forward"
+```
+
+终端控制为：`R` 开始 episode，`S` 保存，`D` 丢弃，`Q` 关闭。可以录制
+`STANDING`、`MOCAP`、`ARMS` 和暂停状态的 mocap；已经保存的 episode 不支持再丢弃。
+v1 schema 以 30 Hz 记录 `observation.images.d435i_rgb`、`observation.state(68)`、
+`observation.mode(1)` 和 `action(36)`。
+
 ## 操作流程
 
 始终把 Unitree 遥控器拿在手里。`L1+R1` 是进入 `DAMPING` 的急停路径。

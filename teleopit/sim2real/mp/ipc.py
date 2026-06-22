@@ -17,6 +17,7 @@ CONTROL_EVENTS_TOPIC = "control_events"
 REFERENCE_TOPIC = "reference"
 MODE_TOPIC = "mode"
 VIDEO_TOPIC = "video"
+RECORD_TOPIC = "record"
 HEALTH_TOPIC = "health"
 COMMAND_TOPIC = "command"
 
@@ -30,6 +31,7 @@ class Sim2RealIpcEndpoints:
     reference_pub: str
     mode_pub: str
     video_pub: str
+    record_pub: str
     health_pub: str
     command_pub: str
     reference_command_pub: str
@@ -46,9 +48,10 @@ def default_endpoints(*, host: str = "127.0.0.1", base_port: int = 39700) -> Sim
         reference_pub=f"{prefix}{base_port + 4}",
         mode_pub=f"{prefix}{base_port + 5}",
         video_pub=f"{prefix}{base_port + 6}",
-        health_pub=f"{prefix}{base_port + 7}",
-        command_pub=f"{prefix}{base_port + 8}",
-        reference_command_pub=f"{prefix}{base_port + 9}",
+        record_pub=f"{prefix}{base_port + 7}",
+        health_pub=f"{prefix}{base_port + 8}",
+        command_pub=f"{prefix}{base_port + 9}",
+        reference_command_pub=f"{prefix}{base_port + 10}",
     )
 
 

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import logging
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -70,11 +70,13 @@ class PicoVideoRuntime:
         config: PicoVideoConfig,
         mode: str,
         robot: Any | None = None,
+        frame_callback: Callable[[np.ndarray, float], None] | None = None,
     ) -> None:
         self._provider = provider
         self._config = config
         self._mode = mode
         self._robot = robot
+        self._frame_callback = frame_callback
         self._producer: _VideoProducer | None = None
         self._stopped = False
 
@@ -96,16 +98,16 @@ class PicoVideoRuntime:
         if self._config.source == "test-pattern":
             logger.info("Pico video enabled via pico-bridge test-pattern source")
             return
-        if not callable(getattr(self._provider, "push_video_frame", None)):
+        if self._frame_callback is None and not callable(getattr(self._provider, "push_video_frame", None)):
             self._handle_error(RuntimeError("Pico input provider does not support push_video_frame"))
             return
 
         producer: _VideoProducer | None = None
         try:
             if self._config.source == "realsense":
-                producer = _RealSenseVideoProducer(self._provider, self._config)
+                producer = _RealSenseVideoProducer(self._provider, self._config, self._frame_callback)
             elif self._config.source == "mujoco":
-                producer = _MujocoCameraVideoProducer(self._provider, self._config, self._robot)
+                producer = _MujocoCameraVideoProducer(self._provider, self._config, self._robot, self._frame_callback)
             else:
                 raise ValueError(f"Unsupported Pico video source: {self._config.source!r}")
             self._producer = producer
@@ -152,9 +154,15 @@ class _VideoProducer:
 
 
 class _RealSenseVideoProducer(_VideoProducer):
-    def __init__(self, provider: Any, config: PicoVideoConfig) -> None:
+    def __init__(
+        self,
+        provider: Any,
+        config: PicoVideoConfig,
+        frame_callback: Callable[[np.ndarray, float], None] | None = None,
+    ) -> None:
         self._provider = provider
         self._config = config
+        self._frame_callback = frame_callback
         self._stop_event = threading.Event()
         self._ready_event = threading.Event()
         self._thread = threading.Thread(target=self._run, name="pico_realsense_video", daemon=True)
@@ -206,7 +214,13 @@ class _RealSenseVideoProducer(_VideoProducer):
                     if not color_frame:
                         continue
                     rgb = np.ascontiguousarray(np.asanyarray(color_frame.get_data()), dtype=np.uint8)
-                    self._pushed_frames = int(self._provider.push_video_frame(rgb))
+                    timestamp_s = time.monotonic()
+                    if self._frame_callback is not None:
+                        self._frame_callback(rgb, timestamp_s)
+                    if callable(getattr(self._provider, "push_video_frame", None)):
+                        self._pushed_frames = int(self._provider.push_video_frame(rgb))
+                    else:
+                        self._pushed_frames += 1
             finally:
                 pipeline.stop()
         except BaseException as exc:
@@ -216,10 +230,17 @@ class _RealSenseVideoProducer(_VideoProducer):
 
 
 class _MujocoCameraVideoProducer(_VideoProducer):
-    def __init__(self, provider: Any, config: PicoVideoConfig, robot: Any | None) -> None:
+    def __init__(
+        self,
+        provider: Any,
+        config: PicoVideoConfig,
+        robot: Any | None,
+        frame_callback: Callable[[np.ndarray, float], None] | None = None,
+    ) -> None:
         self._provider = provider
         self._config = config
         self._robot = robot
+        self._frame_callback = frame_callback
         self._renderer: Any | None = None
         self._next_frame_time = 0.0
         self._camera_name = "d435i_rgb"
@@ -253,7 +274,13 @@ class _MujocoCameraVideoProducer(_VideoProducer):
             raise RuntimeError("MuJoCo Pico video requires robot.data")
         self._renderer.update_scene(data, camera=self._camera_name)
         frame = np.ascontiguousarray(self._renderer.render(), dtype=np.uint8)
-        self._pushed_frames = int(self._provider.push_video_frame(frame))
+        timestamp_s = time.monotonic()
+        if self._frame_callback is not None:
+            self._frame_callback(frame, timestamp_s)
+        if callable(getattr(self._provider, "push_video_frame", None)):
+            self._pushed_frames = int(self._provider.push_video_frame(frame))
+        else:
+            self._pushed_frames += 1
         self._next_frame_time = now + 1.0 / float(self._config.fps)
 
     def stop(self) -> None:

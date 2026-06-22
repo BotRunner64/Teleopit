@@ -53,6 +53,13 @@ pico4 = [
     "pico-bridge[camera] @ https://github.com/BotRunner64/pico-bridge/releases/download/v0.2.1/pico_bridge-0.2.1-py3-none-any.whl",
     "teleopit[sim2real]",
 ]
+recording = [
+    "teleopit[pico4]",
+    "lerobot",
+    "pyrealsense2",
+    "opencv-python",
+    "imageio[ffmpeg]",
+]
 dexhand = [
     "linkerhand-python-sdk @ file:third_party/linkerhand-python-sdk",
     "somehand @ file:third_party/somehand",

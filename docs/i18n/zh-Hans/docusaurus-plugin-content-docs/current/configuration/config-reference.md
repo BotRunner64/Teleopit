@@ -169,3 +169,43 @@ Teleopit 会先将 Pico 手部状态转成 21 个 landmarks，再只通过 someh
 | `hands.somehand.max_iterations` | `vr_hand_pose` 的 somehand solver 迭代上限 | `12` |
 | `hands.somehand.temporal_filter_alpha` | somehand 输入 landmarks 平滑 alpha；`1.0` 表示关闭平滑延时 | `1.0` |
 | `hands.somehand.output_alpha` | somehand qpos 输出平滑 alpha；`1.0` 表示关闭平滑延时 | `1.0` |
+
+### LeRobot 录制（Pico sim2real）
+
+`recording.enabled=true` 只支持 `input.provider=pico4`、
+`input.video.enabled=true`、`input.video.source=realsense`，并且需要交互式终端。
+录制是手动控制：`R` 开始 episode，`S` 保存当前 episode，`D` 丢弃当前 episode，
+`Q` 关闭。可以录制 `STANDING`、`MOCAP`、`ARMS` 和暂停状态的 mocap。
+
+`sim2real_record.yaml` 会同时启用录制和必需的 RealSense `input.video`
+路径。录制不会打开第二路相机，而是消费 `pico_input` 已经产生的同一批帧。
+
+| 字段 | 说明 | 默认值 |
+|---|---|---|
+| `recording.enabled` | 启用手动 LeRobot v3 录制 | `false` |
+| `recording.output_dir` | 数据集根目录 | `data/lerobot` |
+| `recording.repo_id` / `dataset_name` | LeRobot 数据集标识 | `null` |
+| `recording.task` | 写入 frame 的任务字符串 | `demo` |
+| `recording.fps` | 录制/视频主时钟频率 | `30` |
+| `recording.min_episode_seconds` | 保存时短于该时长的 episode 会被丢弃 | `1.0` |
+| `recording.record_modes` | 允许开始录制和写帧的模式 | `[standing, mocap, arms, pause]` |
+| `recording.camera.key` | LeRobot 视频 feature key | `observation.images.d435i_rgb` |
+| `recording.camera.width` / `height` / `fps` | RealSense RGB 采集设置 | `640` / `480` / `30` |
+| `recording.camera.device` | 可选 RealSense 序列号 | `null` |
+
+相机失败时的行为由 `input.video.fail_on_error` 控制。
+
+LeRobot features：
+
+```text
+observation.images.d435i_rgb   video [480,640,3] uint8
+observation.state              float32[68]
+observation.mode               float32[1]
+action                         float32[36]
+```
+
+`observation.state` 的顺序是 `joint_pos(29)`、`joint_vel(29)`、
+`base_quat_wxyz(4)`、`base_ang_vel(3)` 和 `projected_gravity(3)`。
+`observation.mode` 是数值类别：`standing=0`、`mocap=1`、
+`arms=2`、`pause=3`。`action` 是当前 reference qpos：
+`root_pos(3) + root_quat_wxyz(4) + joint_pos(29)`。

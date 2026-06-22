@@ -6,7 +6,9 @@ import logging
 import multiprocessing as mp
 from multiprocessing.synchronize import Event as MpEvent
 from enum import Enum
+import importlib.util
 from pathlib import Path
+import sys
 import time
 from typing import Any, Callable
 
@@ -32,6 +34,12 @@ from teleopit.runtime.arm_mocap import (
 )
 from teleopit.runtime.mocap_session import MocapSessionManager, MocapSessionState
 from teleopit.runtime.reference_config import parse_reference_config
+from teleopit.runtime.terminal_keyboard import TerminalKeyboardReader
+from teleopit.recording.lerobot_v3 import (
+    build_mode_observation,
+    build_observation_state,
+    normalize_action_reference_qpos,
+)
 from teleopit.sim.reference_motion import OfflineReferenceMotion
 from teleopit.sim.reference_timeline import ReferenceTimeline, ReferenceWindow, ReferenceWindowBuilder
 from teleopit.sim.reference_utils import (
@@ -50,7 +58,9 @@ from teleopit.sim2real.mp.ipc import (
     HAND_TOPIC,
     HEALTH_TOPIC,
     MODE_TOPIC,
+    RECORD_TOPIC,
     REFERENCE_TOPIC,
+    VIDEO_TOPIC,
     LatestSubscriber,
     Sim2RealIpcEndpoints,
     ZmqPublisher,
@@ -63,8 +73,11 @@ from teleopit.sim2real.mp.messages import (
     HealthPacket,
     ModeStatePacket,
     ReferencePacket,
+    RecordStepPacket,
     SnapshotPacket,
+    SharedFrameDescriptor,
 )
+from teleopit.sim2real.mp.shm import SharedFrameRingReader, SharedFrameRingWriter
 from teleopit.sim2real.reference_processor import Sim2RealReferenceProcessor
 from teleopit.sim2real.remote import UnitreeRemote
 from teleopit.sim2real.safety import Sim2RealSafetyManager
@@ -234,6 +247,18 @@ def _input_provider_kind(cfg: Any) -> str:
     return str(cfg_get(cfg_get(cfg, "input", {}) or {}, "provider", "bvh")).strip().lower()
 
 
+def _recording_cfg(cfg: Any) -> Any:
+    return cfg_get(cfg, "recording", {}) or {}
+
+
+def _recording_enabled(cfg: Any) -> bool:
+    return bool(cfg_get(_recording_cfg(cfg), "enabled", False))
+
+
+def _recording_camera_cfg(cfg: Any) -> Any:
+    return cfg_get(_recording_cfg(cfg), "camera", {}) or {}
+
+
 def _validate_new_runtime_config(cfg: Any) -> None:
     legacy_keys = [key for key in ("sim2real_runtime", "multiprocess", "dexterous_hand") if cfg_get(cfg, key, None) is not None]
     if legacy_keys:
@@ -247,6 +272,51 @@ def _validate_new_runtime_config(cfg: Any) -> None:
     hands_cfg = cfg_get(cfg, "hands", {}) or {}
     if bool(cfg_get(hands_cfg, "enabled", False)) and provider != "pico4":
         raise ValueError("hands.enabled=true requires input.provider=pico4")
+    if _recording_enabled(cfg):
+        if provider != "pico4":
+            raise ValueError("recording.enabled=true requires input.provider=pico4")
+        rec_cfg = _recording_cfg(cfg)
+        if str(cfg_get(rec_cfg, "format", "lerobot_v3")) != "lerobot_v3":
+            raise ValueError("Only recording.format=lerobot_v3 is supported")
+        if str(cfg_get(rec_cfg, "control", "terminal")) != "terminal":
+            raise ValueError("Only recording.control=terminal is supported")
+        camera_cfg = _recording_camera_cfg(cfg)
+        if not bool(cfg_get(camera_cfg, "enabled", True)):
+            raise ValueError("recording.camera.enabled=false is not supported for LeRobot recording")
+        if str(cfg_get(camera_cfg, "source", "realsense")).lower() != "realsense":
+            raise ValueError("recording.camera.source must be realsense")
+        if int(cfg_get(rec_cfg, "fps", 30)) != int(cfg_get(camera_cfg, "fps", 30)):
+            raise ValueError("recording.fps must match recording.camera.fps")
+        input_video = parse_pico_video_config(cfg_get(cfg, "input", {}) or {})
+        if not input_video.enabled:
+            raise ValueError("recording.enabled=true requires input.video.enabled=true")
+        if input_video.source != "realsense":
+            raise ValueError("recording.enabled=true requires input.video.source=realsense")
+        if int(input_video.width) != int(cfg_get(camera_cfg, "width", 640)):
+            raise ValueError("recording.camera.width must match input.video.width")
+        if int(input_video.height) != int(cfg_get(camera_cfg, "height", 480)):
+            raise ValueError("recording.camera.height must match input.video.height")
+        if int(input_video.fps) != int(cfg_get(camera_cfg, "fps", 30)):
+            raise ValueError("recording.camera.fps must match input.video.fps")
+        input_device = input_video.device
+        camera_device = cfg_get(camera_cfg, "device", None)
+        camera_device = None if camera_device in (None, "", "null") else str(camera_device)
+        if input_device != camera_device:
+            raise ValueError("recording.camera.device must match input.video.device")
+
+
+def _require_recording_dependencies() -> None:
+    if importlib.util.find_spec("lerobot") is None:
+        raise RuntimeError(
+            "recording.enabled=true requires the recording dependencies and LeRobot v3 adapter. "
+            "Install Teleopit with: pip install -e '.[recording]'."
+        )
+    try:
+        from teleopit.recording.lerobot_v3 import TeleopitLeRobotV3Recorder
+
+        TeleopitLeRobotV3Recorder.create
+    except Exception as exc:
+        raise RuntimeError("LeRobot v3 recording adapter is unavailable") from exc
 
 
 def _worker_loop(name: str, fn: Callable[[], None]) -> None:
@@ -285,12 +355,23 @@ class Sim2RealRuntime:
             host=str(cfg_get(mp_cfg, "host", "127.0.0.1")),
             base_port=int(cfg_get(mp_cfg, "base_port", 39700)),
         )
+        self._command_pub: ZmqPublisher | None = None
+        self._keyboard: TerminalKeyboardReader | None = None
+        if _recording_enabled(self.cfg):
+            _require_recording_dependencies()
+            if not sys.stdin.isatty():
+                raise RuntimeError("recording.enabled=true requires an interactive TTY for terminal controls")
 
     def run(self) -> None:
         logger.info("Starting sim2real runtime")
         try:
             self._start_processes()
+            if _recording_enabled(self.cfg):
+                self._command_pub = ZmqPublisher(self._endpoints.command_pub)
+                self._keyboard = TerminalKeyboardReader()
+                logger.info("Recording controls: R=start, S=save, D=discard, Q=shutdown")
             while not self._stop_event.is_set():
+                self._poll_terminal_recording_controls()
                 time.sleep(0.2)
                 critical_names = {"robot_control", "reference"}
                 if _input_provider_kind(self.cfg) == "pico4":
@@ -323,6 +404,8 @@ class Sim2RealRuntime:
 
     def shutdown(self) -> None:
         self._stop_event.set()
+        if self._command_pub is not None:
+            self._command_pub.publish(COMMAND_TOPIC, CommandPacket(command="shutdown", timestamp_s=time.monotonic()))
         for process in self._processes:
             process.join(timeout=self._shutdown_timeout_s)
         for process in self._processes:
@@ -331,6 +414,12 @@ class Sim2RealRuntime:
                 process.terminate()
                 process.join(timeout=1.0)
         self._processes.clear()
+        if self._keyboard is not None:
+            self._keyboard.close()
+            self._keyboard = None
+        if self._command_pub is not None:
+            self._command_pub.close()
+            self._command_pub = None
 
     def _start_processes(self) -> None:
         if self._processes:
@@ -348,6 +437,8 @@ class Sim2RealRuntime:
         hands_cfg = cfg_get(self.cfg, "hands", {}) or {}
         if bool(cfg_get(hands_cfg, "enabled", False)):
             specs.append(("hand_worker", _run_hand_worker))
+        if _recording_enabled(self.cfg):
+            specs.append(("recording_worker", _run_recording_worker))
         video_cfg = parse_pico_video_config(cfg_get(self.cfg, "input", {}))
         if video_cfg.enabled:
             logger.info("Pico video runs inside pico_input so frames are pushed directly to PicoBridge")
@@ -360,6 +451,33 @@ class Sim2RealRuntime:
             )
             process.start()
             self._processes.append(process)
+
+    def _poll_terminal_recording_controls(self) -> None:
+        if self._keyboard is None or self._command_pub is None:
+            return
+        events = self._keyboard.poll()
+        if not events:
+            return
+        for event in events:
+            command = map_recording_key_to_command(event.key)
+            if command is None:
+                continue
+            self._command_pub.publish(COMMAND_TOPIC, CommandPacket(command=command, timestamp_s=time.monotonic()))
+            if command == "shutdown":
+                self._stop_event.set()
+
+
+def map_recording_key_to_command(key: str) -> str | None:
+    normalized = str(key).strip().lower()
+    if normalized == "r":
+        return "record_start"
+    if normalized == "s":
+        return "record_save"
+    if normalized == "d":
+        return "record_discard"
+    if normalized == "q":
+        return "shutdown"
+    return None
 
 
 def _run_pico_io_worker(
@@ -394,11 +512,28 @@ def _run_pico_io_worker(
         controller_pub = ZmqPublisher(endpoints.controller_pub)
         events_pub = ZmqPublisher(endpoints.control_events_pub)
         health_pub = ZmqPublisher(endpoints.health_pub)
+        video_pub = ZmqPublisher(endpoints.video_pub) if _recording_enabled(cfg) else None
         command_sub = LatestSubscriber(endpoints.command_pub, COMMAND_TOPIC)
+        frame_writer: SharedFrameRingWriter | None = None
+
+        def _publish_recording_frame(frame: NDArray[np.generic], timestamp_s: float) -> None:
+            nonlocal frame_writer
+            if video_pub is None:
+                return
+            if frame_writer is None:
+                frame_writer = SharedFrameRingWriter(
+                    shape=tuple(np.asarray(frame).shape),
+                    dtype=np.uint8,
+                    slots=int(cfg_get(_mp_cfg(cfg), "video_slots", 3)),
+                )
+            descriptor = frame_writer.write(np.asarray(frame, dtype=np.uint8), timestamp_s=float(timestamp_s))
+            video_pub.publish(VIDEO_TOPIC, descriptor)
+
         video_runtime = PicoVideoRuntime(
             provider=provider,
             config=video_cfg,
             mode="sim2real",
+            frame_callback=_publish_recording_frame if _recording_enabled(cfg) else None,
         )
 
         hz = float(cfg_get(_mp_cfg(cfg), "pico_input_hz", 120.0))
@@ -484,9 +619,12 @@ def _run_pico_io_worker(
                 time.sleep(sleep_s)
         finally:
             video_runtime.stop()
+            if frame_writer is not None:
+                frame_writer.close(unlink=True)
             command_sub.close()
-            for publisher in (body_pub, hand_pub, controller_pub, events_pub, health_pub):
-                publisher.close()
+            for publisher in (body_pub, hand_pub, controller_pub, events_pub, health_pub, video_pub):
+                if publisher is not None:
+                    publisher.close()
             provider.close()
 
     _worker_loop("pico_input", _main)
@@ -867,6 +1005,7 @@ class _RobotControlWorker:
         self._command_sub = LatestSubscriber(endpoints.command_pub, COMMAND_TOPIC)
         self._reference_command_pub = ZmqPublisher(endpoints.reference_command_pub)
         self._mode_pub = ZmqPublisher(endpoints.mode_pub)
+        self._record_pub = ZmqPublisher(endpoints.record_pub) if _recording_enabled(cfg) else None
 
         viewers = _parse_sim2real_viewers(cfg)
         self._retarget_viewer = _Sim2RealRetargetViewer(
@@ -925,6 +1064,8 @@ class _RobotControlWorker:
         self._command_sub.close()
         self._reference_command_pub.close()
         self._mode_pub.close()
+        if self._record_pub is not None:
+            self._record_pub.close()
         self.robot.close()
 
     def _build_policy_and_obs(self) -> tuple[Any, Any]:
@@ -1015,6 +1156,7 @@ class _RobotControlWorker:
         self._last_action = np.asarray(action, dtype=np.float32).reshape(-1)
         self._last_retarget_qpos = qpos.copy()
         self._last_commanded_motion_qpos = qpos.copy()
+        self._publish_record_step(robot_state=robot_state, reference_qpos=qpos)
         self._write_retarget_viewer(qpos)
 
     def _mocap_step(self) -> None:
@@ -1090,6 +1232,7 @@ class _RobotControlWorker:
         self._ref_proc.last_reference_qpos = reference_qpos.copy()
         self._last_commanded_motion_qpos = qpos.copy()
         self._last_mocap_hold_reason = None
+        self._publish_record_step(robot_state=robot_state, reference_qpos=qpos)
         self._write_retarget_viewer(qpos)
 
     def _compose_arm_reference(self, retarget_qpos: Float64Array) -> Float64Array:
@@ -1212,6 +1355,7 @@ class _RobotControlWorker:
             logger.info("DAMPING: exiting debug mode...")
         self.robot.exit_debug_mode()
         self.mode = RobotMode.DAMPING
+        self._publish_damping_record_step()
         self._ref_proc.last_reference_qpos = None
         self._mocap_reentry_armed = False
         self._mocap_session.reset()
@@ -1362,6 +1506,7 @@ class _RobotControlWorker:
         self._last_retarget_qpos = qpos.copy()
         self._ref_proc.last_reference_qpos = qpos.copy()
         self._last_commanded_motion_qpos = qpos.copy()
+        self._publish_record_step(robot_state=robot_state, reference_qpos=qpos)
         self._write_retarget_viewer(qpos)
 
     def _hold_mocap_reference(self, reason: str, *, detail: str | None = None) -> None:
@@ -1387,6 +1532,60 @@ class _RobotControlWorker:
                 seq=self._mode_seq,
             ),
         )
+
+    def _publish_record_step(self, *, robot_state: object, reference_qpos: Float64Array) -> None:
+        if self._record_pub is None:
+            return
+        record_mode = self._recording_mode_label()
+        mocap_like = self.mode in (RobotMode.MOCAP, RobotMode.ARMS)
+        active = mocap_like and self._mocap_session.state == MocapSessionState.ACTIVE
+        recordable = self.mode != RobotMode.DAMPING
+        try:
+            self._record_pub.publish(
+                RECORD_TOPIC,
+                RecordStepPacket(
+                    timestamp_s=time.monotonic(),
+                    mode=record_mode,
+                    mocap_active=active,
+                    recordable=recordable,
+                    observation_state=build_observation_state(robot_state).astype(np.float32, copy=True),
+                    observation_mode=build_mode_observation(record_mode).astype(np.float32, copy=True),
+                    action_reference_qpos=normalize_action_reference_qpos(reference_qpos).astype(np.float32, copy=True),
+                    seq=self._mode_seq,
+                ),
+            )
+        except Exception:
+            logger.exception("Failed to publish sim2real recording step")
+
+    def _publish_damping_record_step(self) -> None:
+        if self._record_pub is None:
+            return
+        try:
+            robot_state = self.robot.get_state()
+            reference_qpos = self._build_robot_state_qpos(robot_state)
+            self._record_pub.publish(
+                RECORD_TOPIC,
+                RecordStepPacket(
+                    timestamp_s=time.monotonic(),
+                    mode=RobotMode.DAMPING.value,
+                    mocap_active=False,
+                    recordable=False,
+                    observation_state=build_observation_state(robot_state).astype(np.float32, copy=True),
+                    observation_mode=np.array([-1.0], dtype=np.float32),
+                    action_reference_qpos=normalize_action_reference_qpos(reference_qpos).astype(np.float32, copy=True),
+                    seq=self._mode_seq,
+                ),
+            )
+        except Exception:
+            logger.exception("Failed to publish sim2real damping recording state")
+
+    def _recording_mode_label(self) -> str:
+        if (
+            self.mode in (RobotMode.MOCAP, RobotMode.ARMS)
+            and self._mocap_session.state == MocapSessionState.PAUSED
+        ):
+            return "pause"
+        return self.mode.value
 
     def _write_retarget_viewer(self, qpos: Float64Array) -> None:
         try:
@@ -1435,6 +1634,181 @@ def _run_robot_control_worker(
         worker.run()
 
     _worker_loop("robot_control", _main)
+
+
+class _RecordingWorker:
+    def __init__(
+        self,
+        cfg: dict[str, Any],
+        endpoints: Sim2RealIpcEndpoints,
+        stop_event: MpEvent,
+        *,
+        recorder_factory: Callable[..., Any] | None = None,
+        frame_reader: SharedFrameRingReader | None = None,
+    ) -> None:
+        self.cfg = cfg
+        self.endpoints = endpoints
+        self.stop_event = stop_event
+        self.rec_cfg = _recording_cfg(cfg)
+        self.camera_cfg = _recording_camera_cfg(cfg)
+        self.record_modes = {
+            str(mode).lower()
+            for mode in cfg_get(self.rec_cfg, "record_modes", ["standing", "mocap", "arms", "pause"])
+        }
+        self.min_episode_seconds = float(cfg_get(self.rec_cfg, "min_episode_seconds", 1.0))
+        self.discard_on_shutdown = bool(cfg_get(self.rec_cfg, "discard_on_shutdown", True))
+        self.task = str(cfg_get(self.rec_cfg, "task", "demo"))
+        self.fps = int(cfg_get(self.rec_cfg, "fps", 30))
+        self._record_sub = LatestSubscriber(endpoints.record_pub, RECORD_TOPIC)
+        self._video_sub = LatestSubscriber(endpoints.video_pub, VIDEO_TOPIC)
+        self._command_sub = LatestSubscriber(endpoints.command_pub, COMMAND_TOPIC)
+        self._frame_reader = frame_reader or SharedFrameRingReader()
+        self._latest_record: RecordStepPacket | None = None
+        self._latest_video_seq = -1
+        self._active = False
+        self._episode_started_s = 0.0
+        self._episode_frames = 0
+
+        from teleopit.recording.lerobot_v3 import (
+            TeleopitLeRobotV3Recorder,
+            build_recording_schema,
+        )
+
+        self._schema = build_recording_schema(self.camera_cfg)
+        factory = recorder_factory or TeleopitLeRobotV3Recorder.create
+        self._recorder = factory(
+            output_dir=cfg_get(self.rec_cfg, "output_dir", "data/lerobot"),
+            dataset_name=cfg_get(self.rec_cfg, "dataset_name", None),
+            repo_id=cfg_get(self.rec_cfg, "repo_id", None),
+            task=self.task,
+            fps=self.fps,
+            schema=self._schema,
+        )
+
+    def run(self) -> None:
+        logger.info("Recording worker started | fps=%d | modes=%s", self.fps, sorted(self.record_modes))
+        idle_sleep_s = 1.0 / max(float(self.fps) * 4.0, 1.0)
+        try:
+            while not self.stop_event.is_set():
+                command = self._command_sub.recv_latest()
+                if isinstance(command, CommandPacket):
+                    if self._handle_command(command):
+                        break
+
+                record = self._record_sub.recv_latest()
+                if isinstance(record, RecordStepPacket):
+                    self._latest_record = record
+
+                video = self._video_sub.recv_latest()
+                if isinstance(video, SharedFrameDescriptor):
+                    self._handle_video(video)
+
+                time.sleep(idle_sleep_s)
+        finally:
+            if self._active:
+                if self.discard_on_shutdown:
+                    self._discard_episode("shutdown")
+                else:
+                    self._save_episode()
+            try:
+                self._recorder.finalize()
+            finally:
+                self._record_sub.close()
+                self._video_sub.close()
+                self._command_sub.close()
+                self._frame_reader.close()
+
+    def _handle_command(self, command: CommandPacket) -> bool:
+        name = command.command
+        if name == "shutdown":
+            self.stop_event.set()
+            return True
+        if name == "record_start":
+            self._start_episode()
+        elif name == "record_save":
+            self._save_episode()
+        elif name == "record_discard":
+            self._discard_episode("manual discard")
+        return False
+
+    def _start_episode(self) -> None:
+        if self._active:
+            logger.warning("Recording episode already active; ignoring R")
+            return
+        record = self._latest_record
+        if record is None:
+            logger.warning("Cannot start recording: no robot record packet yet")
+            return
+        mode = str(record.mode).lower()
+        if mode not in self.record_modes or not bool(record.recordable):
+            logger.warning(
+                "Cannot start recording: mode=%s recordable=%s",
+                record.mode,
+                record.recordable,
+            )
+            return
+        self._recorder.start_episode()
+        self._active = True
+        self._episode_started_s = time.monotonic()
+        self._episode_frames = 0
+        logger.info("Recording episode started")
+
+    def _save_episode(self) -> None:
+        if not self._active:
+            logger.info("No active recording episode to save")
+            return
+        duration_s = time.monotonic() - self._episode_started_s
+        if duration_s < self.min_episode_seconds:
+            self._discard_episode(f"short episode ({duration_s:.2f}s < {self.min_episode_seconds:.2f}s)")
+            return
+        self._recorder.save_episode()
+        logger.info("Recording episode saved | frames=%d duration=%.2fs", self._episode_frames, duration_s)
+        self._active = False
+        self._episode_frames = 0
+
+    def _discard_episode(self, reason: str) -> None:
+        if not self._active:
+            logger.info("No active recording episode to discard")
+            return
+        self._recorder.discard_episode()
+        logger.info("Recording episode discarded | reason=%s | frames=%d", reason, self._episode_frames)
+        self._active = False
+        self._episode_frames = 0
+
+    def _handle_video(self, descriptor: SharedFrameDescriptor) -> None:
+        if int(descriptor.seq) == self._latest_video_seq:
+            return
+        self._latest_video_seq = int(descriptor.seq)
+        if not self._active:
+            return
+        record = self._latest_record
+        if record is None:
+            return
+        mode = str(record.mode).lower()
+        if mode not in self.record_modes or not bool(record.recordable):
+            logger.warning("Recording stopped because mode is no longer recordable: %s", record.mode)
+            self._discard_episode("mode not recordable")
+            return
+        image = self._frame_reader.read(descriptor, copy=True)
+        self._recorder.add_frame(
+            image=np.asarray(image, dtype=np.uint8),
+            state=np.asarray(record.observation_state, dtype=np.float32),
+            mode=np.asarray(record.observation_mode, dtype=np.float32),
+            action=np.asarray(record.action_reference_qpos, dtype=np.float32),
+            task=self.task,
+        )
+        self._episode_frames += 1
+
+def _run_recording_worker(
+    cfg: dict[str, Any],
+    endpoints: Sim2RealIpcEndpoints,
+    stop_event: MpEvent,
+) -> None:
+    def _main() -> None:
+        worker = _RecordingWorker(cfg, endpoints, stop_event)
+        worker.run()
+
+    _worker_loop("recording_worker", _main)
 
 
 class _HandSnapshotProxy:

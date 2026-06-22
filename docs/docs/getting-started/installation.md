@@ -73,6 +73,15 @@ scripts/setup/download_somehand_l6_assets.sh
 
 This extra is only required when `hands.enabled=true`.
 
+### Sim2Real Recording
+
+```bash
+pip install -e '.[recording]'
+```
+
+Adds the Pico sim2real stack plus LeRobot, RealSense, and video encoding
+dependencies used by `sim2real_record.yaml`.
+
 ## Verify Installation
 
 ```bash

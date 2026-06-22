@@ -60,6 +60,18 @@ class ModeStatePacket:
 
 
 @dataclass(frozen=True)
+class RecordStepPacket:
+    timestamp_s: float
+    mode: str
+    mocap_active: bool
+    recordable: bool
+    observation_state: Float64Array
+    observation_mode: Float64Array
+    action_reference_qpos: Float64Array
+    seq: int
+
+
+@dataclass(frozen=True)
 class HealthPacket:
     worker: str
     timestamp_s: float

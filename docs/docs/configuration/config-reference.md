@@ -151,6 +151,48 @@ calling somehand 0.2.0 through `somehand.api` only.
 | `hands.somehand.temporal_filter_alpha` | somehand input landmark smoothing alpha; `1.0` disables smoothing delay | `1.0` |
 | `hands.somehand.output_alpha` | somehand qpos output smoothing alpha; `1.0` disables smoothing delay | `1.0` |
 
+### LeRobot Recording (Pico sim2real)
+
+`recording.enabled=true` is supported only with `input.provider=pico4`,
+`input.video.enabled=true`, `input.video.source=realsense`, and an interactive
+terminal. The recorder is manual: `R` starts an episode, `S` saves the active
+episode, `D` discards the active episode, and `Q` shuts down. `STANDING`,
+`MOCAP`, `ARMS`, and paused mocap can be recorded.
+
+`sim2real_record.yaml` enables both recording and the required RealSense
+`input.video` path. Recording does not open a second camera; it consumes the
+same frames produced by `pico_input`.
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `recording.enabled` | Enable manual LeRobot v3 recording | `false` |
+| `recording.output_dir` | Dataset root directory | `data/lerobot` |
+| `recording.repo_id` / `dataset_name` | LeRobot dataset identity | `null` |
+| `recording.task` | Task string stored with frames | `demo` |
+| `recording.fps` | Recording/video clock rate | `30` |
+| `recording.min_episode_seconds` | Discard saved episodes shorter than this duration | `1.0` |
+| `recording.record_modes` | Modes that allow recording start and frame writes | `[standing, mocap, arms, pause]` |
+| `recording.camera.key` | LeRobot video feature key | `observation.images.d435i_rgb` |
+| `recording.camera.width` / `height` / `fps` | RealSense RGB capture settings | `640` / `480` / `30` |
+| `recording.camera.device` | Optional RealSense serial | `null` |
+
+Camera failure behavior is controlled by `input.video.fail_on_error`.
+
+LeRobot features:
+
+```text
+observation.images.d435i_rgb   video [480,640,3] uint8
+observation.state              float32[68]
+observation.mode               float32[1]
+action                         float32[36]
+```
+
+`observation.state` is ordered as `joint_pos(29)`, `joint_vel(29)`,
+`base_quat_wxyz(4)`, `base_ang_vel(3)`, and `projected_gravity(3)`.
+`observation.mode` is a numeric categorical: `standing=0`, `mocap=1`,
+`arms=2`, and `pause=3`. `action` is the current reference qpos:
+`root_pos(3) + root_quat_wxyz(4) + joint_pos(29)`.
+
 ## Critical: `default_dof_pos`
 
 The RL policy outputs action **offsets** relative to the default standing pose, not absolute joint angles:

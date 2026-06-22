@@ -1,0 +1,16 @@
+defaults:
+  - pico4_sim2real
+  - _self_
+
+recording:
+  enabled: true
+
+input:
+  video:
+    enabled: true
+    source: realsense
+    width: 640
+    height: 480
+    fps: 30
+    device: null
+    fail_on_error: true

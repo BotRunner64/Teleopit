@@ -95,6 +95,30 @@ python scripts/run/run_sim2real.py \
     real_robot.network_interface=eth0
 ```
 
+## Optional LeRobot Recording
+
+Install the recording extra on the machine that owns Pico input and RealSense:
+
+```bash
+pip install -e '.[recording]'
+```
+
+Run the recording config:
+
+```bash
+python scripts/run/run_sim2real.py \
+    --config-name sim2real_record \
+    controller.policy_path=track.onnx \
+    real_robot.network_interface=enp130s0 \
+    recording.task="walk forward"
+```
+
+Terminal controls are `R` start episode, `S` save, `D` discard, and `Q`
+shutdown. `STANDING`, `MOCAP`, `ARMS`, and paused mocap can be recorded;
+saved episodes cannot be discarded afterward. The v1 schema records
+`observation.images.d435i_rgb`, `observation.state(68)`,
+`observation.mode(1)`, and `action(36)` at 30 Hz.
+
 ## Operator Flow
 
 Keep the Unitree remote in hand. `L1+R1` is the emergency stop path into
