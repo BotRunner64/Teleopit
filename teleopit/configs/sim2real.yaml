@@ -17,6 +17,11 @@ reference_debug_log: false
 playback:
   pause_on_end: true
 
+console:
+  log_level: warning
+  show_timing: false
+  timing_log_interval_s: 10.0
+
 recording:
   enabled: false
   format: lerobot_v3

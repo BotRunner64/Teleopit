@@ -244,26 +244,27 @@ class SimLoopSession:
         self._loop._set_standing_reference(self._loop.robot.get_state())
         self.simulation_mode = SimulationMode.STANDING
 
-    def enter_mocap_mode(self) -> None:
+    def enter_mocap_mode(self) -> bool:
         from teleopit.sim.loop import SimulationMode
         loop = self._loop
         if not loop._realtime_input_has_frame(self._input_provider):
             _logger.warning("Cannot switch to MOCAP yet: realtime input has no frame available")
-            return
+            return False
         state = loop.robot.get_state()
         start_qpos = loop._resolve_hold_qpos(None, None, None, state)
         self.reset_policy_reference_state()
         self._step_runner.last_retarget_qpos = start_qpos.copy()
         self.last_commanded_motion_qpos = start_qpos.copy()
         self.simulation_mode = SimulationMode.MOCAP
+        return True
 
-    def toggle_arms_mode(self) -> None:
+    def toggle_arms_mode(self) -> bool:
         from teleopit.sim.loop import SimulationMode
         if not self.realtime_interpolated_input or self.simulation_mode not in (SimulationMode.MOCAP, SimulationMode.ARMS):
-            return
+            return False
         if self.mocap_session.state == MocapSessionState.PAUSED:
             _logger.info("Ignoring arm-only mode toggle while mocap session is paused")
-            return
+            return False
         loop = self._loop
         state = loop.robot.get_state()
         resume_qpos = loop._build_resume_alignment_qpos(self.last_commanded_motion_qpos, state)
@@ -280,8 +281,9 @@ class SimLoopSession:
         self._step_runner.reset_reference_alignment(resume_qpos)
         self.last_commanded_motion_qpos = resume_qpos.copy()
         _logger.info("Simulation mode -> %s", self.simulation_mode.value.upper())
+        return True
 
-    def toggle_realtime_mocap_pause(self) -> None:
+    def toggle_realtime_mocap_pause(self) -> str:
         loop = self._loop
         if self.mocap_session.state == MocapSessionState.PAUSED:
             hold_qpos = self.mocap_session.hold_qpos
@@ -291,7 +293,7 @@ class SimLoopSession:
             self.reset_policy_reference_state()
             self._step_runner.reset_reference_alignment(resume_qpos)
             self.last_commanded_motion_qpos = resume_qpos.copy()
-            return
+            return "resumed"
         hold_qpos = loop._resolve_hold_qpos(
             self.last_commanded_motion_qpos,
             self._step_runner.last_retarget_qpos,
@@ -301,6 +303,7 @@ class SimLoopSession:
         self.reset_policy_reference_state()
         self.mocap_session.pause(hold_qpos)
         self.last_commanded_motion_qpos = hold_qpos.copy()
+        return "paused"
 
     # ------------------------------------------------------------------
     # Keyboard handling
@@ -312,21 +315,32 @@ class SimLoopSession:
         assert self.keyboard_reader is not None
         for key_event in self.keyboard_reader.poll():
             key = key_event.key.lower()
+            if key == "h":
+                self._loop._console.help(self._loop._console_controls)
+                continue
             if key == "q":
                 self.playback_stop_requested = True
+                self._loop._console.key_feedback("Q", "quit", result="stopping")
                 return True
             if self.simulation_mode == SimulationMode.STANDING:
                 if key == "y":
-                    self.enter_mocap_mode()
+                    if self.enter_mocap_mode():
+                        self._loop._console.key_feedback("Y", "mocap", result="MOCAP")
+                    else:
+                        self._loop._console.key_feedback("Y", "mocap", result="waiting for input")
                 continue
             if key == "x":
                 self.enter_standing_mode()
+                self._loop._console.key_feedback("X", "standing", result="STANDING")
                 continue
             if key == "b":
-                self.toggle_arms_mode()
+                if self.toggle_arms_mode():
+                    self._loop._console.key_feedback("B", "arms", result=self.simulation_mode.value.upper())
+                else:
+                    self._loop._console.key_feedback("B", "arms", result="ignored")
                 continue
             if key == "a":
-                self.toggle_realtime_mocap_pause()
+                self._loop._console.key_feedback("A", "pause/resume", result=self.toggle_realtime_mocap_pause())
         return False
 
     def _handle_offline_keyboard(self) -> bool:
@@ -336,8 +350,12 @@ class SimLoopSession:
         loop = self._loop
         for key_event in self.keyboard_reader.poll():
             key = key_event.key.lower()
+            if key == "h":
+                self._loop._console.help(self._loop._console_controls)
+                continue
             if key == "q":
                 self.playback_stop_requested = True
+                self._loop._console.key_feedback("Q", "stop", result="stopping")
                 return True
             if key == "r":
                 loop._restart_offline_playback(
@@ -347,6 +365,7 @@ class SimLoopSession:
                 self.cached_human_frame = None
                 self.cached_retargeted = None
                 self.last_commanded_motion_qpos = None
+                self._loop._console.key_feedback("R", "replay", result="frame 0")
                 continue
             if key not in (" ", "p"):
                 continue
@@ -355,6 +374,7 @@ class SimLoopSession:
                     logging.getLogger(__name__).info(
                         "Offline playback already ended; press r to replay from frame 0."
                     )
+                    self._loop._console.key_feedback("Space/P", "pause/resume", result="ended; press R")
                 else:
                     loop._resume_offline_playback(
                         offline_playback=self.offline_playback,
@@ -362,6 +382,7 @@ class SimLoopSession:
                         state=loop.robot.get_state(),
                     )
                     self.last_commanded_motion_qpos = None
+                    self._loop._console.key_feedback("Space/P", "pause/resume", result="resumed")
             else:
                 hold_qpos = loop._resolve_hold_qpos(
                     self.last_commanded_motion_qpos,
@@ -374,6 +395,7 @@ class SimLoopSession:
                     mocap_session=self.mocap_session,
                     hold_qpos=hold_qpos,
                 )
+                self._loop._console.key_feedback("Space/P", "pause/resume", result="paused")
         return False
 
     # ------------------------------------------------------------------

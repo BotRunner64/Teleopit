@@ -13,12 +13,13 @@ from teleopit.inputs.pico_video import PicoVideoRuntime, parse_pico_video_config
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.robots.mujoco_robot import MuJoCoRobot
 from teleopit.runtime.common import cfg_get
+from teleopit.runtime.console import PlainConsole
 from teleopit.runtime.factory import build_inference_components
 from teleopit.sim.loop import SimulationLoop
 
 
 class TeleopPipeline:
-    def __init__(self, cfg: DictConfig | dict[str, Any]) -> None:
+    def __init__(self, cfg: DictConfig | dict[str, Any], *, console: PlainConsole | None = None) -> None:
         self.cfg = cfg
         self._project_root = Path(__file__).resolve().parent.parent
         components = build_inference_components(
@@ -53,6 +54,7 @@ class TeleopPipeline:
             components.sim_cfg,
             viewers=components.viewers,
             video_runtime=self.video_runtime,
+            console=console,
         )
 
     def run(self, num_steps: int) -> dict[str, float | int | str]:

@@ -11,6 +11,7 @@ from teleopit.constants import FULL_QPOS_DIM, ROOT_DIM
 from teleopit.controllers.observation import align_motion_qpos_yaw
 from teleopit.runtime.reference_config import parse_reference_config
 from teleopit.runtime.arm_mocap import compose_arm_reference, parse_arm_joint_indices
+from teleopit.runtime.console import PlainConsole, sim_keyboard_controls
 from teleopit.inputs.realtime_packet import RealtimeInputPacket
 from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Retargeter, Robot, RobotState
 from teleopit.sim.reference_timeline import (
@@ -49,6 +50,7 @@ class SimulationLoop:
         cfg: object,
         viewers: set[str] | None = None,
         video_runtime: object | None = None,
+        console: PlainConsole | None = None,
     ) -> None:
         self.robot: Robot = robot
         self.controller: Controller = controller
@@ -56,6 +58,7 @@ class SimulationLoop:
         self.bus: MessageBus = bus
         self.cfg: object = cfg
         self._video_runtime = video_runtime
+        self._console = console or PlainConsole(title="Teleopit sim2sim")
 
         self.policy_hz: float = self._to_float(self._get_cfg("policy_hz", "sim.policy_hz", "control.policy_hz", "policy_frequency"))
         self.pd_hz: float = self._to_float(self._get_cfg("pd_hz", "sim.pd_hz", "control.pd_hz", "pd_frequency"))
@@ -94,6 +97,7 @@ class SimulationLoop:
         self._playback_pause_on_end = bool(self._try_get_cfg("playback.pause_on_end", False))
         self._playback_keyboard_enabled = bool(self._try_get_cfg("playback.keyboard.enabled", False))
         self._realtime_keyboard_enabled = bool(self._try_get_cfg("keyboard.enabled", False))
+        self._console_controls = sim_keyboard_controls(self.cfg)
 
         # Shared reference config (parsed once, used by both sim and sim2real)
         self._ref_cfg = parse_reference_config(self.cfg)

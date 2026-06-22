@@ -26,6 +26,14 @@ from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.runtime.offline_playback import OfflinePlaybackController
 from teleopit.runtime.common import cfg_get, parse_viewers, require_section
+from teleopit.runtime.console import (
+    OPERATOR_LOGGER_NAME,
+    PlainConsole,
+    configure_runtime_logging,
+    console_show_timing,
+    console_timing_interval_s,
+    sim2real_keyboard_controls,
+)
 from teleopit.runtime.factory import _build_policy_components, build_simulation_cfg
 from teleopit.runtime.arm_mocap import (
     compose_arm_reference,
@@ -90,6 +98,7 @@ except ImportError:  # pragma: no cover - OmegaConf is a project dependency.
 
 
 logger = logging.getLogger(__name__)
+operator_logger = logging.getLogger(OPERATOR_LOGGER_NAME)
 
 Float32Array = NDArray[np.float32]
 Float64Array = NDArray[np.float64]
@@ -111,10 +120,12 @@ class _LoopTimingReporter:
         target_period_s: float,
         log_interval_s: float = 1.0,
         deadline_miss_tolerance_s: float = 0.001,
+        enabled: bool = True,
     ) -> None:
         self._target_period_s = float(target_period_s)
         self._log_interval_s = float(log_interval_s)
         self._deadline_miss_tolerance_s = float(deadline_miss_tolerance_s)
+        self._enabled = bool(enabled)
         self._window_start_s: float | None = None
         self._loop_ms: list[float] = []
         self._late_ms: list[float] = []
@@ -143,6 +154,9 @@ class _LoopTimingReporter:
         if sample_count <= 0:
             self._reset(end_s)
             return
+        if not self._enabled:
+            self._reset(end_s)
+            return
         loop_summary = self._summarize(self._loop_ms)
         late_summary = self._summarize(self._late_ms)
         work_summary = self._summarize(self._work_ms)
@@ -167,7 +181,7 @@ class _LoopTimingReporter:
         if self._pico_age_ms:
             message += " | reference_age_ms p50=%.2f p95=%.2f p99=%.2f max=%.2f"
             args.extend(self._summarize(self._pico_age_ms))
-        logger.info(message, *args)
+        operator_logger.info(message, *args)
         self._reset(end_s)
 
     def _reset(self, window_start_s: float) -> None:
@@ -319,8 +333,8 @@ def _require_recording_dependencies() -> None:
         raise RuntimeError("LeRobot v3 recording adapter is unavailable") from exc
 
 
-def _worker_loop(name: str, fn: Callable[[], None]) -> None:
-    logging.basicConfig(level=logging.INFO)
+def _worker_loop(name: str, cfg: dict[str, Any], fn: Callable[[], None]) -> None:
+    configure_runtime_logging(cfg, force=True)
     try:
         fn()
     except KeyboardInterrupt:
@@ -337,7 +351,7 @@ def _human_frame_is_valid(frame: object) -> bool:
 class Sim2RealRuntime:
     """Supervisor facade for the process-isolated sim2real runtime."""
 
-    def __init__(self, cfg: Any) -> None:
+    def __init__(self, cfg: Any, *, console: PlainConsole | None = None) -> None:
         self.cfg = _plain_cfg(cfg)
         _validate_new_runtime_config(self.cfg)
 
@@ -357,19 +371,23 @@ class Sim2RealRuntime:
         )
         self._command_pub: ZmqPublisher | None = None
         self._keyboard: TerminalKeyboardReader | None = None
+        self._console = console or PlainConsole(title="Teleopit sim2real", enabled=False)
+        self._console_controls = sim2real_keyboard_controls(self.cfg)
         if _recording_enabled(self.cfg):
             _require_recording_dependencies()
             if not sys.stdin.isatty():
                 raise RuntimeError("recording.enabled=true requires an interactive TTY for terminal controls")
+            if console is None:
+                self._console = PlainConsole(title="Teleopit sim2real")
 
     def run(self) -> None:
-        logger.info("Starting sim2real runtime")
+        operator_logger.info("runtime starting")
         try:
             self._start_processes()
             if _recording_enabled(self.cfg):
                 self._command_pub = ZmqPublisher(self._endpoints.command_pub)
                 self._keyboard = TerminalKeyboardReader()
-                logger.info("Recording controls: R=start, S=save, D=discard, Q=shutdown")
+                operator_logger.info("keyboard recording controls active: R start, S save, D discard, Q shutdown, H help")
             while not self._stop_event.is_set():
                 self._poll_terminal_recording_controls()
                 time.sleep(0.2)
@@ -384,7 +402,7 @@ class Sim2RealRuntime:
                     and process.name in critical_names
                 ]
                 if critical_dead:
-                    logger.error("Critical sim2real worker exited: %s", ", ".join(critical_dead))
+                    operator_logger.error("critical worker exited: %s", ", ".join(critical_dead))
                     self._stop_event.set()
                     break
                 noncritical_dead = [
@@ -395,9 +413,9 @@ class Sim2RealRuntime:
                     and process.name not in critical_names
                 ]
                 if noncritical_dead:
-                    logger.warning("Non-critical sim2real worker exited: %s", ", ".join(noncritical_dead))
+                    operator_logger.warning("non-critical worker exited: %s", ", ".join(noncritical_dead))
         except KeyboardInterrupt:
-            logger.info("KeyboardInterrupt -- shutting down sim2real")
+            operator_logger.info("keyboard interrupt -> shutting down")
             self._stop_event.set()
         finally:
             self.shutdown()
@@ -410,7 +428,7 @@ class Sim2RealRuntime:
             process.join(timeout=self._shutdown_timeout_s)
         for process in self._processes:
             if process.is_alive():
-                logger.warning("Terminating sim2real worker %s", process.name)
+                operator_logger.warning("terminating worker %s", process.name)
                 process.terminate()
                 process.join(timeout=1.0)
         self._processes.clear()
@@ -459,10 +477,15 @@ class Sim2RealRuntime:
         if not events:
             return
         for event in events:
+            normalized = str(event.key).strip().lower()
+            if normalized == "h":
+                self._console.help(self._console_controls)
+                continue
             command = map_recording_key_to_command(event.key)
             if command is None:
                 continue
             self._command_pub.publish(COMMAND_TOPIC, CommandPacket(command=command, timestamp_s=time.monotonic()))
+            self._console.key_feedback(str(event.key).upper(), _recording_command_label(command))
             if command == "shutdown":
                 self._stop_event.set()
 
@@ -478,6 +501,18 @@ def map_recording_key_to_command(key: str) -> str | None:
     if normalized == "q":
         return "shutdown"
     return None
+
+
+def _recording_command_label(command: str) -> str:
+    if command == "record_start":
+        return "start recording"
+    if command == "record_save":
+        return "save recording"
+    if command == "record_discard":
+        return "discard recording"
+    if command == "shutdown":
+        return "shutdown"
+    return command
 
 
 def _run_pico_io_worker(
@@ -627,7 +662,7 @@ def _run_pico_io_worker(
                     publisher.close()
             provider.close()
 
-    _worker_loop("pico_input", _main)
+    _worker_loop("pico_input", cfg, _main)
 
 
 def _run_reference_worker(
@@ -799,7 +834,7 @@ def _run_pico_reference_worker(
             command_sub.close()
             ref_pub.close()
 
-    _worker_loop("reference", _main)
+    _worker_loop("reference", cfg, _main)
 
 
 def _run_bvh_reference_worker(
@@ -929,7 +964,7 @@ def _run_bvh_reference_worker(
             ref_pub.close()
             health_pub.close()
 
-    _worker_loop("reference", _main)
+    _worker_loop("reference", cfg, _main)
 
 
 class _RobotControlWorker:
@@ -1015,8 +1050,12 @@ class _RobotControlWorker:
         self._mode_seq = 0
 
     def run(self) -> None:
-        logger.info("Robot control worker started | mode=IDLE | policy_hz=%.0f", self.policy_hz)
-        timing = _LoopTimingReporter(target_period_s=self.dt)
+        operator_logger.info("robot control ready | mode=IDLE | policy_hz=%.0f", self.policy_hz)
+        timing = _LoopTimingReporter(
+            target_period_s=self.dt,
+            log_interval_s=console_timing_interval_s(self.cfg),
+            enabled=console_show_timing(self.cfg),
+        )
         try:
             while not self.stop_event.is_set():
                 t0 = time.monotonic()
@@ -1027,6 +1066,7 @@ class _RobotControlWorker:
                 if self.remote.LB.pressed and self.remote.RB.pressed:
                     if self.mode != RobotMode.DAMPING:
                         logger.warning("EMERGENCY STOP (L1+R1)")
+                        operator_logger.warning("DAMPING requested by emergency stop")
                         self._enter_damping()
                 else:
                     self._handle_transitions()
@@ -1098,38 +1138,38 @@ class _RobotControlWorker:
     def _handle_transitions(self) -> None:
         if self.mode == RobotMode.IDLE:
             if self.remote.start.on_pressed:
-                logger.info("Start pressed (from IDLE)")
+                operator_logger.info("Start -> STANDING")
                 self._enter_standing()
         elif self.mode == RobotMode.STANDING:
             reentry_request = self._mocap_reentry_armed and self.remote.Y.pressed
             if self.remote.Y.on_pressed or reentry_request:
                 if self._can_switch_to_mocap():
-                    logger.info("Y pressed -> entering MOCAP")
+                    operator_logger.info("Y -> MOCAP")
                     self._transition_to_mocap()
                 else:
-                    logger.warning("Cannot switch to MOCAP -- no fresh retarget reference")
+                    operator_logger.warning("Y -> waiting for fresh retarget reference")
         elif self.mode in (RobotMode.MOCAP, RobotMode.ARMS):
             if self.provider_kind == "bvh" and self.remote.B.on_pressed:
-                logger.info("B pressed -> replaying BVH motion from start")
+                operator_logger.info("B -> replay BVH from frame 0")
                 self._send_reference_command("replay_mocap")
                 self._resume_paused_mocap_if_needed()
                 return
             if self.remote.A.on_pressed:
                 if self._mocap_session.state == MocapSessionState.PAUSED:
-                    logger.info("A pressed -> resuming playback")
+                    operator_logger.info("A -> resume playback")
                     self._send_reference_command("resume_mocap")
                     self._resume_paused_mocap()
                 else:
-                    logger.info("A pressed -> pausing playback")
+                    operator_logger.info("A -> pause playback")
                     self._send_reference_command("pause_mocap")
                     self._pause_active_mocap()
                 return
             if self.remote.X.on_pressed:
-                logger.info("X pressed -> returning to STANDING")
+                operator_logger.info("X -> STANDING")
                 self._enter_standing()
         elif self.mode == RobotMode.DAMPING:
             if self.remote.start.on_pressed:
-                logger.info("Start pressed (from DAMPING)")
+                operator_logger.info("Start -> STANDING")
                 self._enter_standing()
 
     def _standing_step(self) -> None:
@@ -1284,7 +1324,7 @@ class _RobotControlWorker:
             self._safety.start_kp_ramp()
         self._mocap_reentry_armed = prev_mode in (RobotMode.MOCAP, RobotMode.ARMS)
         self.mode = RobotMode.STANDING
-        logger.info("Mode -> STANDING (multiprocess robot control)")
+        operator_logger.info("mode -> STANDING")
 
     def _can_switch_to_mocap(self) -> bool:
         age_s = self._reference_age_s()
@@ -1318,7 +1358,7 @@ class _RobotControlWorker:
         if self.provider_kind == "bvh":
             self._send_reference_command("replay_mocap")
         self.mode = RobotMode.MOCAP
-        logger.info("Mode -> MOCAP (tracking multiprocess retarget reference)")
+        operator_logger.info("mode -> MOCAP")
 
     def _toggle_arms_mode(self) -> None:
         if self.provider_kind != "pico4" or self.mode not in (RobotMode.MOCAP, RobotMode.ARMS):
@@ -1341,7 +1381,7 @@ class _RobotControlWorker:
             floor_ratio=self._standing_return_kp_ramp_floor_ratio,
         )
         self.mode = next_mode
-        logger.info("Mode -> %s (Pico B toggle)", next_mode.value.upper())
+        operator_logger.info("mode -> %s", next_mode.value.upper())
 
     def _resume_paused_mocap_if_needed(self) -> None:
         if self._mocap_session.state == MocapSessionState.PAUSED:
@@ -1361,7 +1401,7 @@ class _RobotControlWorker:
         self._mocap_session.reset()
         self._last_commanded_motion_qpos = None
         self._last_mocap_hold_reason = None
-        logger.info("Mode -> DAMPING (press Start to re-enter STANDING)")
+        operator_logger.warning("mode -> DAMPING")
 
     def _reset_policy_state(self) -> None:
         self._last_action = np.zeros(self.num_actions, dtype=np.float32)
@@ -1633,7 +1673,7 @@ def _run_robot_control_worker(
         worker = _RobotControlWorker(cfg, endpoints, stop_event)
         worker.run()
 
-    _worker_loop("robot_control", _main)
+    _worker_loop("robot_control", cfg, _main)
 
 
 class _RecordingWorker:
@@ -1686,7 +1726,7 @@ class _RecordingWorker:
         )
 
     def run(self) -> None:
-        logger.info("Recording worker started | fps=%d | modes=%s", self.fps, sorted(self.record_modes))
+        operator_logger.info("recording worker ready | fps=%d | modes=%s", self.fps, sorted(self.record_modes))
         idle_sleep_s = 1.0 / max(float(self.fps) * 4.0, 1.0)
         try:
             while not self.stop_event.is_set():
@@ -1751,11 +1791,11 @@ class _RecordingWorker:
         self._active = True
         self._episode_started_s = time.monotonic()
         self._episode_frames = 0
-        logger.info("Recording episode started")
+        operator_logger.info("recording episode started")
 
     def _save_episode(self) -> None:
         if not self._active:
-            logger.info("No active recording episode to save")
+            operator_logger.info("no active recording episode to save")
             return
         duration_s = time.monotonic() - self._episode_started_s
         if self._episode_frames <= 0:
@@ -1765,16 +1805,16 @@ class _RecordingWorker:
             self._discard_episode(f"short episode ({duration_s:.2f}s < {self.min_episode_seconds:.2f}s)")
             return
         self._recorder.save_episode()
-        logger.info("Recording episode saved | frames=%d duration=%.2fs", self._episode_frames, duration_s)
+        operator_logger.info("recording episode saved | frames=%d duration=%.2fs", self._episode_frames, duration_s)
         self._active = False
         self._episode_frames = 0
 
     def _discard_episode(self, reason: str) -> None:
         if not self._active:
-            logger.info("No active recording episode to discard")
+            operator_logger.info("no active recording episode to discard")
             return
         self._recorder.discard_episode()
-        logger.info("Recording episode discarded | reason=%s | frames=%d", reason, self._episode_frames)
+        operator_logger.info("recording episode discarded | reason=%s | frames=%d", reason, self._episode_frames)
         self._active = False
         self._episode_frames = 0
 
@@ -1811,7 +1851,7 @@ def _run_recording_worker(
         worker = _RecordingWorker(cfg, endpoints, stop_event)
         worker.run()
 
-    _worker_loop("recording_worker", _main)
+    _worker_loop("recording_worker", cfg, _main)
 
 
 class _HandSnapshotProxy:
@@ -1875,4 +1915,4 @@ def _run_hand_worker(
                 mode_sub.close()
                 command_sub.close()
 
-    _worker_loop("hand_worker", _main)
+    _worker_loop("hand_worker", cfg, _main)

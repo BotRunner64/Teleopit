@@ -53,10 +53,12 @@ class _StandaloneTimingReporter:
         target_period_s: float,
         log_interval_s: float = 1.0,
         deadline_miss_tolerance_s: float = 0.001,
+        enabled: bool = True,
     ) -> None:
         self._target_period_s = float(target_period_s)
         self._log_interval_s = float(log_interval_s)
         self._deadline_miss_tolerance_s = float(deadline_miss_tolerance_s)
+        self._enabled = bool(enabled)
         self._window_start_s: float | None = None
         self._loop_ms: list[float] = []
         self._late_ms: list[float] = []
@@ -107,6 +109,9 @@ class _StandaloneTimingReporter:
     def _emit(self, end_s: float) -> None:
         sample_count = len(self._loop_ms)
         if sample_count <= 0:
+            self._reset(end_s)
+            return
+        if not self._enabled:
             self._reset(end_s)
             return
         logger.info(
@@ -230,7 +235,12 @@ class StandaloneStandingController:
         self._last_action = np.zeros(self.num_actions, dtype=np.float32)
         self._last_target: np.ndarray | None = None
         self._step_count = 0
-        self._timing = _StandaloneTimingReporter(target_period_s=self.dt)
+        console_cfg = cfg_get(cfg, "console", {}) or {}
+        self._timing = _StandaloneTimingReporter(
+            target_period_s=self.dt,
+            log_interval_s=float(cfg_get(console_cfg, "timing_log_interval_s", 10.0)),
+            enabled=bool(cfg_get(console_cfg, "show_timing", False)),
+        )
 
         if self.obs_delay_s > 0.0 or self.command_delay_s > 0.0:
             logger.info(
@@ -462,6 +472,10 @@ def _build_cfg(args: argparse.Namespace) -> Any:
             "robot": OmegaConf.load(PROJECT_ROOT / "teleopit" / "configs" / "robot" / "g1.yaml"),
             "controller": OmegaConf.load(PROJECT_ROOT / "teleopit" / "configs" / "controller" / "rl_policy.yaml"),
             "real_robot": OmegaConf.load(PROJECT_ROOT / "teleopit" / "configs" / "sim2real.yaml").real_robot,
+            "console": {
+                "show_timing": bool(args.show_timing),
+                "timing_log_interval_s": float(args.timing_log_interval_s),
+            },
         }
     )
     cfg.controller.policy_path = str(args.policy)
@@ -480,6 +494,13 @@ def main() -> None:
     parser.add_argument("--kp-ramp-duration", type=float, default=2.0, help="Startup Kp ramp duration in seconds")
     parser.add_argument("--kp-ramp-floor-ratio", type=float, default=0.1, help="Initial Kp ratio during startup")
     parser.add_argument("--joint-vel-limit", type=float, default=10.0, help="Damp if any joint exceeds this velocity")
+    parser.add_argument("--show-timing", action="store_true", help="Print periodic timing diagnostics")
+    parser.add_argument(
+        "--timing-log-interval-s",
+        type=float,
+        default=10.0,
+        help="Timing diagnostic print interval when --show-timing is set",
+    )
     parser.add_argument(
         "--obs-delay-ms",
         type=float,

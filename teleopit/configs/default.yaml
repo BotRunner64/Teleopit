@@ -14,6 +14,11 @@ playback:
   keyboard:
     enabled: false
 
+console:
+  log_level: warning
+  show_timing: false
+  timing_log_interval_s: 10.0
+
 hydra:
   run:
     dir: .
