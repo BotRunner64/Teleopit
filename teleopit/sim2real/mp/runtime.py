@@ -1758,6 +1758,9 @@ class _RecordingWorker:
             logger.info("No active recording episode to save")
             return
         duration_s = time.monotonic() - self._episode_started_s
+        if self._episode_frames <= 0:
+            self._discard_episode("empty episode")
+            return
         if duration_s < self.min_episode_seconds:
             self._discard_episode(f"short episode ({duration_s:.2f}s < {self.min_episode_seconds:.2f}s)")
             return

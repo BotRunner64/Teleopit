@@ -735,11 +735,15 @@ def test_recording_worker_start_save_discard_with_fake_adapter() -> None:
             seq=2,
         )
         worker._start_episode()
+        worker._save_episode()
+        assert calls == ["start", "discard"]
+
+        worker._start_episode()
         desc = writer.write(np.full((2, 2, 3), 5, dtype=np.uint8), timestamp_s=2.1)
         worker._handle_video(desc)
         worker._save_episode()
 
-        assert calls == ["start", "frame:walk", "save"]
+        assert calls == ["start", "discard", "start", "frame:walk", "save"]
         assert frames[0]["image"].shape == (2, 2, 3)
         np.testing.assert_allclose(frames[0]["state"], np.arange(68, dtype=np.float32))
         np.testing.assert_allclose(frames[0]["mode"], build_mode_observation("standing"))
