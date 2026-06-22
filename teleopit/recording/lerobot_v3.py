@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib
 import json
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,34 @@ MODE_CODES = {
     "arms": 2,
     "pause": 3,
 }
+
+
+def _import_lerobot_dataset() -> Any:
+    try:
+        module = importlib.import_module("lerobot.datasets.lerobot_dataset")
+    except ModuleNotFoundError as new_exc:
+        if new_exc.name not in {"lerobot", "lerobot.datasets", "lerobot.datasets.lerobot_dataset"}:
+            raise RuntimeError("Failed to import LeRobotDataset from the current LeRobot API") from new_exc
+        try:
+            module = importlib.import_module("lerobot.common.datasets.lerobot_dataset")
+        except ModuleNotFoundError as old_exc:
+            if old_exc.name not in {
+                "lerobot",
+                "lerobot.common",
+                "lerobot.common.datasets",
+                "lerobot.common.datasets.lerobot_dataset",
+            }:
+                raise RuntimeError("Failed to import LeRobotDataset from the legacy LeRobot API") from old_exc
+            raise RuntimeError(
+                "recording.enabled=true requires a LeRobot version that provides "
+                "LeRobotDataset. Install Teleopit with the recording extra, for example: "
+                "pip install -e '.[recording]'."
+            ) from old_exc
+        except Exception as old_exc:
+            raise RuntimeError("Failed to import LeRobotDataset from the legacy LeRobot API") from old_exc
+    except Exception as new_exc:
+        raise RuntimeError("Failed to import LeRobotDataset from the current LeRobot API") from new_exc
+    return module.LeRobotDataset
 
 
 @dataclass(frozen=True)
@@ -215,16 +244,10 @@ class TeleopitLeRobotV3Recorder:
         fps: int,
         schema: RecordingSchema,
     ) -> "TeleopitLeRobotV3Recorder":
-        try:
-            from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
-        except Exception as exc:  # pragma: no cover - exercised in environments without optional extra.
-            raise RuntimeError(
-                "recording.enabled=true requires the optional LeRobot dependency. "
-                "Install Teleopit with the recording extra, for example: pip install -e '.[recording]'."
-            ) from exc
+        LeRobotDataset = _import_lerobot_dataset()
 
         root = Path(output_dir)
-        root.mkdir(parents=True, exist_ok=True)
+        root.parent.mkdir(parents=True, exist_ok=True)
         dataset_repo_id = repo_id or dataset_name or "teleopit/sim2real"
         features = lerobot_features(schema)
 
@@ -313,6 +336,10 @@ class TeleopitLeRobotV3Recorder:
         self._frames_in_episode = 0
 
     def finalize(self) -> None:
+        finalize = getattr(self._dataset, "finalize", None)
+        if callable(finalize):
+            finalize()
+            return
         consolidate = getattr(self._dataset, "consolidate", None)
         if callable(consolidate):
             consolidate()
