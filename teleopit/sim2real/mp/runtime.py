@@ -46,6 +46,7 @@ from teleopit.runtime.terminal_keyboard import TerminalKeyboardReader
 from teleopit.recording.lerobot_v3 import (
     build_mode_observation,
     build_observation_state,
+    normalize_hand_action,
     normalize_action_reference_qpos,
 )
 from teleopit.sim.reference_motion import OfflineReferenceMotion
@@ -58,11 +59,15 @@ from teleopit.sim.reference_utils import (
 from teleopit.sim.realtime_utils import RealtimeReferenceManager
 from teleopit.sim.viewer_subprocess import start_robot_viewer
 from teleopit.sim2real.hands.worker import build_hand_runtime
+from teleopit.sim2real.hands.base import HandPoseCommand
+from teleopit.sim2real.hands.linkerhand_l6 import parse_linkerhand_l6_config
+from teleopit.sim2real.hands.linkerhand_o6 import parse_linkerhand_o6_config
 from teleopit.sim2real.mp.ipc import (
     BODY_TOPIC,
     COMMAND_TOPIC,
     CONTROL_EVENTS_TOPIC,
     CONTROLLER_TOPIC,
+    HAND_COMMAND_TOPIC,
     HAND_TOPIC,
     HEALTH_TOPIC,
     MODE_TOPIC,
@@ -78,6 +83,7 @@ from teleopit.sim2real.mp.messages import (
     BodyFramePacket,
     CommandPacket,
     ControlEventsPacket,
+    HandCommandPacket,
     HealthPacket,
     ModeStatePacket,
     ReferencePacket,
@@ -271,6 +277,26 @@ def _recording_enabled(cfg: Any) -> bool:
 
 def _recording_camera_cfg(cfg: Any) -> Any:
     return cfg_get(_recording_cfg(cfg), "camera", {}) or {}
+
+
+def _configured_open_hand_pose(cfg: Any) -> tuple[np.ndarray, np.ndarray]:
+    hands_cfg = cfg_get(cfg, "hands", {}) or {}
+    driver = str(cfg_get(hands_cfg, "driver", "linkerhand_l6")).strip().lower()
+    if bool(cfg_get(hands_cfg, "enabled", False)):
+        if driver == "linkerhand_o6":
+            hand_cfg = parse_linkerhand_o6_config(cfg)
+        else:
+            hand_cfg = parse_linkerhand_l6_config(cfg)
+        pose = np.asarray(hand_cfg.open_pose, dtype=np.float32).reshape(-1)
+    elif driver == "linkerhand_o6":
+        pose = np.array([250, 250, 250, 250, 250, 250], dtype=np.float32)
+    else:
+        driver_cfg = cfg_get(hands_cfg, "linkerhand_l6", {}) or {}
+        thumb_yaw = int(cfg_get(driver_cfg, "thumb_yaw_center", 10))
+        pose = np.array([250, thumb_yaw, 250, 250, 250, 250], dtype=np.float32)
+    if pose.shape[0] != 6:
+        raise ValueError(f"hands.{driver}.open_pose must contain 6 values")
+    return pose.copy(), pose.copy()
 
 
 def _validate_new_runtime_config(cfg: Any) -> None:
@@ -1701,9 +1727,20 @@ class _RecordingWorker:
         self.fps = int(cfg_get(self.rec_cfg, "fps", 30))
         self._record_sub = LatestSubscriber(endpoints.record_pub, RECORD_TOPIC)
         self._video_sub = LatestSubscriber(endpoints.video_pub, VIDEO_TOPIC)
+        self._hand_command_sub = LatestSubscriber(endpoints.hand_command_pub, HAND_COMMAND_TOPIC)
         self._command_sub = LatestSubscriber(endpoints.command_pub, COMMAND_TOPIC)
         self._frame_reader = frame_reader or SharedFrameRingReader()
         self._latest_record: RecordStepPacket | None = None
+        left_open, right_open = _configured_open_hand_pose(cfg)
+        self._latest_hand_command = HandCommandPacket(
+            timestamp_s=0.0,
+            driver=str(cfg_get(cfg_get(cfg, "hands", {}) or {}, "driver", "linkerhand_l6")).strip().lower(),
+            mode=str(cfg_get(cfg_get(cfg, "hands", {}) or {}, "mode", "gripper")).strip().lower(),
+            active=False,
+            left_pose=left_open.astype(np.float32, copy=True),
+            right_pose=right_open.astype(np.float32, copy=True),
+            seq=0,
+        )
         self._latest_video_seq = -1
         self._active = False
         self._episode_started_s = 0.0
@@ -1739,6 +1776,10 @@ class _RecordingWorker:
                 if isinstance(record, RecordStepPacket):
                     self._latest_record = record
 
+                hand_command = self._hand_command_sub.recv_latest()
+                if isinstance(hand_command, HandCommandPacket):
+                    self._latest_hand_command = hand_command
+
                 video = self._video_sub.recv_latest()
                 if isinstance(video, SharedFrameDescriptor):
                     self._handle_video(video)
@@ -1755,6 +1796,7 @@ class _RecordingWorker:
             finally:
                 self._record_sub.close()
                 self._video_sub.close()
+                self._hand_command_sub.close()
                 self._command_sub.close()
                 self._frame_reader.close()
 
@@ -1838,6 +1880,10 @@ class _RecordingWorker:
             state=np.asarray(record.observation_state, dtype=np.float32),
             mode=np.asarray(record.observation_mode, dtype=np.float32),
             action=np.asarray(record.action_reference_qpos, dtype=np.float32),
+            hand_action=normalize_hand_action(
+                self._latest_hand_command.left_pose,
+                self._latest_hand_command.right_pose,
+            ),
             task=self.task,
         )
         self._episode_frames += 1
@@ -1878,11 +1924,55 @@ def _run_hand_worker(
         controller_sub = LatestSubscriber(endpoints.controller_pub, CONTROLLER_TOPIC)
         mode_sub = LatestSubscriber(endpoints.mode_pub, MODE_TOPIC)
         command_sub = LatestSubscriber(endpoints.command_pub, COMMAND_TOPIC)
+        hand_command_pub = ZmqPublisher(endpoints.hand_command_pub)
         active = False
         hz = float(cfg_get(_mp_cfg(cfg), "hand_worker_hz", 120.0))
         sleep_s = 1.0 / max(hz, 1.0)
+        hands_cfg = cfg_get(cfg, "hands", {}) or {}
+        driver = str(cfg_get(hands_cfg, "driver", "linkerhand_l6")).strip().lower()
+        hand_mode = str(cfg_get(hands_cfg, "mode", "gripper")).strip().lower()
+        left_pose, right_pose = _configured_open_hand_pose(cfg)
+        command_seq = 0
+
+        def _apply_hand_commands(commands: tuple[HandPoseCommand, ...]) -> bool:
+            nonlocal left_pose, right_pose
+            changed = False
+            for hand_command in commands:
+                pose = np.asarray(hand_command.pose, dtype=np.float32).reshape(-1)
+                if pose.shape[0] != 6:
+                    logger.warning("Ignoring %s hand command with invalid pose shape %s", hand_command.side, pose.shape)
+                    continue
+                if hand_command.side == "left":
+                    left_pose = pose.copy()
+                    changed = True
+                elif hand_command.side == "right":
+                    right_pose = pose.copy()
+                    changed = True
+                else:
+                    logger.warning("Ignoring hand command with unsupported side %r", hand_command.side)
+            return changed
+
+        def _publish_hand_command(*, timestamp_s: float, active_state: bool) -> None:
+            nonlocal command_seq
+            command_seq += 1
+            hand_command_pub.publish(
+                HAND_COMMAND_TOPIC,
+                HandCommandPacket(
+                    timestamp_s=float(timestamp_s),
+                    driver=driver,
+                    mode=hand_mode,
+                    active=bool(active_state),
+                    left_pose=np.asarray(left_pose, dtype=np.float32).copy(),
+                    right_pose=np.asarray(right_pose, dtype=np.float32).copy(),
+                    seq=command_seq,
+                ),
+            )
+
         try:
-            runtime.start()
+            startup_commands = runtime.start()
+            startup_s = time.monotonic()
+            _apply_hand_commands(startup_commands)
+            _publish_hand_command(timestamp_s=startup_s, active_state=False)
             while not stop_event.is_set():
                 command = command_sub.recv_latest()
                 if isinstance(command, CommandPacket) and command.command == "shutdown":
@@ -1898,21 +1988,30 @@ def _run_hand_worker(
                 if isinstance(mode_packet, ModeStatePacket):
                     active = bool(mode_packet.mocap_active)
                 try:
-                    runtime.tick(
+                    now_s = time.monotonic()
+                    commands = runtime.tick(
                         controller_snapshot=proxy.controller_snapshot,
                         hand_snapshot=proxy.hand_snapshot,
                         active=active,
+                        now_s=now_s,
                     )
+                    if commands:
+                        if _apply_hand_commands(commands):
+                            _publish_hand_command(timestamp_s=now_s, active_state=active)
                 except Exception:
                     logger.exception("Dexterous hand worker tick failed; hand control continues")
                 time.sleep(sleep_s)
         finally:
             try:
-                runtime.close()
+                shutdown_commands = runtime.close()
+                shutdown_s = time.monotonic()
+                if _apply_hand_commands(shutdown_commands):
+                    _publish_hand_command(timestamp_s=shutdown_s, active_state=False)
             finally:
                 hand_sub.close()
                 controller_sub.close()
                 mode_sub.close()
                 command_sub.close()
+                hand_command_pub.close()
 
     _worker_loop("hand_worker", cfg, _main)

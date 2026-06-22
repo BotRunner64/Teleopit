@@ -186,6 +186,7 @@ observation.images.d435i_rgb   video [480,640,3] uint8
 observation.state              float32[68]
 observation.mode               float32[1]
 action                         float32[36]
+action.hand                    float32[12]
 ```
 
 `observation.state` is ordered as `joint_pos(29)`, `joint_vel(29)`,
@@ -193,6 +194,8 @@ action                         float32[36]
 `observation.mode` is a numeric categorical: `standing=0`, `mocap=1`,
 `arms=2`, and `pause=3`. `action` is the current reference qpos:
 `root_pos(3) + root_quat_wxyz(4) + joint_pos(29)`.
+`action.hand` is the latest LinkerHand command from the hand worker:
+`left_pose(6) + right_pose(6)`, using the SDK's 0-255 pose values.
 
 ## Critical: `default_dof_pos`
 

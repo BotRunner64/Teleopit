@@ -19,9 +19,11 @@ IMAGE_KEY = "observation.images.d435i_rgb"
 STATE_KEY = "observation.state"
 MODE_KEY = "observation.mode"
 ACTION_KEY = "action"
+HAND_ACTION_KEY = "action.hand"
 STATE_DIM = 68
 MODE_DIM = 1
 ACTION_DIM = FULL_QPOS_DIM
+HAND_ACTION_DIM = 12
 DEFAULT_IMAGE_SHAPE = (480, 640, 3)
 MODE_CODES = {
     "standing": 0,
@@ -41,6 +43,8 @@ class RecordingSchema:
     mode_dim: int = MODE_DIM
     action_key: str = ACTION_KEY
     action_dim: int = ACTION_DIM
+    hand_action_key: str = HAND_ACTION_KEY
+    hand_action_dim: int = HAND_ACTION_DIM
 
 
 def build_recording_schema(camera_cfg: Any) -> RecordingSchema:
@@ -73,6 +77,11 @@ def lerobot_features(schema: RecordingSchema) -> dict[str, dict[str, object]]:
             "dtype": "float32",
             "shape": (schema.action_dim,),
             "names": ["action"],
+        },
+        schema.hand_action_key: {
+            "dtype": "float32",
+            "shape": (schema.hand_action_dim,),
+            "names": ["hand_action"],
         },
     }
 
@@ -114,6 +123,16 @@ def modality_sidecar(schema: RecordingSchema) -> dict[str, object]:
                     "joint_pos": [7, 36],
                 },
             },
+            schema.hand_action_key: {
+                "type": "low_dim",
+                "shape": [schema.hand_action_dim],
+                "dtype": "float32",
+                "units": "linkerhand_uint8_pose",
+                "slices": {
+                    "left_pose": [0, 6],
+                    "right_pose": [6, 12],
+                },
+            },
         },
     }
 
@@ -146,6 +165,19 @@ def normalize_action_reference_qpos(reference_qpos: object) -> np.ndarray:
     action = np.asarray(reference_qpos, dtype=np.float32).reshape(-1)[:ACTION_DIM]
     if action.shape[0] != ACTION_DIM:
         raise ValueError(f"recording action reference qpos must be {ACTION_DIM}D, got {action.shape[0]}")
+    return action
+
+
+def normalize_hand_action(left_pose: object, right_pose: object) -> np.ndarray:
+    left = np.asarray(left_pose, dtype=np.float32).reshape(-1)
+    right = np.asarray(right_pose, dtype=np.float32).reshape(-1)
+    if left.shape[0] != 6:
+        raise ValueError(f"recording left hand pose must be 6D, got {left.shape[0]}")
+    if right.shape[0] != 6:
+        raise ValueError(f"recording right hand pose must be 6D, got {right.shape[0]}")
+    action = np.concatenate([left, right], dtype=np.float32)
+    if action.shape[0] != HAND_ACTION_DIM:
+        raise ValueError(f"recording action.hand must be {HAND_ACTION_DIM}D, got {action.shape[0]}")
     return action
 
 
@@ -228,6 +260,7 @@ class TeleopitLeRobotV3Recorder:
         state: np.ndarray,
         mode: np.ndarray,
         action: np.ndarray,
+        hand_action: np.ndarray,
         task: str,
     ) -> None:
         if not self._active:
@@ -238,18 +271,22 @@ class TeleopitLeRobotV3Recorder:
         state_arr = np.asarray(state, dtype=np.float32).reshape(-1)
         mode_arr = np.asarray(mode, dtype=np.float32).reshape(-1)
         action_arr = np.asarray(action, dtype=np.float32).reshape(-1)
+        hand_action_arr = np.asarray(hand_action, dtype=np.float32).reshape(-1)
         if state_arr.shape[0] != self._schema.state_dim:
             raise ValueError(f"{self._schema.state_key} must be {self._schema.state_dim}D")
         if mode_arr.shape[0] != self._schema.mode_dim:
             raise ValueError(f"{self._schema.mode_key} must be {self._schema.mode_dim}D")
         if action_arr.shape[0] != self._schema.action_dim:
             raise ValueError(f"{self._schema.action_key} must be {self._schema.action_dim}D")
+        if hand_action_arr.shape[0] != self._schema.hand_action_dim:
+            raise ValueError(f"{self._schema.hand_action_key} must be {self._schema.hand_action_dim}D")
         self._dataset.add_frame(
             {
                 self._schema.image_key: image_arr,
                 self._schema.state_key: state_arr,
                 self._schema.mode_key: mode_arr,
                 self._schema.action_key: action_arr,
+                self._schema.hand_action_key: hand_action_arr,
                 "task": str(task),
             }
         )

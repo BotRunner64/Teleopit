@@ -117,7 +117,7 @@ Terminal controls are `R` start episode, `S` save, `D` discard, and `Q`
 shutdown. `STANDING`, `MOCAP`, `ARMS`, and paused mocap can be recorded;
 saved episodes cannot be discarded afterward. The v1 schema records
 `observation.images.d435i_rgb`, `observation.state(68)`,
-`observation.mode(1)`, and `action(36)` at 30 Hz.
+`observation.mode(1)`, `action(36)`, and `action.hand(12)` at 30 Hz.
 
 ## Operator Flow
 

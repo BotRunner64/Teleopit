@@ -13,6 +13,7 @@ from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType
 from teleopit.runtime.arm_mocap import compose_arm_reference, compose_arm_reference_window
 from teleopit.recording.lerobot_v3 import (
     ACTION_KEY,
+    HAND_ACTION_KEY,
     IMAGE_KEY,
     MODE_KEY,
     STATE_KEY,
@@ -23,7 +24,7 @@ from teleopit.recording.lerobot_v3 import (
     modality_sidecar,
 )
 from teleopit.sim2real.mp.ipc import HEALTH_TOPIC, LatestSubscriber, ZmqPublisher
-from teleopit.sim2real.mp.messages import RecordStepPacket, ReferencePacket, SharedFrameDescriptor
+from teleopit.sim2real.mp.messages import HandCommandPacket, RecordStepPacket, ReferencePacket, SharedFrameDescriptor
 from teleopit.sim.reference_timeline import ReferenceSample, ReferenceWindow
 from teleopit.sim2real.mp.runtime import (
     map_recording_key_to_command,
@@ -32,6 +33,7 @@ from teleopit.sim2real.mp.runtime import (
     _LoopTimingReporter,
     _RecordingWorker,
     _RobotControlWorker,
+    _configured_open_hand_pose,
     _human_frame_is_valid,
 )
 from teleopit.sim2real.mp.shm import SharedFrameRingReader, SharedFrameRingWriter
@@ -40,7 +42,7 @@ from teleopit.sim2real.mp.shm import SharedFrameRingReader, SharedFrameRingWrite
 def test_loop_timing_reporter_separates_late_sleep_from_work_overrun(caplog) -> None:
     reporter = _LoopTimingReporter(target_period_s=0.02, log_interval_s=1.0, deadline_miss_tolerance_s=0.001)
 
-    with caplog.at_level(logging.INFO, logger="teleopit.sim2real.mp.runtime"):
+    with caplog.at_level(logging.INFO, logger="teleopit.operator"):
         reporter.record(loop_start_s=0.0, work_elapsed_s=0.0004, cycle_elapsed_s=0.02006, pico_age_s=None)
         reporter.record(loop_start_s=1.0, work_elapsed_s=0.021, cycle_elapsed_s=0.0212, pico_age_s=None)
 
@@ -300,10 +302,39 @@ def test_lerobot_recording_schema_and_modality_sidecar() -> None:
     assert features[STATE_KEY]["shape"] == (68,)
     assert features[MODE_KEY]["shape"] == (1,)
     assert features[ACTION_KEY]["shape"] == (36,)
+    assert features[HAND_ACTION_KEY]["shape"] == (12,)
     assert sidecar["features"][STATE_KEY]["slices"]["joint_pos"] == [0, 29]
     assert sidecar["features"][STATE_KEY]["slices"]["projected_gravity"] == [65, 68]
     assert sidecar["features"][MODE_KEY]["codes"]["pause"] == 3
     assert sidecar["features"][ACTION_KEY]["slices"]["joint_pos"] == [7, 36]
+    assert sidecar["features"][HAND_ACTION_KEY]["slices"]["left_pose"] == [0, 6]
+    assert sidecar["features"][HAND_ACTION_KEY]["slices"]["right_pose"] == [6, 12]
+
+
+def test_configured_open_hand_pose_matches_linkerhand_l6_parser() -> None:
+    left, right = _configured_open_hand_pose(
+        {
+            "hands": {
+                "enabled": True,
+                "driver": "linkerhand_l6",
+                "mode": "gripper",
+                "linkerhand_l6": {
+                    "thumb_yaw_center": 42,
+                    "open_pose": [250, 99, 250, 250, 250, 250],
+                },
+            },
+        }
+    )
+
+    np.testing.assert_allclose(left, np.array([250, 42, 250, 250, 250, 250], dtype=np.float32))
+    np.testing.assert_allclose(right, left)
+
+
+def test_configured_open_hand_pose_defaults_without_enabled_hands() -> None:
+    left, right = _configured_open_hand_pose({})
+
+    np.testing.assert_allclose(left, np.array([250, 10, 250, 250, 250, 250], dtype=np.float32))
+    np.testing.assert_allclose(right, left)
 
 
 def test_record_observation_state_concat_order() -> None:
@@ -676,10 +707,19 @@ def test_recording_worker_start_save_discard_with_fake_adapter() -> None:
             state: np.ndarray,
             mode: np.ndarray,
             action: np.ndarray,
+            hand_action: np.ndarray,
             task: str,
         ) -> None:
             calls.append(f"frame:{task}")
-            frames.append({"image": image.copy(), "state": state.copy(), "mode": mode.copy(), "action": action.copy()})
+            frames.append(
+                {
+                    "image": image.copy(),
+                    "state": state.copy(),
+                    "mode": mode.copy(),
+                    "action": action.copy(),
+                    "hand_action": hand_action.copy(),
+                }
+            )
 
         def save_episode(self) -> None:
             calls.append("save")
@@ -739,6 +779,15 @@ def test_recording_worker_start_save_discard_with_fake_adapter() -> None:
         assert calls == ["start", "discard"]
 
         worker._start_episode()
+        worker._latest_hand_command = HandCommandPacket(
+            timestamp_s=2.05,
+            driver="linkerhand_l6",
+            mode="gripper",
+            active=True,
+            left_pose=np.arange(6, dtype=np.float32),
+            right_pose=np.arange(6, 12, dtype=np.float32),
+            seq=1,
+        )
         desc = writer.write(np.full((2, 2, 3), 5, dtype=np.uint8), timestamp_s=2.1)
         worker._handle_video(desc)
         worker._save_episode()
@@ -748,6 +797,7 @@ def test_recording_worker_start_save_discard_with_fake_adapter() -> None:
         np.testing.assert_allclose(frames[0]["state"], np.arange(68, dtype=np.float32))
         np.testing.assert_allclose(frames[0]["mode"], build_mode_observation("standing"))
         np.testing.assert_allclose(frames[0]["action"], np.arange(36, dtype=np.float32))
+        np.testing.assert_allclose(frames[0]["hand_action"], np.arange(12, dtype=np.float32))
 
         worker._latest_record = RecordStepPacket(
             timestamp_s=3.0,
@@ -766,5 +816,6 @@ def test_recording_worker_start_save_discard_with_fake_adapter() -> None:
         writer.close(unlink=True)
         worker._record_sub.close()
         worker._video_sub.close()
+        worker._hand_command_sub.close()
         worker._command_sub.close()
         worker._frame_reader.close()

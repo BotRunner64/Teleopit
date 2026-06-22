@@ -72,6 +72,17 @@ class RecordStepPacket:
 
 
 @dataclass(frozen=True)
+class HandCommandPacket:
+    timestamp_s: float
+    driver: str
+    mode: str
+    active: bool
+    left_pose: Float64Array
+    right_pose: Float64Array
+    seq: int
+
+
+@dataclass(frozen=True)
 class HealthPacket:
     worker: str
     timestamp_s: float

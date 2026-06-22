@@ -203,6 +203,7 @@ observation.images.d435i_rgb   video [480,640,3] uint8
 observation.state              float32[68]
 observation.mode               float32[1]
 action                         float32[36]
+action.hand                    float32[12]
 ```
 
 `observation.state` 的顺序是 `joint_pos(29)`、`joint_vel(29)`、
@@ -210,3 +211,5 @@ action                         float32[36]
 `observation.mode` 是数值类别：`standing=0`、`mocap=1`、
 `arms=2`、`pause=3`。`action` 是当前 reference qpos：
 `root_pos(3) + root_quat_wxyz(4) + joint_pos(29)`。
+`action.hand` 是手部 worker 最新的 LinkerHand 命令：
+`left_pose(6) + right_pose(6)`，使用 SDK 的 0-255 pose 数值。

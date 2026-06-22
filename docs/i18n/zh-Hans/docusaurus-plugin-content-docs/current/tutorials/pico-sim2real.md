@@ -112,7 +112,7 @@ python scripts/run/run_sim2real.py \
 终端控制为：`R` 开始 episode，`S` 保存，`D` 丢弃，`Q` 关闭。可以录制
 `STANDING`、`MOCAP`、`ARMS` 和暂停状态的 mocap；已经保存的 episode 不支持再丢弃。
 v1 schema 以 30 Hz 记录 `observation.images.d435i_rgb`、`observation.state(68)`、
-`observation.mode(1)` 和 `action(36)`。
+`observation.mode(1)`、`action(36)` 和 `action.hand(12)`。
 
 ## 操作流程
 

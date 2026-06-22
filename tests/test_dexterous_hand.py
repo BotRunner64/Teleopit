@@ -14,6 +14,7 @@ from teleopit.sim2real.hands.linkerhand_l6 import (
     parse_linkerhand_l6_config,
     trigger_to_pose,
 )
+from teleopit.sim2real.hands.base import HandPoseCommand
 from teleopit.sim2real.hands.linkerhand_o6 import (
     CLOSE_POSE as O6_CLOSE_POSE,
     LinkerHandO6Device,
@@ -281,6 +282,58 @@ def test_hand_runtime_closes_device_when_mapper_start_fails() -> None:
         runtime.start()
 
     assert calls == ["connect", "mapper_start", "close"]
+
+
+def test_hand_runtime_reports_actual_open_commands() -> None:
+    calls: list[tuple[str, object, object]] = []
+    open_commands = (
+        HandPoseCommand("left", (250, 10, 250, 250, 250, 250), True, "open"),
+        HandPoseCommand("right", (250, 10, 250, 250, 250, 250), True, "open"),
+    )
+
+    class FakeDevice:
+        def connect(self) -> None:
+            calls.append(("connect", None, None))
+
+        def send_pose(self, side, pose, *, force=False, reason="") -> None:
+            calls.append((side, tuple(pose), reason))
+
+        def open_all(self, *, force=False, reason="") -> None:
+            calls.append(("open_all", force, reason))
+
+        def close(self) -> None:
+            calls.append(("close", None, None))
+
+    class Mapper:
+        def __init__(self) -> None:
+            self.fail = False
+
+        def start(self) -> None:
+            calls.append(("mapper_start", None, None))
+
+        def map(self, *args, **kwargs):
+            if self.fail:
+                raise RuntimeError("tick failed")
+            return (HandPoseCommand("left", (1, 2, 3, 4, 5, 6), False, "mapped"),)
+
+        def close(self) -> None:
+            calls.append(("mapper_close", None, None))
+
+    mapper = Mapper()
+    runtime = HandRuntime(FakeDevice(), mapper, open_commands=open_commands)
+
+    startup = runtime.start()
+    ticked = runtime.tick(controller_snapshot=None, hand_snapshot=None, active=True, now_s=1.0)
+    mapper.fail = True
+    failure = runtime.tick(controller_snapshot=None, hand_snapshot=None, active=True, now_s=2.0)
+    shutdown = runtime.close()
+
+    assert [command.reason for command in startup] == ["startup", "startup"]
+    assert ticked[0].pose == (1, 2, 3, 4, 5, 6)
+    assert [command.reason for command in failure] == ["failure", "failure"]
+    assert [command.reason for command in shutdown] == ["shutdown", "shutdown"]
+    assert ("open_all", True, "failure") in calls
+    assert ("close", None, None) in calls
 
 
 def test_linkerhand_l6_device_wraps_sdk_system_exit_and_cleans_up(monkeypatch) -> None:
