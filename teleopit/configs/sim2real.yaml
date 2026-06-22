@@ -24,10 +24,8 @@ console:
 
 recording:
   enabled: false
-  format: lerobot_v3
-  output_dir: data/lerobot
-  dataset_name: null
-  repo_id: null
+  format: hdf5
+  output_dir: data/recordings/sim2real_hdf5
   task: demo
   fps: 30
   control: terminal

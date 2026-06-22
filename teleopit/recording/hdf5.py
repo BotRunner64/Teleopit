@@ -1,13 +1,14 @@
-"""LeRobot v3 adapter and schema helpers for Teleopit sim2real recording."""
+"""HDF5 recorder and schema helpers for Teleopit sim2real recording."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-import importlib
 import json
 from pathlib import Path
+import time
 from typing import Any
 
+import h5py
 import numpy as np
 
 from teleopit.constants import FULL_QPOS_DIM, NUM_JOINTS
@@ -26,40 +27,14 @@ MODE_DIM = 1
 ACTION_DIM = FULL_QPOS_DIM
 HAND_ACTION_DIM = 12
 DEFAULT_IMAGE_SHAPE = (480, 640, 3)
+HDF5_RECORDING_FORMAT = "teleopit_sim2real_recording_hdf5"
+HDF5_RECORDING_VERSION = 1
 MODE_CODES = {
     "standing": 0,
     "mocap": 1,
     "arms": 2,
     "pause": 3,
 }
-
-
-def _import_lerobot_dataset() -> Any:
-    try:
-        module = importlib.import_module("lerobot.datasets.lerobot_dataset")
-    except ModuleNotFoundError as new_exc:
-        if new_exc.name not in {"lerobot", "lerobot.datasets", "lerobot.datasets.lerobot_dataset"}:
-            raise RuntimeError("Failed to import LeRobotDataset from the current LeRobot API") from new_exc
-        try:
-            module = importlib.import_module("lerobot.common.datasets.lerobot_dataset")
-        except ModuleNotFoundError as old_exc:
-            if old_exc.name not in {
-                "lerobot",
-                "lerobot.common",
-                "lerobot.common.datasets",
-                "lerobot.common.datasets.lerobot_dataset",
-            }:
-                raise RuntimeError("Failed to import LeRobotDataset from the legacy LeRobot API") from old_exc
-            raise RuntimeError(
-                "recording.enabled=true requires a LeRobot version that provides "
-                "LeRobotDataset. Install Teleopit with the recording extra, for example: "
-                "pip install -e '.[recording]'."
-            ) from old_exc
-        except Exception as old_exc:
-            raise RuntimeError("Failed to import LeRobotDataset from the legacy LeRobot API") from old_exc
-    except Exception as new_exc:
-        raise RuntimeError("Failed to import LeRobotDataset from the current LeRobot API") from new_exc
-    return module.LeRobotDataset
 
 
 @dataclass(frozen=True)
@@ -85,42 +60,13 @@ def build_recording_schema(camera_cfg: Any) -> RecordingSchema:
     return RecordingSchema(image_key=key, image_shape=(height, width, 3))
 
 
-def lerobot_features(schema: RecordingSchema) -> dict[str, dict[str, object]]:
+def hdf5_schema(schema: RecordingSchema) -> dict[str, object]:
     return {
-        schema.image_key: {
-            "dtype": "video",
-            "shape": schema.image_shape,
-            "names": ["height", "width", "channel"],
-        },
-        schema.state_key: {
-            "dtype": "float32",
-            "shape": (schema.state_dim,),
-            "names": ["state"],
-        },
-        schema.mode_key: {
-            "dtype": "float32",
-            "shape": (schema.mode_dim,),
-            "names": ["mode"],
-        },
-        schema.action_key: {
-            "dtype": "float32",
-            "shape": (schema.action_dim,),
-            "names": ["action"],
-        },
-        schema.hand_action_key: {
-            "dtype": "float32",
-            "shape": (schema.hand_action_dim,),
-            "names": ["hand_action"],
-        },
-    }
-
-
-def modality_sidecar(schema: RecordingSchema) -> dict[str, object]:
-    return {
-        "version": 1,
+        "format": HDF5_RECORDING_FORMAT,
+        "version": HDF5_RECORDING_VERSION,
         "features": {
             schema.image_key: {
-                "type": "video",
+                "type": "image",
                 "shape": list(schema.image_shape),
                 "dtype": "uint8",
             },
@@ -217,62 +163,59 @@ def build_mode_observation(mode: str) -> np.ndarray:
     return np.array([MODE_CODES[normalized]], dtype=np.float32)
 
 
-class TeleopitLeRobotV3Recorder:
-    """Small adapter around LeRobot v3 dataset writing."""
+class TeleopitHDF5Recorder:
+    """Writes one HDF5 file per saved sim2real recording episode."""
 
     def __init__(
         self,
         *,
-        dataset: Any,
         output_dir: Path,
+        task: str,
+        fps: int,
         schema: RecordingSchema,
     ) -> None:
-        self._dataset = dataset
         self._output_dir = output_dir
+        self._task = str(task)
+        self._fps = int(fps)
         self._schema = schema
         self._active = False
         self._frames_in_episode = 0
+        self._episode_index = 0
+        self._h5: h5py.File | None = None
+        self._tmp_path: Path | None = None
+        self._episode_path: Path | None = None
+        self._datasets: dict[str, h5py.Dataset] = {}
 
     @classmethod
     def create(
         cls,
         *,
         output_dir: str | Path,
-        dataset_name: str | None,
-        repo_id: str | None,
         task: str,
         fps: int,
         schema: RecordingSchema,
-    ) -> "TeleopitLeRobotV3Recorder":
-        LeRobotDataset = _import_lerobot_dataset()
-
+    ) -> "TeleopitHDF5Recorder":
         root = Path(output_dir)
-        root.parent.mkdir(parents=True, exist_ok=True)
-        dataset_repo_id = repo_id or dataset_name or "teleopit/sim2real"
-        features = lerobot_features(schema)
-
-        try:
-            dataset = LeRobotDataset.create(
-                repo_id=dataset_repo_id,
-                fps=int(fps),
-                root=root,
-                features=features,
-                use_videos=True,
-            )
-        except TypeError:
-            dataset = LeRobotDataset.create(
-                repo_id=dataset_repo_id,
-                fps=int(fps),
-                root=root,
-                features=features,
-            )
-        recorder = cls(dataset=dataset, output_dir=root, schema=schema)
-        recorder._write_modality_sidecar()
+        root.mkdir(parents=True, exist_ok=True)
+        recorder = cls(output_dir=root, task=task, fps=fps, schema=schema)
+        recorder._write_schema_sidecar()
         return recorder
 
     def start_episode(self) -> None:
         if self._active:
             raise RuntimeError("Cannot start a new recording episode while one is active")
+        self._episode_index += 1
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        stem = f"episode_{timestamp}_{time.time_ns()}_{self._episode_index:06d}"
+        tmp_dir = self._output_dir / ".tmp"
+        episodes_dir = self._output_dir / "episodes"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        episodes_dir.mkdir(parents=True, exist_ok=True)
+        self._tmp_path = tmp_dir / f"{stem}.h5"
+        self._episode_path = episodes_dir / f"{stem}.h5"
+        self._h5 = h5py.File(self._tmp_path, "w")
+        self._write_episode_header(self._h5)
+        self._datasets = self._create_datasets(self._h5)
         self._active = True
         self._frames_in_episode = 0
 
@@ -286,65 +229,116 @@ class TeleopitLeRobotV3Recorder:
         hand_action: np.ndarray,
         task: str,
     ) -> None:
-        if not self._active:
+        if not self._active or self._h5 is None:
             raise RuntimeError("Cannot add a recording frame without an active episode")
         image_arr = np.asarray(image, dtype=np.uint8)
         if tuple(image_arr.shape) != self._schema.image_shape:
             raise ValueError(f"{self._schema.image_key} frame shape {image_arr.shape} != {self._schema.image_shape}")
-        state_arr = np.asarray(state, dtype=np.float32).reshape(-1)
-        mode_arr = np.asarray(mode, dtype=np.float32).reshape(-1)
-        action_arr = np.asarray(action, dtype=np.float32).reshape(-1)
-        hand_action_arr = np.asarray(hand_action, dtype=np.float32).reshape(-1)
-        if state_arr.shape[0] != self._schema.state_dim:
-            raise ValueError(f"{self._schema.state_key} must be {self._schema.state_dim}D")
-        if mode_arr.shape[0] != self._schema.mode_dim:
-            raise ValueError(f"{self._schema.mode_key} must be {self._schema.mode_dim}D")
-        if action_arr.shape[0] != self._schema.action_dim:
-            raise ValueError(f"{self._schema.action_key} must be {self._schema.action_dim}D")
-        if hand_action_arr.shape[0] != self._schema.hand_action_dim:
-            raise ValueError(f"{self._schema.hand_action_key} must be {self._schema.hand_action_dim}D")
-        self._dataset.add_frame(
-            {
-                self._schema.image_key: image_arr,
-                self._schema.state_key: state_arr,
-                self._schema.mode_key: mode_arr,
-                self._schema.action_key: action_arr,
-                self._schema.hand_action_key: hand_action_arr,
-                "task": str(task),
-            }
-        )
+        state_arr = self._validate_vector(state, self._schema.state_key, self._schema.state_dim)
+        mode_arr = self._validate_vector(mode, self._schema.mode_key, self._schema.mode_dim)
+        action_arr = self._validate_vector(action, self._schema.action_key, self._schema.action_dim)
+        hand_action_arr = self._validate_vector(hand_action, self._schema.hand_action_key, self._schema.hand_action_dim)
+
+        row = self._frames_in_episode
+        for dataset in self._datasets.values():
+            dataset.resize((row + 1, *dataset.shape[1:]))
+        self._datasets[self._schema.image_key][row] = image_arr
+        self._datasets[self._schema.state_key][row] = state_arr
+        self._datasets[self._schema.mode_key][row] = mode_arr
+        self._datasets[self._schema.action_key][row] = action_arr
+        self._datasets[self._schema.hand_action_key][row] = hand_action_arr
         self._frames_in_episode += 1
+        self._h5.attrs["frames"] = self._frames_in_episode
+        self._h5.attrs["task"] = str(task)
 
     def save_episode(self) -> None:
         if not self._active:
             return
-        self._dataset.save_episode()
-        self._active = False
-        self._frames_in_episode = 0
+        tmp_path = self._require_tmp_path()
+        episode_path = self._require_episode_path()
+        self._close_active_file()
+        tmp_path.replace(episode_path)
+        self._reset_episode()
 
     def discard_episode(self) -> None:
         if not self._active:
             return
-        clear = getattr(self._dataset, "clear_episode_buffer", None)
-        if callable(clear):
-            clear()
-        else:
-            buffer_attr = getattr(self._dataset, "episode_buffer", None)
-            if isinstance(buffer_attr, dict):
-                buffer_attr.clear()
-        self._active = False
-        self._frames_in_episode = 0
+        tmp_path = self._tmp_path
+        self._close_active_file()
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink()
+        self._reset_episode()
 
     def finalize(self) -> None:
-        finalize = getattr(self._dataset, "finalize", None)
-        if callable(finalize):
-            finalize()
-            return
-        consolidate = getattr(self._dataset, "consolidate", None)
-        if callable(consolidate):
-            consolidate()
+        if self._active:
+            self.discard_episode()
 
-    def _write_modality_sidecar(self) -> None:
-        path = self._output_dir / "meta" / "modality.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(modality_sidecar(self._schema), indent=2) + "\n", encoding="utf-8")
+    def _write_schema_sidecar(self) -> None:
+        path = self._output_dir / "schema.json"
+        path.write_text(json.dumps(hdf5_schema(self._schema), indent=2) + "\n", encoding="utf-8")
+
+    def _write_episode_header(self, h5: h5py.File) -> None:
+        h5.attrs["format"] = HDF5_RECORDING_FORMAT
+        h5.attrs["version"] = HDF5_RECORDING_VERSION
+        h5.attrs["task"] = self._task
+        h5.attrs["fps"] = self._fps
+        h5.attrs["frames"] = 0
+        h5.attrs["schema_json"] = json.dumps(hdf5_schema(self._schema), sort_keys=True)
+
+    def _create_datasets(self, h5: h5py.File) -> dict[str, h5py.Dataset]:
+        image_shape = self._schema.image_shape
+        return {
+            self._schema.image_key: h5.create_dataset(
+                self._schema.image_key,
+                shape=(0, *image_shape),
+                maxshape=(None, *image_shape),
+                chunks=(1, *image_shape),
+                dtype=np.uint8,
+                compression="lzf",
+            ),
+            self._schema.state_key: self._create_vector_dataset(h5, self._schema.state_key, self._schema.state_dim),
+            self._schema.mode_key: self._create_vector_dataset(h5, self._schema.mode_key, self._schema.mode_dim),
+            self._schema.action_key: self._create_vector_dataset(h5, self._schema.action_key, self._schema.action_dim),
+            self._schema.hand_action_key: self._create_vector_dataset(
+                h5, self._schema.hand_action_key, self._schema.hand_action_dim
+            ),
+        }
+
+    @staticmethod
+    def _create_vector_dataset(h5: h5py.File, key: str, dim: int) -> h5py.Dataset:
+        return h5.create_dataset(
+            key,
+            shape=(0, dim),
+            maxshape=(None, dim),
+            chunks=(1024, dim),
+            dtype=np.float32,
+        )
+
+    @staticmethod
+    def _validate_vector(value: object, key: str, dim: int) -> np.ndarray:
+        arr = np.asarray(value, dtype=np.float32).reshape(-1)
+        if arr.shape[0] != dim:
+            raise ValueError(f"{key} must be {dim}D")
+        return arr
+
+    def _close_active_file(self) -> None:
+        if self._h5 is not None:
+            self._h5.close()
+        self._h5 = None
+        self._datasets = {}
+
+    def _reset_episode(self) -> None:
+        self._active = False
+        self._frames_in_episode = 0
+        self._tmp_path = None
+        self._episode_path = None
+
+    def _require_tmp_path(self) -> Path:
+        if self._tmp_path is None:
+            raise RuntimeError("recording episode has no temporary path")
+        return self._tmp_path
+
+    def _require_episode_path(self) -> Path:
+        if self._episode_path is None:
+            raise RuntimeError("recording episode has no output path")
+        return self._episode_path

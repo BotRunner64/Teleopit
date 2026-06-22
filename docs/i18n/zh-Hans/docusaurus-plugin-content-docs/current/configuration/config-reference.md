@@ -171,7 +171,7 @@ Teleopit 会先将 Pico 手部状态转成 21 个 landmarks，再只通过 someh
 | `hands.somehand.temporal_filter_alpha` | somehand 输入 landmarks 平滑 alpha；`1.0` 表示关闭平滑延时 | `1.0` |
 | `hands.somehand.output_alpha` | somehand qpos 输出平滑 alpha；`1.0` 表示关闭平滑延时 | `1.0` |
 
-### LeRobot 录制（Pico sim2real）
+### HDF5 录制（Pico sim2real）
 
 `recording.enabled=true` 只支持 `input.provider=pico4`、
 `input.video.enabled=true`、`input.video.source=realsense`，并且需要交互式终端。
@@ -183,28 +183,31 @@ Teleopit 会先将 Pico 手部状态转成 21 个 landmarks，再只通过 someh
 
 | 字段 | 说明 | 默认值 |
 |---|---|---|
-| `recording.enabled` | 启用手动 LeRobot v3 录制 | `false` |
-| `recording.output_dir` | 数据集根目录 | `data/lerobot` |
-| `recording.repo_id` / `dataset_name` | LeRobot 数据集标识 | `null` |
+| `recording.enabled` | 启用手动 HDF5 录制 | `false` |
+| `recording.output_dir` | 数据集根目录 | `data/recordings/sim2real_hdf5` |
 | `recording.task` | 写入 frame 的任务字符串 | `demo` |
 | `recording.fps` | 录制/视频主时钟频率 | `30` |
 | `recording.min_episode_seconds` | 保存时短于该时长的 episode 会被丢弃 | `1.0` |
 | `recording.record_modes` | 允许开始录制和写帧的模式 | `[standing, mocap, arms, pause]` |
-| `recording.camera.key` | LeRobot 视频 feature key | `observation.images.d435i_rgb` |
+| `recording.camera.key` | RGB 图像数据集 key | `observation.images.d435i_rgb` |
 | `recording.camera.width` / `height` / `fps` | RealSense RGB 采集设置 | `640` / `480` / `30` |
 | `recording.camera.device` | 可选 RealSense 序列号 | `null` |
 
 相机失败时的行为由 `input.video.fail_on_error` 控制。
 
-LeRobot features：
+HDF5 datasets：
 
 ```text
-observation.images.d435i_rgb   video [480,640,3] uint8
+observation.images.d435i_rgb   uint8[N,480,640,3]
 observation.state              float32[68]
 observation.mode               float32[1]
 action                         float32[36]
 action.hand                    float32[12]
 ```
+
+每个保存的 episode 都是 `recording.output_dir/episodes/` 下的独立 `.h5`
+文件。根属性包含 Teleopit HDF5 recording format、schema version、task、fps
+和 frame count。
 
 `observation.state` 的顺序是 `joint_pos(29)`、`joint_vel(29)`、
 `base_quat_wxyz(4)`、`base_ang_vel(3)` 和 `projected_gravity(3)`。

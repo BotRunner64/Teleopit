@@ -5,23 +5,24 @@ import logging
 from pathlib import Path
 from types import SimpleNamespace
 
+import h5py
 import numpy as np
 import pytest
 
 from teleopit.runtime.mocap_session import MocapSessionState
 from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType
 from teleopit.runtime.arm_mocap import compose_arm_reference, compose_arm_reference_window
-from teleopit.recording.lerobot_v3 import (
+from teleopit.recording.hdf5 import (
     ACTION_KEY,
     HAND_ACTION_KEY,
+    HDF5_RECORDING_FORMAT,
     IMAGE_KEY,
     MODE_KEY,
     STATE_KEY,
     build_mode_observation,
     build_observation_state,
     build_recording_schema,
-    lerobot_features,
-    modality_sidecar,
+    hdf5_schema,
 )
 from teleopit.sim2real.mp.ipc import HEALTH_TOPIC, LatestSubscriber, ZmqPublisher
 from teleopit.sim2real.mp.messages import HandCommandPacket, RecordStepPacket, ReferencePacket, SharedFrameDescriptor
@@ -293,22 +294,61 @@ def test_recording_key_mapping() -> None:
     assert map_recording_key_to_command("x") is None
 
 
-def test_lerobot_recording_schema_and_modality_sidecar() -> None:
+def test_hdf5_recording_schema() -> None:
     schema = build_recording_schema({"width": 640, "height": 480, "key": IMAGE_KEY})
-    features = lerobot_features(schema)
-    sidecar = modality_sidecar(schema)
+    sidecar = hdf5_schema(schema)
+    features = sidecar["features"]
 
-    assert features[IMAGE_KEY]["shape"] == (480, 640, 3)
-    assert features[STATE_KEY]["shape"] == (68,)
-    assert features[MODE_KEY]["shape"] == (1,)
-    assert features[ACTION_KEY]["shape"] == (36,)
-    assert features[HAND_ACTION_KEY]["shape"] == (12,)
+    assert sidecar["format"] == HDF5_RECORDING_FORMAT
+    assert features[IMAGE_KEY]["shape"] == [480, 640, 3]
+    assert features[STATE_KEY]["shape"] == [68]
+    assert features[MODE_KEY]["shape"] == [1]
+    assert features[ACTION_KEY]["shape"] == [36]
+    assert features[HAND_ACTION_KEY]["shape"] == [12]
     assert sidecar["features"][STATE_KEY]["slices"]["joint_pos"] == [0, 29]
     assert sidecar["features"][STATE_KEY]["slices"]["projected_gravity"] == [65, 68]
     assert sidecar["features"][MODE_KEY]["codes"]["pause"] == 3
     assert sidecar["features"][ACTION_KEY]["slices"]["joint_pos"] == [7, 36]
     assert sidecar["features"][HAND_ACTION_KEY]["slices"]["left_pose"] == [0, 6]
     assert sidecar["features"][HAND_ACTION_KEY]["slices"]["right_pose"] == [6, 12]
+
+
+def test_hdf5_recorder_writes_episode_file(tmp_path: Path) -> None:
+    from teleopit.recording.hdf5 import TeleopitHDF5Recorder
+
+    schema = build_recording_schema({"width": 2, "height": 2, "key": IMAGE_KEY})
+    recorder = TeleopitHDF5Recorder.create(output_dir=tmp_path, task="walk", fps=30, schema=schema)
+
+    recorder.start_episode()
+    recorder.add_frame(
+        image=np.full((2, 2, 3), 7, dtype=np.uint8),
+        state=np.arange(68, dtype=np.float32),
+        mode=build_mode_observation("mocap"),
+        action=np.arange(36, dtype=np.float32),
+        hand_action=np.arange(12, dtype=np.float32),
+        task="walk",
+    )
+    recorder.save_episode()
+    recorder.finalize()
+
+    episodes = sorted((tmp_path / "episodes").glob("*.h5"))
+    assert len(episodes) == 1
+    assert (tmp_path / "schema.json").exists()
+    assert not list((tmp_path / ".tmp").glob("*.h5"))
+
+    with h5py.File(episodes[0], "r") as h5:
+        assert h5.attrs["format"] == HDF5_RECORDING_FORMAT
+        assert h5.attrs["version"] == 1
+        assert h5.attrs["task"] == "walk"
+        assert h5.attrs["fps"] == 30
+        assert h5.attrs["frames"] == 1
+        assert h5[IMAGE_KEY].shape == (1, 2, 2, 3)
+        assert h5[STATE_KEY].shape == (1, 68)
+        assert h5[MODE_KEY].shape == (1, 1)
+        assert h5[ACTION_KEY].shape == (1, 36)
+        assert h5[HAND_ACTION_KEY].shape == (1, 12)
+        np.testing.assert_array_equal(h5[IMAGE_KEY][0], np.full((2, 2, 3), 7, dtype=np.uint8))
+        np.testing.assert_allclose(h5[HAND_ACTION_KEY][0], np.arange(12, dtype=np.float32))
 
 
 def test_configured_open_hand_pose_matches_linkerhand_l6_parser() -> None:

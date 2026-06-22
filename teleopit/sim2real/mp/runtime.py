@@ -6,7 +6,6 @@ import logging
 import multiprocessing as mp
 from multiprocessing.synchronize import Event as MpEvent
 from enum import Enum
-import importlib.util
 from pathlib import Path
 import sys
 import time
@@ -43,7 +42,7 @@ from teleopit.runtime.arm_mocap import (
 from teleopit.runtime.mocap_session import MocapSessionManager, MocapSessionState
 from teleopit.runtime.reference_config import parse_reference_config
 from teleopit.runtime.terminal_keyboard import TerminalKeyboardReader
-from teleopit.recording.lerobot_v3 import (
+from teleopit.recording.hdf5 import (
     build_mode_observation,
     build_observation_state,
     normalize_hand_action,
@@ -316,13 +315,13 @@ def _validate_new_runtime_config(cfg: Any) -> None:
         if provider != "pico4":
             raise ValueError("recording.enabled=true requires input.provider=pico4")
         rec_cfg = _recording_cfg(cfg)
-        if str(cfg_get(rec_cfg, "format", "lerobot_v3")) != "lerobot_v3":
-            raise ValueError("Only recording.format=lerobot_v3 is supported")
+        if str(cfg_get(rec_cfg, "format", "hdf5")) != "hdf5":
+            raise ValueError("Only recording.format=hdf5 is supported")
         if str(cfg_get(rec_cfg, "control", "terminal")) != "terminal":
             raise ValueError("Only recording.control=terminal is supported")
         camera_cfg = _recording_camera_cfg(cfg)
         if not bool(cfg_get(camera_cfg, "enabled", True)):
-            raise ValueError("recording.camera.enabled=false is not supported for LeRobot recording")
+            raise ValueError("recording.camera.enabled=false is not supported for HDF5 recording")
         if str(cfg_get(camera_cfg, "source", "realsense")).lower() != "realsense":
             raise ValueError("recording.camera.source must be realsense")
         if int(cfg_get(rec_cfg, "fps", 30)) != int(cfg_get(camera_cfg, "fps", 30)):
@@ -346,17 +345,12 @@ def _validate_new_runtime_config(cfg: Any) -> None:
 
 
 def _require_recording_dependencies() -> None:
-    if importlib.util.find_spec("lerobot") is None:
-        raise RuntimeError(
-            "recording.enabled=true requires the recording dependencies and LeRobot v3 adapter. "
-            "Install Teleopit with: pip install -e '.[recording]'."
-        )
     try:
-        from teleopit.recording.lerobot_v3 import TeleopitLeRobotV3Recorder
+        from teleopit.recording.hdf5 import TeleopitHDF5Recorder
 
-        TeleopitLeRobotV3Recorder.create
+        TeleopitHDF5Recorder.create
     except Exception as exc:
-        raise RuntimeError("LeRobot v3 recording adapter is unavailable") from exc
+        raise RuntimeError("HDF5 recording adapter is unavailable") from exc
 
 
 def _worker_loop(name: str, cfg: dict[str, Any], fn: Callable[[], None]) -> None:
@@ -1746,17 +1740,15 @@ class _RecordingWorker:
         self._episode_started_s = 0.0
         self._episode_frames = 0
 
-        from teleopit.recording.lerobot_v3 import (
-            TeleopitLeRobotV3Recorder,
+        from teleopit.recording.hdf5 import (
+            TeleopitHDF5Recorder,
             build_recording_schema,
         )
 
         self._schema = build_recording_schema(self.camera_cfg)
-        factory = recorder_factory or TeleopitLeRobotV3Recorder.create
+        factory = recorder_factory or TeleopitHDF5Recorder.create
         self._recorder = factory(
-            output_dir=cfg_get(self.rec_cfg, "output_dir", "data/lerobot"),
-            dataset_name=cfg_get(self.rec_cfg, "dataset_name", None),
-            repo_id=cfg_get(self.rec_cfg, "repo_id", None),
+            output_dir=cfg_get(self.rec_cfg, "output_dir", "data/recordings/sim2real_hdf5"),
             task=self.task,
             fps=self.fps,
             schema=self._schema,

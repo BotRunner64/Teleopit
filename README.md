@@ -84,9 +84,9 @@ python train_mimic/scripts/data/build_dataset.py \
     --spec data/pico_motion/pico_recorded.yaml --force
 ```
 
-## Sim2Real LeRobot Recording
+## Sim2Real HDF5 Recording
 
-Pico sim2real can also record manual LeRobot v3 episodes from the real G1:
+Pico sim2real can also record manual HDF5 episodes from the real G1:
 
 ```bash
 pip install -e '.[recording]'
@@ -96,8 +96,9 @@ python scripts/run/run_sim2real.py --config-name sim2real_record \
 ```
 
 Recording uses the terminal controls `R` start, `S` save, `D` discard, and `Q`
-shutdown. `STANDING`, `MOCAP`, `ARMS`, and paused mocap can be recorded. The
-dataset schema is `observation.images.d435i_rgb` video at 30 Hz,
+shutdown. `STANDING`, `MOCAP`, `ARMS`, and paused mocap can be recorded. Saved
+episodes are written as `.h5` files under `data/recordings/sim2real_hdf5/episodes/`.
+The dataset schema is `observation.images.d435i_rgb` RGB frames at 30 Hz,
 `observation.state(68)`, `observation.mode(1)`, `action(36)` as the aligned
 reference qpos sent to the policy path, and `action.hand(12)` as the latest
 LinkerHand left/right 6D pose commands.
@@ -113,7 +114,7 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 - Added Pico sim2real `ARMS` mode: Pico/controller `B` toggles between whole-body `MOCAP` and stand-pose body/legs with live retargeted arms.
 - Bumped Pico input support to pico-bridge 0.2.1 and its corrected tracking pose semantics.
 - Added optional LinkerHand L6 sim2real modes under `hands.*`: `gripper` from Pico grip/trigger and `vr_hand_pose` from Pico hand pose through somehand 0.2.0 public API.
-- Added manual Pico sim2real LeRobot v3 recording with RealSense D435i RGB video, 68D robot state, mode labels, 36D reference-qpos action labels, and 12D LinkerHand pose action labels.
+- Added manual Pico sim2real HDF5 recording with RealSense D435i RGB video, 68D robot state, mode labels, 36D reference-qpos action labels, and 12D LinkerHand pose action labels.
 - Added LinkerHand O6 support for Pico `gripper` mode with an O6-specific grasp pose.
 - Set LinkerHand L6 `vr_hand_pose` control to maximum speed while keeping `gripper` at the configured default speed.
 - Switched default `vr_hand_pose` to a low-latency somehand path with 60 Hz hand retargeting and reduced smoothing.

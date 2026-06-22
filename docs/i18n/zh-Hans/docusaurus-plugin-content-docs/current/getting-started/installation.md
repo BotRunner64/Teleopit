@@ -79,8 +79,8 @@ scripts/setup/download_somehand_l6_assets.sh
 pip install -e '.[recording]'
 ```
 
-该配置包含 Pico sim2real 栈，以及 `sim2real_record.yaml` 使用的 LeRobot、
-RealSense 和视频编码依赖。
+该配置包含 Pico sim2real 栈，以及 `sim2real_record.yaml` 使用的 RealSense
+和视频依赖。
 
 ## 验证安装
 

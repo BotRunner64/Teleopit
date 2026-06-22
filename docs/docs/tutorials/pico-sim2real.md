@@ -95,7 +95,7 @@ python scripts/run/run_sim2real.py \
     real_robot.network_interface=eth0
 ```
 
-## Optional LeRobot Recording
+## Optional HDF5 Recording
 
 Install the recording extra on the machine that owns Pico input and RealSense:
 
@@ -115,7 +115,8 @@ python scripts/run/run_sim2real.py \
 
 Terminal controls are `R` start episode, `S` save, `D` discard, and `Q`
 shutdown. `STANDING`, `MOCAP`, `ARMS`, and paused mocap can be recorded;
-saved episodes cannot be discarded afterward. The v1 schema records
+saved episodes cannot be discarded afterward. Episodes are saved as `.h5` files
+under `data/recordings/sim2real_hdf5/episodes/`. The v1 schema records
 `observation.images.d435i_rgb`, `observation.state(68)`,
 `observation.mode(1)`, `action(36)`, and `action.hand(12)` at 30 Hz.
 

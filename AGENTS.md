@@ -146,7 +146,7 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - `ARMS` entering/exiting/resume resets policy/reference alignment and uses Kp ramp; offline BVH sim2real does not use `ARMS`, and Unitree remote `B` remains BVH replay
 - Realtime mode switches and pause/resume use a retargeter-preserving soft reset: policy/reference state, smoothers, and reference alignment are reset, while the GMR IK warm-start is retained
 - Optional LinkerHand control uses `hands.enabled=true`, `hands.driver=linkerhand_l6|linkerhand_o6`, and `hands.mode=gripper|vr_hand_pose`; default is disabled
-- Optional Pico sim2real LeRobot v3 recording uses `--config-name sim2real_record` or `recording.enabled=true`; it requires `input.provider=pico4`, `input.video.enabled=true`, `input.video.source=realsense`, an interactive terminal, and the `recording` extra
+- Optional Pico sim2real HDF5 recording uses `--config-name sim2real_record` or `recording.enabled=true`; it requires `input.provider=pico4`, `input.video.enabled=true`, `input.video.source=realsense`, an interactive terminal, and the `recording` extra
 - Recording is manual only: terminal `R` starts an episode, `S` saves, `D` discards the active episode, and `Q` shuts down; `STANDING`, `MOCAP`, `ARMS`, and paused mocap are recordable
 - Recording captures `observation.images.d435i_rgb` RealSense RGB video at 30Hz plus `observation.state(68)`, `observation.mode(1)`, `action(36)`, and `action.hand(12)`; RealSense capture lives in `pico_input` through the normal `input.video` path
 - `gripper` mode reuses `Pico4InputProvider.get_controller_snapshot()` for Pico grip/trigger open-close control and supports LinkerHand L6 and O6

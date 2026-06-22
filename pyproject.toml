@@ -55,8 +55,6 @@ pico4 = [
 ]
 recording = [
     "teleopit[pico4]",
-    "lerobot",
-    "pyrealsense2",
     "opencv-python",
     "imageio[ffmpeg]",
 ]

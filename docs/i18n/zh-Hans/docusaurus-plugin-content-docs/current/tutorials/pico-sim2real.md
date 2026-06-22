@@ -91,7 +91,7 @@ python scripts/run/run_sim2real.py \
     real_robot.network_interface=eth0
 ```
 
-## 可选 LeRobot 录制
+## 可选 HDF5 录制
 
 在负责 Pico 输入和 RealSense 的机器上安装 recording extra：
 
@@ -111,6 +111,7 @@ python scripts/run/run_sim2real.py \
 
 终端控制为：`R` 开始 episode，`S` 保存，`D` 丢弃，`Q` 关闭。可以录制
 `STANDING`、`MOCAP`、`ARMS` 和暂停状态的 mocap；已经保存的 episode 不支持再丢弃。
+episode 会保存为 `data/recordings/sim2real_hdf5/episodes/` 下的 `.h5` 文件。
 v1 schema 以 30 Hz 记录 `observation.images.d435i_rgb`、`observation.state(68)`、
 `observation.mode(1)`、`action(36)` 和 `action.hand(12)`。
 

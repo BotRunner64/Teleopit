@@ -79,8 +79,8 @@ These packages are only required when `hands.enabled=true`.
 pip install -e '.[recording]'
 ```
 
-Adds the Pico sim2real stack plus LeRobot, RealSense, and video encoding
-dependencies used by `sim2real_record.yaml`.
+Adds the Pico sim2real stack plus RealSense and video dependencies used by
+`sim2real_record.yaml`.
 
 ## Verify Installation
 

@@ -152,7 +152,7 @@ calling somehand 0.2.0 through `somehand.api` only.
 | `hands.somehand.temporal_filter_alpha` | somehand input landmark smoothing alpha; `1.0` disables smoothing delay | `1.0` |
 | `hands.somehand.output_alpha` | somehand qpos output smoothing alpha; `1.0` disables smoothing delay | `1.0` |
 
-### LeRobot Recording (Pico sim2real)
+### HDF5 Recording (Pico sim2real)
 
 `recording.enabled=true` is supported only with `input.provider=pico4`,
 `input.video.enabled=true`, `input.video.source=realsense`, and an interactive
@@ -166,28 +166,31 @@ same frames produced by `pico_input`.
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `recording.enabled` | Enable manual LeRobot v3 recording | `false` |
-| `recording.output_dir` | Dataset root directory | `data/lerobot` |
-| `recording.repo_id` / `dataset_name` | LeRobot dataset identity | `null` |
+| `recording.enabled` | Enable manual HDF5 recording | `false` |
+| `recording.output_dir` | Dataset root directory | `data/recordings/sim2real_hdf5` |
 | `recording.task` | Task string stored with frames | `demo` |
 | `recording.fps` | Recording/video clock rate | `30` |
 | `recording.min_episode_seconds` | Discard saved episodes shorter than this duration | `1.0` |
 | `recording.record_modes` | Modes that allow recording start and frame writes | `[standing, mocap, arms, pause]` |
-| `recording.camera.key` | LeRobot video feature key | `observation.images.d435i_rgb` |
+| `recording.camera.key` | RGB image dataset key | `observation.images.d435i_rgb` |
 | `recording.camera.width` / `height` / `fps` | RealSense RGB capture settings | `640` / `480` / `30` |
 | `recording.camera.device` | Optional RealSense serial | `null` |
 
 Camera failure behavior is controlled by `input.video.fail_on_error`.
 
-LeRobot features:
+HDF5 datasets:
 
 ```text
-observation.images.d435i_rgb   video [480,640,3] uint8
+observation.images.d435i_rgb   uint8[N,480,640,3]
 observation.state              float32[68]
 observation.mode               float32[1]
 action                         float32[36]
 action.hand                    float32[12]
 ```
+
+Each saved episode is a standalone `.h5` file under
+`recording.output_dir/episodes/`. The root attributes include the Teleopit HDF5
+recording format, schema version, task, fps, and frame count.
 
 `observation.state` is ordered as `joint_pos(29)`, `joint_vel(29)`,
 `base_quat_wxyz(4)`, `base_ang_vel(3)`, and `projected_gravity(3)`.
