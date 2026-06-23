@@ -79,8 +79,14 @@ scripts/setup/download_somehand_l6_assets.sh
 pip install -e '.[recording]'
 ```
 
-该配置包含 Pico sim2real 栈，以及 `sim2real_record.yaml` 使用的 RealSense
-和视频依赖。
+该配置包含 Pico sim2real 栈，以及 `sim2real_record.yaml` 使用的视频依赖。
+RealSense Python 绑定与平台相关；使用 `input.video.source=realsense` 时，
+需要在当前环境中手动安装 `pyrealsense2`。在 Arm 机器上，请使用
+conda-forge，而不是 pip 包：
+
+```bash
+conda install -c conda-forge pyrealsense2
+```
 
 ## 验证安装
 

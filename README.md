@@ -90,6 +90,9 @@ Pico sim2real can also record manual HDF5 episodes from the real G1:
 
 ```bash
 pip install -e '.[recording]'
+# If you use RealSense video, install pyrealsense2 manually for your platform.
+# On Arm machines, prefer conda-forge:
+# conda install -c conda-forge pyrealsense2
 python scripts/run/run_sim2real.py --config-name sim2real_record \
     controller.policy_path=track.onnx \
     recording.task="walk forward"

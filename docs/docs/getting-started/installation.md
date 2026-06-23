@@ -79,8 +79,15 @@ These packages are only required when `hands.enabled=true`.
 pip install -e '.[recording]'
 ```
 
-Adds the Pico sim2real stack plus RealSense and video dependencies used by
-`sim2real_record.yaml`.
+Adds the Pico sim2real stack plus the video dependencies used by
+`sim2real_record.yaml`. RealSense Python bindings are platform-specific: install
+`pyrealsense2` manually in the active environment when using
+`input.video.source=realsense`. On Arm machines, use conda-forge rather than the
+pip package:
+
+```bash
+conda install -c conda-forge pyrealsense2
+```
 
 ## Verify Installation
 
