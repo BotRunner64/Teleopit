@@ -40,6 +40,10 @@ recording:
     height: 480
     fps: 30
     device: null
+  video:
+    codec: libx264
+    quality: 8
+    pixelformat: yuv420p
 
 runtime:
   host: 127.0.0.1

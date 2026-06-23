@@ -98,7 +98,9 @@ python scripts/run/run_sim2real.py --config-name sim2real_record \
 Recording uses the terminal controls `R` start, `S` save, `D` discard, and `Q`
 shutdown. `STANDING`, `MOCAP`, `ARMS`, and paused mocap can be recorded. Saved
 episodes are written as `.h5` files under `data/recordings/sim2real_hdf5/episodes/`.
-The dataset schema is `observation.images.d435i_rgb` RGB frames at 30 Hz,
+`sim2real_record.yaml` stores camera frames as compressed MP4 sidecar files under
+`data/recordings/sim2real_hdf5/videos/` and keeps `frame_index` / `timestamp`
+sync metadata in the HDF5 episode. The low-dimensional HDF5 schema records
 `observation.state(68)`, `observation.mode(1)`, `action(36)` as the aligned
 reference qpos sent to the policy path, and `action.hand(12)` as the latest
 LinkerHand left/right 6D pose commands.

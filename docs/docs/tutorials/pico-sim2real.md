@@ -116,8 +116,9 @@ python scripts/run/run_sim2real.py \
 Terminal controls are `R` start episode, `S` save, `D` discard, and `Q`
 shutdown. `STANDING`, `MOCAP`, `ARMS`, and paused mocap can be recorded;
 saved episodes cannot be discarded afterward. Episodes are saved as `.h5` files
-under `data/recordings/sim2real_hdf5/episodes/`. The v1 schema records
-`observation.images.d435i_rgb`, `observation.state(68)`,
+under `data/recordings/sim2real_hdf5/episodes/`, with compressed MP4 sidecar
+videos under `data/recordings/sim2real_hdf5/videos/`. The HDF5 episode stores
+`frame_index` and `timestamp` sync arrays plus `observation.state(68)`,
 `observation.mode(1)`, `action(36)`, and `action.hand(12)` at 30 Hz.
 
 ## Operator Flow

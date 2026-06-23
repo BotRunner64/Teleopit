@@ -149,6 +149,7 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - Optional Pico sim2real HDF5 recording uses `--config-name sim2real_record` or `recording.enabled=true`; it requires `input.provider=pico4`, `input.video.enabled=true`, `input.video.source=realsense`, an interactive terminal, and the `recording` extra
 - Recording is manual only: terminal `R` starts an episode, `S` saves, `D` discards the active episode, and `Q` shuts down; `STANDING`, `MOCAP`, `ARMS`, and paused mocap are recordable
 - Recording captures `observation.images.d435i_rgb` RealSense RGB video at 30Hz plus `observation.state(68)`, `observation.mode(1)`, `action(36)`, and `action.hand(12)`; RealSense capture lives in `pico_input` through the normal `input.video` path
+- HDF5 recording writes compressed MP4 sidecar videos under `recording.output_dir/videos/<camera_key>/` while HDF5 episodes store `frame_index`, `timestamp`, low-dimensional data, and video sync attributes; raw RGB image datasets are not supported
 - `gripper` mode reuses `Pico4InputProvider.get_controller_snapshot()` for Pico grip/trigger open-close control and supports LinkerHand L6 and O6
 - `vr_hand_pose` mode reuses `Pico4InputProvider.get_hand_snapshot()` and somehand 0.2.0 public `somehand.api` for continuous Pico hand-pose retargeting; do not start a second `PicoBridge` for hand control
 - Teleopit owns Pico 26-joint hand-state to 21-landmark conversion; do not import `somehand.pico_input`

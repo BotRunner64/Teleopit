@@ -111,9 +111,11 @@ python scripts/run/run_sim2real.py \
 
 终端控制为：`R` 开始 episode，`S` 保存，`D` 丢弃，`Q` 关闭。可以录制
 `STANDING`、`MOCAP`、`ARMS` 和暂停状态的 mocap；已经保存的 episode 不支持再丢弃。
-episode 会保存为 `data/recordings/sim2real_hdf5/episodes/` 下的 `.h5` 文件。
-v1 schema 以 30 Hz 记录 `observation.images.d435i_rgb`、`observation.state(68)`、
-`observation.mode(1)`、`action(36)` 和 `action.hand(12)`。
+episode 会保存为 `data/recordings/sim2real_hdf5/episodes/` 下的 `.h5` 文件，
+压缩 MP4 sidecar 视频保存在 `data/recordings/sim2real_hdf5/videos/` 下。
+HDF5 episode 以 30 Hz 保存 `frame_index` 和 `timestamp` 同步数组，以及
+`observation.state(68)`、`observation.mode(1)`、`action(36)` 和
+`action.hand(12)`。
 
 ## 操作流程
 

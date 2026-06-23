@@ -175,22 +175,30 @@ same frames produced by `pico_input`.
 | `recording.camera.key` | RGB image dataset key | `observation.images.d435i_rgb` |
 | `recording.camera.width` / `height` / `fps` | RealSense RGB capture settings | `640` / `480` / `30` |
 | `recording.camera.device` | Optional RealSense serial | `null` |
+| `recording.video.codec` / `quality` / `pixelformat` | MP4 sidecar encoder settings | `libx264` / `8` / `yuv420p` |
 
 Camera failure behavior is controlled by `input.video.fail_on_error`.
+
+Each saved episode has one `.h5` file under `recording.output_dir/episodes/`
+and one compressed MP4 sidecar under
+`recording.output_dir/videos/<camera_key>/`. The HDF5 episode stores
+`frame_index` and `timestamp` arrays, plus `video_path`, `video_fps`, and
+`video_frames` root attributes for synchronization. Raw RGB image datasets are
+not written.
 
 HDF5 datasets:
 
 ```text
-observation.images.d435i_rgb   uint8[N,480,640,3]
+frame_index                    int64[N]
+timestamp                      float64[N]
 observation.state              float32[68]
 observation.mode               float32[1]
 action                         float32[36]
 action.hand                    float32[12]
 ```
 
-Each saved episode is a standalone `.h5` file under
-`recording.output_dir/episodes/`. The root attributes include the Teleopit HDF5
-recording format, schema version, task, fps, and frame count.
+The root attributes include the Teleopit HDF5 recording format, schema version,
+task, fps, frame count, and video sync metadata.
 
 `observation.state` is ordered as `joint_pos(29)`, `joint_vel(29)`,
 `base_quat_wxyz(4)`, `base_ang_vel(3)`, and `projected_gravity(3)`.

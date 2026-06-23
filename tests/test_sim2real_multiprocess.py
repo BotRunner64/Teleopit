@@ -14,11 +14,13 @@ from teleopit.inputs.realtime_packet import ControlEvent, ControlEventType
 from teleopit.runtime.arm_mocap import compose_arm_reference, compose_arm_reference_window
 from teleopit.recording.hdf5 import (
     ACTION_KEY,
+    FRAME_INDEX_KEY,
     HAND_ACTION_KEY,
     HDF5_RECORDING_FORMAT,
     IMAGE_KEY,
     MODE_KEY,
     STATE_KEY,
+    TIMESTAMP_KEY,
     build_mode_observation,
     build_observation_state,
     build_recording_schema,
@@ -300,7 +302,11 @@ def test_hdf5_recording_schema() -> None:
     features = sidecar["features"]
 
     assert sidecar["format"] == HDF5_RECORDING_FORMAT
+    assert features[IMAGE_KEY]["type"] == "video"
+    assert features[IMAGE_KEY]["format"] == "mp4"
     assert features[IMAGE_KEY]["shape"] == [480, 640, 3]
+    assert features[FRAME_INDEX_KEY]["dtype"] == "int64"
+    assert features[TIMESTAMP_KEY]["dtype"] == "float64"
     assert features[STATE_KEY]["shape"] == [68]
     assert features[MODE_KEY]["shape"] == [1]
     assert features[ACTION_KEY]["shape"] == [36]
@@ -313,26 +319,36 @@ def test_hdf5_recording_schema() -> None:
     assert sidecar["features"][HAND_ACTION_KEY]["slices"]["right_pose"] == [6, 12]
 
 
-def test_hdf5_recorder_writes_episode_file(tmp_path: Path) -> None:
-    from teleopit.recording.hdf5 import TeleopitHDF5Recorder
+def test_hdf5_recorder_mp4_sidecar_writes_sync_metadata(tmp_path: Path) -> None:
+    from teleopit.recording.hdf5 import MP4VideoConfig, TeleopitHDF5Recorder
 
     schema = build_recording_schema({"width": 2, "height": 2, "key": IMAGE_KEY})
-    recorder = TeleopitHDF5Recorder.create(output_dir=tmp_path, task="walk", fps=30, schema=schema)
+    recorder = TeleopitHDF5Recorder.create(
+        output_dir=tmp_path,
+        task="walk",
+        fps=30,
+        schema=schema,
+        video_config=MP4VideoConfig(quality=5),
+    )
 
     recorder.start_episode()
-    recorder.add_frame(
-        image=np.full((2, 2, 3), 7, dtype=np.uint8),
-        state=np.arange(68, dtype=np.float32),
-        mode=build_mode_observation("mocap"),
-        action=np.arange(36, dtype=np.float32),
-        hand_action=np.arange(12, dtype=np.float32),
-        task="walk",
-    )
+    for idx in range(2):
+        recorder.add_frame(
+            image=np.full((2, 2, 3), idx * 64, dtype=np.uint8),
+            state=np.arange(68, dtype=np.float32),
+            mode=build_mode_observation("mocap"),
+            action=np.arange(36, dtype=np.float32),
+            hand_action=np.arange(12, dtype=np.float32),
+            task="walk",
+        )
     recorder.save_episode()
     recorder.finalize()
 
     episodes = sorted((tmp_path / "episodes").glob("*.h5"))
+    videos = sorted((tmp_path / "videos" / "observation.images.d435i_rgb").glob("*.mp4"))
     assert len(episodes) == 1
+    assert len(videos) == 1
+    assert videos[0].stat().st_size > 0
     assert (tmp_path / "schema.json").exists()
     assert not list((tmp_path / ".tmp").glob("*.h5"))
 
@@ -341,14 +357,65 @@ def test_hdf5_recorder_writes_episode_file(tmp_path: Path) -> None:
         assert h5.attrs["version"] == 1
         assert h5.attrs["task"] == "walk"
         assert h5.attrs["fps"] == 30
-        assert h5.attrs["frames"] == 1
-        assert h5[IMAGE_KEY].shape == (1, 2, 2, 3)
-        assert h5[STATE_KEY].shape == (1, 68)
-        assert h5[MODE_KEY].shape == (1, 1)
-        assert h5[ACTION_KEY].shape == (1, 36)
-        assert h5[HAND_ACTION_KEY].shape == (1, 12)
-        np.testing.assert_array_equal(h5[IMAGE_KEY][0], np.full((2, 2, 3), 7, dtype=np.uint8))
-        np.testing.assert_allclose(h5[HAND_ACTION_KEY][0], np.arange(12, dtype=np.float32))
+        assert h5.attrs["frames"] == 2
+        assert h5.attrs["video_path"] == videos[0].relative_to(tmp_path).as_posix()
+        assert h5.attrs["video_key"] == IMAGE_KEY
+        assert h5.attrs["video_frames"] == 2
+        assert h5.attrs["video_fps"] == 30
+        assert IMAGE_KEY not in h5
+        assert h5[FRAME_INDEX_KEY].shape == (2,)
+        assert h5[TIMESTAMP_KEY].shape == (2,)
+        np.testing.assert_array_equal(h5[FRAME_INDEX_KEY][...], np.array([0, 1], dtype=np.int64))
+        np.testing.assert_allclose(h5[TIMESTAMP_KEY][...], np.array([0.0, 1.0 / 30.0], dtype=np.float64))
+        assert h5[STATE_KEY].shape == (2, 68)
+        assert h5[MODE_KEY].shape == (2, 1)
+        assert h5[ACTION_KEY].shape == (2, 36)
+        assert h5[HAND_ACTION_KEY].shape == (2, 12)
+
+
+def test_hdf5_recorder_cleans_partial_episode_when_video_writer_fails(tmp_path: Path) -> None:
+    from teleopit.recording.hdf5 import TeleopitHDF5Recorder
+
+    class FailingVideoRecorder(TeleopitHDF5Recorder):
+        def _create_video_writer(self, path: Path) -> object:
+            path.write_bytes(b"partial")
+            raise RuntimeError("writer failed")
+
+    schema = build_recording_schema({"width": 2, "height": 2, "key": IMAGE_KEY})
+    recorder = FailingVideoRecorder.create(output_dir=tmp_path, task="walk", fps=30, schema=schema)
+
+    with pytest.raises(RuntimeError, match="writer failed"):
+        recorder.start_episode()
+
+    recorder.finalize()
+    assert not list((tmp_path / ".tmp").glob("*.h5"))
+    assert not list((tmp_path / ".tmp" / "videos" / "observation.images.d435i_rgb").glob("*.mp4"))
+    assert not list((tmp_path / "episodes").glob("*.h5"))
+    assert not list((tmp_path / "videos" / "observation.images.d435i_rgb").glob("*.mp4"))
+
+
+def test_hdf5_recorder_keeps_startup_error_when_partial_cleanup_fails(tmp_path: Path) -> None:
+    from teleopit.recording.hdf5 import TeleopitHDF5Recorder
+
+    class BrokenWriter:
+        def close(self) -> None:
+            raise RuntimeError("cleanup failed")
+
+    class FailingDatasetRecorder(TeleopitHDF5Recorder):
+        def _create_video_writer(self, path: Path) -> object:
+            return BrokenWriter()
+
+        def _create_datasets(self, h5: h5py.File) -> dict[str, h5py.Dataset]:
+            raise RuntimeError("startup failed")
+
+    schema = build_recording_schema({"width": 2, "height": 2, "key": IMAGE_KEY})
+    recorder = FailingDatasetRecorder.create(output_dir=tmp_path, task="walk", fps=30, schema=schema)
+
+    with pytest.raises(RuntimeError, match="startup failed"):
+        recorder.start_episode()
+
+    recorder.finalize()
+    assert not list((tmp_path / ".tmp").glob("*.h5"))
 
 
 def test_configured_open_hand_pose_matches_linkerhand_l6_parser() -> None:

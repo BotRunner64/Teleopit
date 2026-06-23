@@ -192,22 +192,29 @@ Teleopit 会先将 Pico 手部状态转成 21 个 landmarks，再只通过 someh
 | `recording.camera.key` | RGB 图像数据集 key | `observation.images.d435i_rgb` |
 | `recording.camera.width` / `height` / `fps` | RealSense RGB 采集设置 | `640` / `480` / `30` |
 | `recording.camera.device` | 可选 RealSense 序列号 | `null` |
+| `recording.video.codec` / `quality` / `pixelformat` | MP4 sidecar 编码设置 | `libx264` / `8` / `yuv420p` |
 
 相机失败时的行为由 `input.video.fail_on_error` 控制。
+
+每个保存的 episode 会在 `recording.output_dir/episodes/` 下写入一个 `.h5`
+文件，并在 `recording.output_dir/videos/<camera_key>/` 下写入一个压缩 MP4
+sidecar。HDF5 episode 保存 `frame_index` 和 `timestamp` 数组，并在根属性中
+记录 `video_path`、`video_fps` 和 `video_frames` 用于同步。录制不会写入原始
+RGB 图像 dataset。
 
 HDF5 datasets：
 
 ```text
-observation.images.d435i_rgb   uint8[N,480,640,3]
+frame_index                    int64[N]
+timestamp                      float64[N]
 observation.state              float32[68]
 observation.mode               float32[1]
 action                         float32[36]
 action.hand                    float32[12]
 ```
 
-每个保存的 episode 都是 `recording.output_dir/episodes/` 下的独立 `.h5`
-文件。根属性包含 Teleopit HDF5 recording format、schema version、task、fps
-和 frame count。
+根属性包含 Teleopit HDF5 recording format、schema version、task、fps、
+frame count 和视频同步元数据。
 
 `observation.state` 的顺序是 `joint_pos(29)`、`joint_vel(29)`、
 `base_quat_wxyz(4)`、`base_ang_vel(3)` 和 `projected_gravity(3)`。

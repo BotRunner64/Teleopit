@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 from pathlib import Path
+import re
 import time
 from typing import Any
 
@@ -17,11 +19,15 @@ from teleopit.math_utils import quat_inv_np
 from teleopit.runtime.common import cfg_get
 
 
+logger = logging.getLogger(__name__)
+
 IMAGE_KEY = "observation.images.d435i_rgb"
 STATE_KEY = "observation.state"
 MODE_KEY = "observation.mode"
 ACTION_KEY = "action"
 HAND_ACTION_KEY = "action.hand"
+FRAME_INDEX_KEY = "frame_index"
+TIMESTAMP_KEY = "timestamp"
 STATE_DIM = 68
 MODE_DIM = 1
 ACTION_DIM = FULL_QPOS_DIM
@@ -51,6 +57,13 @@ class RecordingSchema:
     hand_action_dim: int = HAND_ACTION_DIM
 
 
+@dataclass(frozen=True)
+class MP4VideoConfig:
+    codec: str = "libx264"
+    quality: int = 8
+    pixelformat: str = "yuv420p"
+
+
 def build_recording_schema(camera_cfg: Any) -> RecordingSchema:
     key = str(cfg_get(camera_cfg, "key", IMAGE_KEY))
     width = int(cfg_get(camera_cfg, "width", DEFAULT_IMAGE_SHAPE[1]))
@@ -60,15 +73,48 @@ def build_recording_schema(camera_cfg: Any) -> RecordingSchema:
     return RecordingSchema(image_key=key, image_shape=(height, width, 3))
 
 
-def hdf5_schema(schema: RecordingSchema) -> dict[str, object]:
+def build_mp4_video_config(video_cfg: Any) -> MP4VideoConfig:
+    quality = int(cfg_get(video_cfg, "quality", 8))
+    if quality < 0 or quality > 10:
+        raise ValueError("recording.video.quality must be in [0, 10]")
+    return MP4VideoConfig(
+        codec=str(cfg_get(video_cfg, "codec", "libx264")),
+        quality=quality,
+        pixelformat=str(cfg_get(video_cfg, "pixelformat", "yuv420p")),
+    )
+
+
+def hdf5_schema(
+    schema: RecordingSchema,
+    *,
+    video_config: MP4VideoConfig | None = None,
+) -> dict[str, object]:
+    video_cfg = video_config or MP4VideoConfig()
     return {
         "format": HDF5_RECORDING_FORMAT,
         "version": HDF5_RECORDING_VERSION,
         "features": {
             schema.image_key: {
-                "type": "image",
+                "type": "video",
+                "format": "mp4",
+                "codec": video_cfg.codec,
                 "shape": list(schema.image_shape),
                 "dtype": "uint8",
+                "sync": {
+                    "frame_index": FRAME_INDEX_KEY,
+                    "timestamp": TIMESTAMP_KEY,
+                },
+            },
+            FRAME_INDEX_KEY: {
+                "type": "index",
+                "shape": [],
+                "dtype": "int64",
+            },
+            TIMESTAMP_KEY: {
+                "type": "timestamp",
+                "shape": [],
+                "dtype": "float64",
+                "units": "seconds",
             },
             schema.state_key: {
                 "type": "low_dim",
@@ -173,17 +219,23 @@ class TeleopitHDF5Recorder:
         task: str,
         fps: int,
         schema: RecordingSchema,
+        video_config: MP4VideoConfig | None = None,
     ) -> None:
         self._output_dir = output_dir
         self._task = str(task)
         self._fps = int(fps)
         self._schema = schema
+        self._video_config = video_config or MP4VideoConfig()
         self._active = False
         self._frames_in_episode = 0
         self._episode_index = 0
         self._h5: h5py.File | None = None
         self._tmp_path: Path | None = None
         self._episode_path: Path | None = None
+        self._tmp_video_path: Path | None = None
+        self._episode_video_path: Path | None = None
+        self._video_rel_path: str | None = None
+        self._video_writer: Any | None = None
         self._datasets: dict[str, h5py.Dataset] = {}
 
     @classmethod
@@ -194,10 +246,17 @@ class TeleopitHDF5Recorder:
         task: str,
         fps: int,
         schema: RecordingSchema,
+        video_config: MP4VideoConfig | None = None,
     ) -> "TeleopitHDF5Recorder":
         root = Path(output_dir)
         root.mkdir(parents=True, exist_ok=True)
-        recorder = cls(output_dir=root, task=task, fps=fps, schema=schema)
+        recorder = cls(
+            output_dir=root,
+            task=task,
+            fps=fps,
+            schema=schema,
+            video_config=video_config,
+        )
         recorder._write_schema_sidecar()
         return recorder
 
@@ -214,10 +273,22 @@ class TeleopitHDF5Recorder:
         self._tmp_path = tmp_dir / f"{stem}.h5"
         self._episode_path = episodes_dir / f"{stem}.h5"
         self._h5 = h5py.File(self._tmp_path, "w")
-        self._write_episode_header(self._h5)
-        self._datasets = self._create_datasets(self._h5)
-        self._active = True
-        self._frames_in_episode = 0
+        video_dir = self._output_dir / "videos" / _safe_path_component(self._schema.image_key)
+        tmp_video_dir = tmp_dir / "videos" / _safe_path_component(self._schema.image_key)
+        video_dir.mkdir(parents=True, exist_ok=True)
+        tmp_video_dir.mkdir(parents=True, exist_ok=True)
+        self._tmp_video_path = tmp_video_dir / f"{stem}.mp4"
+        self._episode_video_path = video_dir / f"{stem}.mp4"
+        self._video_rel_path = self._episode_video_path.relative_to(self._output_dir).as_posix()
+        try:
+            self._video_writer = self._create_video_writer(self._tmp_video_path)
+            self._write_episode_header(self._h5)
+            self._datasets = self._create_datasets(self._h5)
+            self._active = True
+            self._frames_in_episode = 0
+        except Exception:
+            self._cleanup_partial_episode()
+            raise
 
     def add_frame(
         self,
@@ -242,7 +313,11 @@ class TeleopitHDF5Recorder:
         row = self._frames_in_episode
         for dataset in self._datasets.values():
             dataset.resize((row + 1, *dataset.shape[1:]))
-        self._datasets[self._schema.image_key][row] = image_arr
+        if self._video_writer is None:
+            raise RuntimeError("MP4 recording writer is not open")
+        self._video_writer.append_data(image_arr)
+        self._datasets[FRAME_INDEX_KEY][row] = row
+        self._datasets[TIMESTAMP_KEY][row] = float(row) / float(self._fps)
         self._datasets[self._schema.state_key][row] = state_arr
         self._datasets[self._schema.mode_key][row] = mode_arr
         self._datasets[self._schema.action_key][row] = action_arr
@@ -256,7 +331,12 @@ class TeleopitHDF5Recorder:
             return
         tmp_path = self._require_tmp_path()
         episode_path = self._require_episode_path()
-        self._close_active_file()
+        tmp_video_path = self._tmp_video_path
+        episode_video_path = self._episode_video_path
+        self._close_active_outputs()
+        if tmp_video_path is None or episode_video_path is None:
+            raise RuntimeError("recording episode has no video output path")
+        tmp_video_path.replace(episode_video_path)
         tmp_path.replace(episode_path)
         self._reset_episode()
 
@@ -264,9 +344,12 @@ class TeleopitHDF5Recorder:
         if not self._active:
             return
         tmp_path = self._tmp_path
-        self._close_active_file()
+        tmp_video_path = self._tmp_video_path
+        self._close_active_outputs()
         if tmp_path is not None and tmp_path.exists():
             tmp_path.unlink()
+        if tmp_video_path is not None and tmp_video_path.exists():
+            tmp_video_path.unlink()
         self._reset_episode()
 
     def finalize(self) -> None:
@@ -275,7 +358,7 @@ class TeleopitHDF5Recorder:
 
     def _write_schema_sidecar(self) -> None:
         path = self._output_dir / "schema.json"
-        path.write_text(json.dumps(hdf5_schema(self._schema), indent=2) + "\n", encoding="utf-8")
+        path.write_text(json.dumps(self._schema_dict(), indent=2) + "\n", encoding="utf-8")
 
     def _write_episode_header(self, h5: h5py.File) -> None:
         h5.attrs["format"] = HDF5_RECORDING_FORMAT
@@ -283,18 +366,32 @@ class TeleopitHDF5Recorder:
         h5.attrs["task"] = self._task
         h5.attrs["fps"] = self._fps
         h5.attrs["frames"] = 0
-        h5.attrs["schema_json"] = json.dumps(hdf5_schema(self._schema), sort_keys=True)
+        h5.attrs["schema_json"] = json.dumps(self._schema_dict(), sort_keys=True)
+        h5.attrs["video_key"] = self._schema.image_key
+        h5.attrs["video_path"] = self._video_rel_path or ""
+        h5.attrs["video_format"] = "mp4"
+        h5.attrs["video_codec"] = self._video_config.codec
+        h5.attrs["video_pixelformat"] = self._video_config.pixelformat
+        h5.attrs["video_fps"] = self._fps
+        h5.attrs["video_frames"] = 0
+        h5.attrs["video_from_timestamp_s"] = 0.0
+        h5.attrs["video_to_timestamp_s"] = 0.0
 
     def _create_datasets(self, h5: h5py.File) -> dict[str, h5py.Dataset]:
-        image_shape = self._schema.image_shape
         return {
-            self._schema.image_key: h5.create_dataset(
-                self._schema.image_key,
-                shape=(0, *image_shape),
-                maxshape=(None, *image_shape),
-                chunks=(1, *image_shape),
-                dtype=np.uint8,
-                compression="lzf",
+            FRAME_INDEX_KEY: h5.create_dataset(
+                FRAME_INDEX_KEY,
+                shape=(0,),
+                maxshape=(None,),
+                chunks=(1024,),
+                dtype=np.int64,
+            ),
+            TIMESTAMP_KEY: h5.create_dataset(
+                TIMESTAMP_KEY,
+                shape=(0,),
+                maxshape=(None,),
+                chunks=(1024,),
+                dtype=np.float64,
             ),
             self._schema.state_key: self._create_vector_dataset(h5, self._schema.state_key, self._schema.state_dim),
             self._schema.mode_key: self._create_vector_dataset(h5, self._schema.mode_key, self._schema.mode_dim),
@@ -321,8 +418,38 @@ class TeleopitHDF5Recorder:
             raise ValueError(f"{key} must be {dim}D")
         return arr
 
-    def _close_active_file(self) -> None:
+    def _schema_dict(self) -> dict[str, object]:
+        return hdf5_schema(
+            self._schema,
+            video_config=self._video_config,
+        )
+
+    def _create_video_writer(self, path: Path) -> Any:
+        try:
+            import imageio.v2 as imageio
+        except Exception as exc:
+            raise RuntimeError("MP4 recording requires imageio[ffmpeg]") from exc
+        return imageio.get_writer(
+            str(path),
+            fps=self._fps,
+            codec=self._video_config.codec,
+            quality=self._video_config.quality,
+            macro_block_size=1,
+            pixelformat=self._video_config.pixelformat,
+        )
+
+    def _close_active_outputs(self) -> None:
+        if self._video_writer is not None:
+            self._video_writer.close()
+            self._video_writer = None
         if self._h5 is not None:
+            self._h5.attrs["video_frames"] = self._frames_in_episode
+            self._h5.attrs["video_to_timestamp_s"] = (
+                float(max(self._frames_in_episode - 1, 0)) / float(self._fps)
+                if self._frames_in_episode > 0
+                else 0.0
+            )
+            self._h5.attrs["video_path"] = self._video_rel_path or ""
             self._h5.close()
         self._h5 = None
         self._datasets = {}
@@ -332,6 +459,38 @@ class TeleopitHDF5Recorder:
         self._frames_in_episode = 0
         self._tmp_path = None
         self._episode_path = None
+        self._tmp_video_path = None
+        self._episode_video_path = None
+        self._video_rel_path = None
+        self._video_writer = None
+
+    def _cleanup_partial_episode(self) -> None:
+        if self._video_writer is not None:
+            try:
+                self._video_writer.close()
+            except Exception:
+                logger.exception("Failed to close partial MP4 recording writer")
+            self._video_writer = None
+        if self._h5 is not None:
+            try:
+                self._h5.close()
+            except Exception:
+                logger.exception("Failed to close partial HDF5 recording file")
+            self._h5 = None
+        tmp_path = self._tmp_path
+        tmp_video_path = self._tmp_video_path
+        if tmp_path is not None and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                logger.exception("Failed to remove partial HDF5 recording file: %s", tmp_path)
+        if tmp_video_path is not None and tmp_video_path.exists():
+            try:
+                tmp_video_path.unlink()
+            except Exception:
+                logger.exception("Failed to remove partial MP4 recording file: %s", tmp_video_path)
+        self._datasets = {}
+        self._reset_episode()
 
     def _require_tmp_path(self) -> Path:
         if self._tmp_path is None:
@@ -342,3 +501,8 @@ class TeleopitHDF5Recorder:
         if self._episode_path is None:
             raise RuntimeError("recording episode has no output path")
         return self._episode_path
+
+
+def _safe_path_component(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._")
+    return safe or "camera"

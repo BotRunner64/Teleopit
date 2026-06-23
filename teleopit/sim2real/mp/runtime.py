@@ -44,6 +44,7 @@ from teleopit.runtime.reference_config import parse_reference_config
 from teleopit.runtime.terminal_keyboard import TerminalKeyboardReader
 from teleopit.recording.hdf5 import (
     build_mode_observation,
+    build_mp4_video_config,
     build_observation_state,
     normalize_hand_action,
     normalize_action_reference_qpos,
@@ -319,6 +320,7 @@ def _validate_new_runtime_config(cfg: Any) -> None:
             raise ValueError("Only recording.format=hdf5 is supported")
         if str(cfg_get(rec_cfg, "control", "terminal")) != "terminal":
             raise ValueError("Only recording.control=terminal is supported")
+        build_mp4_video_config(cfg_get(rec_cfg, "video", {}) or {})
         camera_cfg = _recording_camera_cfg(cfg)
         if not bool(cfg_get(camera_cfg, "enabled", True)):
             raise ValueError("recording.camera.enabled=false is not supported for HDF5 recording")
@@ -1746,12 +1748,14 @@ class _RecordingWorker:
         )
 
         self._schema = build_recording_schema(self.camera_cfg)
+        self._video_config = build_mp4_video_config(cfg_get(self.rec_cfg, "video", {}) or {})
         factory = recorder_factory or TeleopitHDF5Recorder.create
         self._recorder = factory(
             output_dir=cfg_get(self.rec_cfg, "output_dir", "data/recordings/sim2real_hdf5"),
             task=self.task,
             fps=self.fps,
             schema=self._schema,
+            video_config=self._video_config,
         )
 
     def run(self) -> None:
