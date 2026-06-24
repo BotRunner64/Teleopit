@@ -6,6 +6,7 @@ from typing import Dict, Any, Tuple
 import numpy as np
 from teleopit.retargeting.gmr.utils.lafan_vendor.extract import read_bvh
 from teleopit.retargeting.gmr.utils.lafan_vendor import utils
+from teleopit.retargeting.gmr.utils.xsens_vendor.BVHParser import BVHParser, Anim
 from scipy.spatial.transform import Rotation as R
 
 
@@ -117,6 +118,9 @@ def process_single_bvh_frame(
 
 
 def _load_bvh_file(bvh_file: str, format: str = "lafan1"):
+    if format == "xsens":
+        return _load_xsens_bvh_file(bvh_file)
+
     data = read_bvh(bvh_file)
     bone_names = list(data.bones)
     bone_parents = np.array(data.parents, dtype=np.int32)
@@ -180,6 +184,44 @@ def _load_bvh_file(bvh_file: str, format: str = "lafan1"):
         fps = 30
 
     return frames, human_height, fps, bone_names, bone_parents
+
+
+def _load_xsens_bvh_file(bvh_file: str):
+    parser = BVHParser(axis_order="zxy", scale=0.01)
+    with open(bvh_file, "r") as f:
+        bvh_text = f.read()
+
+    rotations, positions = parser.parse(bvh_text, reset_to_zero=True)
+    quats, processed_positions, offsets, parents = parser._MOTION_data_post_processing(
+        rotations,
+        positions,
+        reset_to_zero=True,
+    )
+    anim = Anim(quats, processed_positions, offsets, parents, parser.names)
+    global_quats, global_pos = utils.quat_fk(anim.quats, anim.pos, anim.parents)
+
+    frames = []
+    for frame in range(anim.pos.shape[0]):
+        result = {}
+        for i, bone in enumerate(anim.bones):
+            result[bone] = (global_pos[frame, i], global_quats[frame, i])
+
+        result["LeftFootMod"] = (np.array(result["LeftAnkle"][0], copy=True), result["LeftAnkle"][1])
+        result["RightFootMod"] = (np.array(result["RightAnkle"][0], copy=True), result["RightAnkle"][1])
+        frames.append(result)
+
+    if not frames:
+        raise ValueError(f"No frames parsed from xsens BVH input: {bvh_file}")
+
+    frame_time = float(parser.frame_time)
+    fps = int(round(1.0 / frame_time)) if frame_time > 0.0 else 60
+    last_frame = frames[-1]
+    human_height = float(
+        last_frame["Head_end_site"][0][2]
+        - min(last_frame["LeftToe_end_site"][0][2], last_frame["RightToe_end_site"][0][2])
+    )
+
+    return frames, human_height, fps, list(anim.bones), np.array(anim.parents, dtype=np.int32)
 
 
 class BVHInputProvider:
