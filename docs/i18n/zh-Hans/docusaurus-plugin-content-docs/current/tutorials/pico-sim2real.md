@@ -176,7 +176,7 @@ Pico sim2real 可以用 Pico 输入控制 LinkerHand：
   速度设为最大值。默认配置使用 60 Hz 的低延时 somehand 路径并减少平滑，所以响应会更快，
   但可能比标准 somehand 设置更抖。
 
-手控在 `MOCAP` 和 `ARMS` 中生效；在 `STANDING`、`DAMPING`、mocap 暂停和退出时都会发送张开姿态。
+`hands.enabled=true` 时，手控会在所有 sim2real 模式中保持生效。退出和手控运行时失败会发送配置的张开姿态。
 
 如果主 Pico profile 没有包含手控支持，先安装本地手控包：
 
@@ -296,5 +296,5 @@ input.video.enabled=true
 | 无法进入 debug mode | Unitree mode 释放失败 | 停止其他机器人模式后再次按 `Start` |
 | 机器人进入 `STANDING` 但不进入 `MOCAP` | 动捕验证失败 | 保持追踪稳定，查看 `mocap_switch.check_frames` 日志 |
 | Pico 暂停没有返回 `STANDING` | 这是预期行为 | Pico 暂停只冻结 mocap；按遥控器 `X` 返回 `STANDING` |
-| LinkerHand 不动 | `hands.enabled=false`、不在 `MOCAP`、gripper deadman 未按住、SDK/资产未安装，或 CAN 通道错误 | 设置 `hands.enabled=true` 和 `hands.mode`，进入 `MOCAP`，运行 `scripts/dev/test_linkerhand_l6.py`，并检查所选 driver 的 `left_can` / `right_can` |
+| LinkerHand 不动 | `hands.enabled=false`、gripper deadman 未按住、SDK/资产未安装，或 CAN 通道错误 | 设置 `hands.enabled=true` 和 `hands.mode`，运行 `scripts/dev/test_linkerhand_l6.py`，并检查所选 driver 的 `left_can` / `right_can` |
 | 视频预览不可用 | RealSense 或视频源失败 | 检查相机权限、`input.video.source` 和日志 |

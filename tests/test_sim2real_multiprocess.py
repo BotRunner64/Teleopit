@@ -27,7 +27,7 @@ from teleopit.recording.hdf5 import (
     hdf5_schema,
 )
 from teleopit.sim2real.mp.ipc import HEALTH_TOPIC, LatestSubscriber, ZmqPublisher
-from teleopit.sim2real.mp.messages import HandCommandPacket, RecordStepPacket, ReferencePacket, SharedFrameDescriptor
+from teleopit.sim2real.mp.messages import HandCommandPacket, ModeStatePacket, RecordStepPacket, ReferencePacket, SharedFrameDescriptor
 from teleopit.sim.reference_timeline import ReferenceSample, ReferenceWindow
 from teleopit.sim2real.mp.runtime import (
     map_recording_key_to_command,
@@ -37,6 +37,7 @@ from teleopit.sim2real.mp.runtime import (
     _RecordingWorker,
     _RobotControlWorker,
     _configured_open_hand_pose,
+    _hand_worker_active_for_mode,
     _human_frame_is_valid,
 )
 from teleopit.sim2real.mp.shm import SharedFrameRingReader, SharedFrameRingWriter
@@ -727,6 +728,53 @@ def test_robot_worker_mode_state_marks_arms_as_mocap_active() -> None:
     assert packet.mode == "arms"
     assert packet.mocap_active is True
     assert packet.mocap_paused is False
+
+
+@pytest.mark.parametrize(
+    ("mode", "mocap_active", "mocap_paused"),
+    [
+        ("standing", False, False),
+        ("mocap", True, False),
+        ("arms", True, False),
+        ("mocap", False, True),
+        ("arms", False, True),
+        ("damping", False, False),
+    ],
+)
+def test_hand_worker_stays_active_in_all_modes(mode: str, mocap_active: bool, mocap_paused: bool) -> None:
+    packet = ModeStatePacket(
+        mode=mode,
+        mocap_active=mocap_active,
+        mocap_paused=mocap_paused,
+        timestamp_s=1.0,
+        seq=1,
+    )
+
+    assert _hand_worker_active_for_mode(packet) is True
+
+
+def test_hand_worker_active_state_only_updates_from_mode_packets() -> None:
+    active = False
+    mode_packet = None
+    if isinstance(mode_packet, ModeStatePacket):
+        active = _hand_worker_active_for_mode(mode_packet)
+    assert active is False
+
+    mode_packet = ModeStatePacket(
+        mode="standing",
+        mocap_active=False,
+        mocap_paused=False,
+        timestamp_s=1.0,
+        seq=1,
+    )
+    if isinstance(mode_packet, ModeStatePacket):
+        active = _hand_worker_active_for_mode(mode_packet)
+    assert active is True
+
+    mode_packet = None
+    if isinstance(mode_packet, ModeStatePacket):
+        active = _hand_worker_active_for_mode(mode_packet)
+    assert active is True
 
 
 def test_robot_worker_publish_record_step() -> None:

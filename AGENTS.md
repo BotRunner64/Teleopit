@@ -156,7 +156,7 @@ target_dof_pos = clip(action, -10, 10) × action_scale + default_dof_pos
 - LinkerHand O6 supports only `hands.mode=gripper`; its default `close_pose` is `[86, 73, 118, 111, 110, 111]`
 - L6 `gripper` mode uses the configured `hands.linkerhand_l6.speed` (default `[50]*6`); O6 `gripper` mode uses `hands.linkerhand_o6.speed` (default `[255]*6`); `vr_hand_pose` always sets LinkerHand L6 speed to `[255]*6`
 - `vr_hand_pose` defaults to a low-latency somehand path: `hands.somehand.rate_hz=60`, `max_iterations=12`, `temporal_filter_alpha=1.0`, and `output_alpha=1.0`; this prioritizes response speed over smoothing
-- LinkerHand control is active in sim2real `MOCAP` and `ARMS`; `STANDING`, `DAMPING`, mocap pause, and shutdown must send the configured open pose
+- LinkerHand control is active in all sim2real modes when `hands.enabled=true`; shutdown and hand-runtime failure must send the configured open pose
 - In `vr_hand_pose` mode, missing/inactive hand pose holds the last commanded pose for that side instead of opening the hand
 
 ### SimulationLoop Runtime Behavior

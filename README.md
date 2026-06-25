@@ -123,6 +123,7 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 - Added LinkerHand O6 support for Pico `gripper` mode with an O6-specific grasp pose.
 - Set LinkerHand L6 `vr_hand_pose` control to maximum speed while keeping `gripper` at the configured default speed.
 - Switched default `vr_hand_pose` to a low-latency somehand path with 60 Hz hand retargeting and reduced smoothing.
+- LinkerHand sim2real control remains active across all sim2real modes after the runtime mode state is initialized.
 - Realtime mode switches and pause/resume now preserve GMR IK warm-starts instead of cold-starting the retargeter on each transition.
 - Added an interactive Pico motion recorder that saves retargeted G1 motion clips as training-ready NPZ files.
 - Switched dataset build outputs to recursive minimal HDF5 shards with no train/val split or manifest; `precompute_dataset.py` turns them into separate precomputed training datasets before training.

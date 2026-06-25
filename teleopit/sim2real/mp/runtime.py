@@ -1908,6 +1908,11 @@ class _HandSnapshotProxy:
         return self.controller_snapshot
 
 
+def _hand_worker_active_for_mode(mode_packet: ModeStatePacket) -> bool:
+    del mode_packet
+    return True
+
+
 def _run_hand_worker(
     cfg: dict[str, Any],
     endpoints: Sim2RealIpcEndpoints,
@@ -1982,7 +1987,7 @@ def _run_hand_worker(
                     proxy.controller_snapshot = controller_packet.snapshot
                 mode_packet = mode_sub.recv_latest()
                 if isinstance(mode_packet, ModeStatePacket):
-                    active = bool(mode_packet.mocap_active)
+                    active = _hand_worker_active_for_mode(mode_packet)
                 try:
                     now_s = time.monotonic()
                     commands = runtime.tick(

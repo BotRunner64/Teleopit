@@ -186,8 +186,8 @@ Pico sim2real can drive LinkerHand hands from Pico input:
   and the public `somehand.api` from somehand 0.2.0. It always sets L6 speed to
   the maximum.
 
-Hand control is active in `MOCAP` and `ARMS`. It sends the open pose in
-`STANDING`, `DAMPING`, paused mocap, and shutdown.
+When `hands.enabled=true`, hand control remains active in all sim2real modes.
+Shutdown and hand-runtime failure send the configured open pose.
 
 Install the local hand-control packages first if they were not installed with
 the main Pico profile:
@@ -309,5 +309,5 @@ input.video.enabled=true
 | Cannot enter debug mode | Unitree mode release failed | Stop other robot modes and press `Start` again |
 | Robot enters `STANDING` but not `MOCAP` | Mocap validation failed | Keep tracking active and stable; check `mocap_switch.check_frames` logs |
 | Pico pause does not return to `STANDING` | Expected behavior | Pico pause freezes mocap; press remote `X` for `STANDING` |
-| LinkerHand does not move | `hands.enabled=false`, not in `MOCAP`, gripper deadman released, SDK/assets not installed, or CAN channel wrong | Enable `hands.enabled`, enter `MOCAP`, run `scripts/dev/test_linkerhand_l6.py`, and check the selected driver's `left_can` / `right_can` |
+| LinkerHand does not move | `hands.enabled=false`, gripper deadman released, SDK/assets not installed, or CAN channel wrong | Enable `hands.enabled`, set `hands.mode`, run `scripts/dev/test_linkerhand_l6.py`, and check the selected driver's `left_can` / `right_can` |
 | Video preview is unavailable | RealSense or video source failed | Check camera permissions, `input.video.source`, and logs |

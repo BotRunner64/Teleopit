@@ -143,8 +143,7 @@ MuJoCo 窗口显示重定向参考；`sim2sim`、`mocap`、`camera` 和 `all`
 ### 灵巧手（Pico sim2real）
 
 `hands.enabled=true` 要求 `input.provider=pico4`，并以本地 editable 方式安装
-`third_party/linkerhand-python-sdk` 和 `third_party/somehand`。控制在 `MOCAP`
-和 `ARMS` 中生效；非活动模式会发送张开姿态。
+`third_party/linkerhand-python-sdk` 和 `third_party/somehand`。启用后，手控会在所有 sim2real 模式中保持生效。
 `gripper` 支持 `linkerhand_l6` 和 `linkerhand_o6`，会用 Pico trigger 在配置的张开和闭合姿态之间插值。
 `vr_hand_pose` 只支持 L6：手部 pose 消失时，对应侧会保持上一条命令；L6 速度会设为最大值；
 Teleopit 会先将 Pico 手部状态转成 21 个 landmarks，再只通过 somehand 0.2.0 公开的 `somehand.api` 调用。
