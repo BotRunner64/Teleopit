@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Convert PKL motion files to NPZ format for mjlab MotionCommand.
+"""Convert PKL motion files to per-clip NPZ format for dataset building.
 
 Reads retargeted PKL files (IsaacGym convention) and converts them to the NPZ
-format expected by mjlab's MotionLoader.
+clip format consumed by the HDF5 dataset builder.
 
 PKL fields:
     fps          : int scalar
@@ -23,7 +23,7 @@ NPZ fields (30 bodies in mjlab G1 robot body order):
     body_names   : list[str]  30 body names in mjlab G1 robot order
 
 IMPORTANT: NPZ body ordering must match mjlab G1 robot body ordering because
-mjlab's MotionLoader uses robot body indices to index into body_pos_w.
+the dataset builder preserves this order for HDF5 training shards.
 
 Usage:
     # Convert a single file
@@ -47,6 +47,7 @@ import numpy as np
 from train_mimic.data.motion_fk import (
     MotionFkExtractor,
     compute_body_velocities,
+    finite_diff_velocity,
     normalize_quaternion,
     quat_xyzw_to_wxyz,
 )
@@ -60,8 +61,8 @@ _SEED_CSV_JOINT_DOF_COLS = slice(7, 36)       # 29 DOFs in degrees
 
 
 # mjlab G1 robot body ordering (matches robot.body_names from G1_ROBOT_CFG).
-# mjlab's MotionLoader uses robot body indices to index into NPZ body_pos_w,
-# so NPZ body ordering MUST match this list exactly.
+# The dataset builder preserves this order in HDF5 shards, so per-clip NPZ
+# body ordering MUST match this list exactly.
 _MJLAB_G1_BODY_NAMES = [
     "pelvis",
     "left_hip_pitch_link", "left_hip_roll_link", "left_hip_yaw_link",
@@ -131,7 +132,7 @@ def convert_pkl_to_arrays(
         )
 
     # Joint velocity via finite difference
-    joint_vel = np.gradient(dof_pos, dt, axis=0).astype(np.float32)
+    joint_vel = finite_diff_velocity(dof_pos, dt)
 
     # Convert root quaternion: xyzw -> wxyz
     root_rot_wxyz = normalize_quaternion(quat_xyzw_to_wxyz(root_rot_xyzw))
@@ -148,6 +149,8 @@ def convert_pkl_to_arrays(
 
     return {
         "fps": fps,
+        "root_pos": root_pos,
+        "root_quat_w": root_rot_wxyz,
         "joint_pos": dof_pos,
         "joint_vel": joint_vel,
         "body_pos_w": body_pos_w,
@@ -217,7 +220,7 @@ def convert_seed_csv_to_arrays(
     root_rot_xyzw = np.asarray(pkl_dict["root_rot"], dtype=np.float32)
     dof_pos = np.asarray(pkl_dict["dof_pos"], dtype=np.float32)
 
-    joint_vel = np.gradient(dof_pos, dt, axis=0).astype(np.float32)
+    joint_vel = finite_diff_velocity(dof_pos, dt)
     root_rot_wxyz = normalize_quaternion(quat_xyzw_to_wxyz(root_rot_xyzw))
 
     fk_extractor = extractor or MotionFkExtractor()
@@ -229,6 +232,8 @@ def convert_seed_csv_to_arrays(
 
     return {
         "fps": fps,
+        "root_pos": root_pos,
+        "root_quat_w": root_rot_wxyz,
         "joint_pos": dof_pos,
         "joint_vel": joint_vel,
         "body_pos_w": body_pos_w,

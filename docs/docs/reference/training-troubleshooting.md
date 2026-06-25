@@ -35,7 +35,7 @@ The current `convert_pkl_to_npz.py` fixes these issues.
 
 ```bash
 python train_mimic/scripts/data/check_motion_npz_fk.py \
-    --npz data/datasets/<dataset>/clips/<source>/<clip>.npz
+    --npz data/lafan1_clips/lafan1/<clip>.npz
 ```
 
 Expected thresholds: `pos_max < 1e-3 m`, `quat_mean < 0.05 rad`, `quat_p95 < 0.10 rad`.
@@ -45,7 +45,7 @@ If check fails, regenerate data and run a smoke test:
 ```bash
 python train_mimic/scripts/train.py \
     --num_envs 64 --max_iterations 100 \
-    --motion_file data/datasets/<dataset>/train
+    --motion_file data/datasets/<dataset>_precomputed
 ```
 
 Expected: `Mean episode length` significantly > 1, `error_anchor_pos` starts decreasing.
@@ -126,7 +126,7 @@ Ensure `num_eval_steps >= video_length`:
 ```bash
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/<dataset>/val \
+    --motion_file data/datasets/<dataset>_precomputed \
     --num_envs 1 --num_eval_steps 2000 \
     --video --video_length 600
 ```
@@ -168,6 +168,6 @@ print(cfg.init_state.joint_pos)  # Must match g1.yaml default_angles
 
 ### Solution
 
-Update `teleopit/configs/robot/g1.yaml` and `g1_mjlab.xml` to match training environment values (default angles, armature, condim).
+Update `teleopit/configs/robot/g1.yaml` and `assets/robots/unitree_g1/g1_29dof.xml` to match training environment values (default angles, armature, condim).
 
 This fix also affects the sim2real path since `default_angles` is shared by `rl_policy.py` and `observation.py`.

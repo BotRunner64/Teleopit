@@ -5,32 +5,104 @@ defaults:
   - _self_
 
 policy_hz: 50.0
-transition_duration: 2.0  # seconds to interpolate from default pose to motion command (0.0 to disable)
-pause_resume_transition_duration: 1.0  # offline playback resume blend; realtime mocap resumes from re-centered live tracking
-pause_resume_warmup_steps: 2  # realtime mocap frames to accumulate before resuming live tracking
+viewers: "none"  # Optional: set viewers=retarget to show the retargeted reference
 input:
   video:
     source: realsense
 retarget_buffer_enabled: true
 retarget_buffer_window_s: 0.5
-retarget_buffer_delay_s: 0.05
-realtime_buffer_low_watermark_steps: 2
-realtime_buffer_high_watermark_steps: 4
+retarget_buffer_delay_s: null  # null = auto use one input-frame delay for timeline sampling
 realtime_buffer_warmup_steps: 2
-realtime_catchup_enabled: true
-realtime_catchup_trigger_steps: 6
-realtime_catchup_release_steps: 3
-realtime_catchup_target_delay_s: 0.04
-reference_qpos_smoothing_alpha: 0.4
 reference_velocity_smoothing_alpha: 0.35
 reference_anchor_velocity_smoothing_alpha: 0.25
 reference_steps: [0]
 reference_debug_log: false
 
-# Startup ramp duration (seconds) -- smoothly blend from locked to policy positions
+recording:
+  enabled: false
+  format: hdf5
+  output_dir: data/recordings/sim2real_hdf5
+  task: demo
+  fps: 30
+  control: terminal
+  min_episode_seconds: 1.0
+  discard_on_shutdown: true
+  record_modes: [standing, mocap, arms, pause]
+  camera:
+    enabled: true
+    key: observation.images.d435i_rgb
+    source: realsense
+    width: 640
+    height: 480
+    fps: 30
+    device: null
+  video:
+    codec: libx264
+    quality: 8
+    pixelformat: yuv420p
+
+runtime:
+  host: 127.0.0.1
+  base_port: 39700
+  start_method: spawn
+  shutdown_timeout_s: 3.0
+  pico_input_hz: 120.0
+  hand_worker_hz: 120.0
+  retarget_idle_sleep_s: 0.001
+  video_slots: 3
+  # In active MOCAP, stale/invalid realtime references hold the last command instead of damping.
+  # max_reference_age_s only rejects entering MOCAP from STANDING on an old reference.
+  stale_reference_hold_s: 0.08
+  max_reference_age_s: 0.25
+
+# Kp ramp duration (seconds) -- gradually increases PD gains after entering STANDING
 startup_ramp_duration: 2.0
+kp_ramp_floor_ratio: 0.1
+# Faster Kp ramp used when returning from MOCAP to default STANDING with X
+standing_return_ramp_duration: 0.5
+standing_return_kp_ramp_floor_ratio: 0.5
 # Joint velocity safety limit (rad/s) -- trigger emergency damping if exceeded
 joint_vel_limit: 10.0
+
+arm_mocap:
+  controlled_joint_indices: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+
+# Optional LinkerHand control from Pico controller grip/trigger or VR hand pose.
+hands:
+  enabled: false
+  driver: linkerhand_l6  # linkerhand_l6 | linkerhand_o6
+  mode: gripper  # gripper | vr_hand_pose
+  sides: [left, right]
+  rate_hz: 30.0
+  frame_timeout_s: 0.3
+  linkerhand_l6:
+    left_can: can0
+    right_can: can1
+    modbus: "None"
+    trigger_deadzone: 0.05
+    deadman_threshold: 0.5
+    thumb_yaw_center: 10
+    speed: [50, 50, 50, 50, 50, 50]
+    open_pose: [250, 10, 250, 250, 250, 250]
+    close_pose: [79, 10, 0, 0, 0, 0]
+    print_input: false
+  linkerhand_o6:
+    left_can: can0
+    right_can: can1
+    modbus: "None"
+    trigger_deadzone: 0.05
+    deadman_threshold: 0.5
+    speed: [255, 255, 255, 255, 255, 255]
+    open_pose: [250, 250, 250, 250, 250, 250]
+    close_pose: [86, 73, 118, 111, 110, 111]
+    print_input: false
+  somehand:
+    config_path: third_party/somehand/configs/retargeting/bihand/linkerhand_l6_bihand.yaml
+    # Low-latency vr_hand_pose path. This favors response speed over smoothing.
+    rate_hz: 60.0
+    max_iterations: 12
+    temporal_filter_alpha: 1.0
+    output_alpha: 1.0
 
 # Physical robot SDK configuration
 real_robot:
@@ -68,7 +140,6 @@ real_robot:
 # Mocap mode switching safety checks
 mocap_switch:
   check_frames: 10   # Consecutive valid frames required before switching
-  max_position_value: 5.0  # Position sanity threshold (meters)
 
 hydra:
   run:

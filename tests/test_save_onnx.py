@@ -11,7 +11,7 @@ from train_mimic.tasks.tracking.rl.temporal_cnn_model import TemporalCNNModel
 
 def _build_temporal_actor_model(
     *,
-    obs_dim: int = 166,
+    obs_dim: int = 167,
     history_length: int = 10,
     ref_window_dim: int | None = None,
     ref_window_length: int = 20,
@@ -51,7 +51,7 @@ def _build_temporal_actor_model(
     )
 
 
-def _build_temporal_actor_state_dict(obs_dim: int = 166, history_length: int = 10) -> dict[str, torch.Tensor]:
+def _build_temporal_actor_state_dict(obs_dim: int = 167, history_length: int = 10) -> dict[str, torch.Tensor]:
     return _build_temporal_actor_model(obs_dim=obs_dim, history_length=history_length).state_dict()
 
 
@@ -113,7 +113,7 @@ def test_export_temporal_cnn_layout_a_checkpoint(monkeypatch, tmp_path: Path) ->
 
     assert captured["output_path"] == str(tmp_path / "policy.onnx")
     assert captured["input_names"] == ["obs", "obs_history"]
-    assert captured["arg_shapes"] == [(1, 166), (1, 10, 166)]
+    assert captured["arg_shapes"] == [(1, 167), (1, 10, 167)]
 
 
 def test_export_temporal_cnn_multi_group_checkpoint(monkeypatch, tmp_path: Path) -> None:

@@ -10,7 +10,7 @@ Usage:
     # Benchmark only (no video)
     python train_mimic/scripts/benchmark.py \
         --checkpoint logs/rsl_rl/g1_tracking/.../model_30000.pt \
-        --motion_file data/datasets/twist2_full/val \
+        --motion_file data/datasets/seed_precomputed \
         --num_envs 1
 
     # Single video (one continuous clip)
@@ -27,6 +27,7 @@ import json
 import os
 from pathlib import Path
 
+import h5py
 import numpy as np
 from tensordict import TensorDictBase
 
@@ -39,6 +40,7 @@ from train_mimic.app import (
     validate_checkpoint_path,
     validate_motion_file,
 )
+from train_mimic.data.dataset_lib import find_precomputed_motion_shards
 from teleopit.debug.rollout_trace import RolloutTraceWriter
 
 
@@ -142,7 +144,7 @@ def _stats(values: list[float]) -> dict[str, float]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark G1 tracking policy.")
     parser.add_argument("--checkpoint", type=str, required=True)
-    parser.add_argument("--motion_file", type=str, required=True, help="Path to motion shard directory")
+    parser.add_argument("--motion_file", type=str, required=True, help="Path to precomputed training dataset root containing Teleopit shard_*.h5 files")
     parser.add_argument("--num_envs", type=int, default=1)
     parser.add_argument("--num_eval_steps", type=int, default=2000,
                         help="Number of rollout steps for evaluation (default: 2000)")
@@ -172,25 +174,25 @@ def parse_args() -> argparse.Namespace:
 
 
 def _load_motion_dir_video_metadata(motion_dir: str) -> tuple[float, int]:
-    shard_dir = Path(motion_dir)
-    shard_files = sorted(shard_dir.glob("*.npz"))
-    if not shard_files:
-        raise FileNotFoundError(f"no shard NPZ files found in {motion_dir}")
-
     clip_fps: float | None = None
     max_clip_frames = 0
-    for shard_path in shard_files:
-        motion_data = np.load(shard_path, allow_pickle=True)
-        cur_fps = float(motion_data["fps"])
-        if clip_fps is None:
-            clip_fps = cur_fps
-        elif clip_fps != cur_fps:
-            raise ValueError(
-                f"inconsistent fps across shards: {shard_path} has {cur_fps}, expected {clip_fps}"
-            )
-        max_clip_frames = max(max_clip_frames, int(np.asarray(motion_data["clip_lengths"]).max()))
+    for shard_path in find_precomputed_motion_shards(motion_dir):
+        with h5py.File(shard_path, "r") as h5:
+            fps_arr = np.asarray(h5["clip_fps"], dtype=np.float32)
+            if fps_arr.size == 0:
+                continue
+            cur_fps = float(fps_arr[0])
+            if np.any(fps_arr != cur_fps):
+                raise ValueError(f"inconsistent fps within HDF5 shard: {shard_path}")
+            if clip_fps is None:
+                clip_fps = cur_fps
+            elif clip_fps != cur_fps:
+                raise ValueError(
+                    f"inconsistent fps across shards: {shard_path} has {cur_fps}, expected {clip_fps}"
+                )
+            max_clip_frames = max(max_clip_frames, int(np.asarray(h5["clip_lengths"]).max()))
     if clip_fps is None:
-        raise ValueError(f"failed reading shard metadata from {motion_dir}")
+        raise ValueError(f"failed reading HDF5 shard metadata from {motion_dir}")
     return clip_fps, max_clip_frames
 
 
@@ -505,9 +507,6 @@ def main() -> int:
         "error_body_ang_vel",
         "error_joint_pos",
         "error_joint_vel",
-        "sampling_entropy",
-        "sampling_top1_prob",
-        "sampling_top1_bin",
     ):
         if key not in metric_stats:
             continue

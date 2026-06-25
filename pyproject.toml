@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "teleopit"
-version = "0.3.0"
+version = "0.4.0"
 description = "Teleoperation framework for humanoid robots with motion retargeting"
 authors = [
     {name = "Teleopit Team"}
 ]
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = {text = "Apache-2.0"}
 dependencies = [
     "mujoco",
     "mink",
@@ -23,6 +23,7 @@ dependencies = [
     "omegaconf",
     "h5py",
     "onnxruntime",
+    "pyzmq",
     "rich",
     "loop-rate-limiters",
     "imageio",
@@ -40,17 +41,24 @@ sim2real = [
     #   bash scripts/setup/setup_g1_bridge.sh
 ]
 train = [
-    "torch>=2.0.0",
+    "torch>=2.7.0",
     "numpy>=1.20.0",
-    "rsl-rl-lib",
-    "mjlab>=1.2.0",
-    "wandb>=0.15.0",
+    "rsl-rl-lib==5.2.0",
+    "mjlab==1.4.0",
+    "wandb>=0.22.3",
+    "swanlab",
     "tqdm>=4.65.0",
 ]
 pico4 = [
-    "pico-bridge[camera] @ https://github.com/BotRunner64/pico-bridge/releases/download/v0.2.0/pico_bridge-0.2.0-py3-none-any.whl",
+    "pico-bridge[camera] @ https://github.com/BotRunner64/pico-bridge/releases/download/v0.2.1/pico_bridge-0.2.1-py3-none-any.whl",
     "teleopit[sim2real]",
 ]
+recording = [
+    "teleopit[pico4]",
+    "opencv-python",
+    "imageio[ffmpeg]",
+]
+dexhand = []
 
 [tool.setuptools.packages.find]
 where = ["."]

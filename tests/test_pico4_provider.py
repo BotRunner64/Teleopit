@@ -27,6 +27,7 @@ def _pico_frame(
     timestamp: float,
     body_active: bool = True,
     right_primary: bool = False,
+    right_secondary: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         seq=seq,
@@ -34,9 +35,15 @@ def _pico_frame(
         body=SimpleNamespace(active=body_active, joints=body_poses),
         controllers=SimpleNamespace(
             left=SimpleNamespace(buttons={}),
-            right=SimpleNamespace(buttons={"primaryButton": right_primary}),
+            right=SimpleNamespace(buttons={"primaryButton": right_primary, "secondaryButton": right_secondary}),
         ),
     )
+
+
+def _hand_state(*, active: bool, value: float) -> SimpleNamespace:
+    joints = np.zeros((26, 7), dtype=np.float64)
+    joints[:, 0:3] = value
+    return SimpleNamespace(active=active, joints=joints)
 
 
 def _make_provider() -> Pico4InputProvider:
@@ -48,13 +55,21 @@ def _make_provider() -> Pico4InputProvider:
     provider._timestamp_gap_reset_s = 0.15
     provider._pending_control_events = deque()
     provider._pause_button = "A"
+    provider._arms_button = "B"
     provider._pause_debounce_s = 0.0
+    provider._arms_debounce_s = 0.0
     provider._pause_button_path = provider._resolve_button_path(provider._pause_button)
+    provider._arms_button_path = provider._resolve_button_path(provider._arms_button)
     provider._last_pause_button_pressed = False
+    provider._last_arms_button_pressed = False
     provider._last_pause_toggle_timestamp = None
+    provider._last_arms_toggle_timestamp = None
     provider._last_raw_body_joints = None
     provider._last_frame_timestamp = None
     provider._last_source_seq = None
+    provider._ground_alignment_offset = None
+    provider._controller_snapshot = None
+    provider._hand_snapshot = None
     provider._closed = False
     return provider
 
@@ -129,8 +144,8 @@ def test_pico4_provider_starts_pico_bridge_receiver_with_config() -> None:
     assert bridge.closed is True
 
 
-def test_pico4_provider_requires_pico_bridge_0_2_signature() -> None:
-    with pytest.raises(RuntimeError, match=r"pico_bridge >= 0\.2\.0"):
+def test_pico4_provider_requires_pico_bridge_0_2_1_signature() -> None:
+    with pytest.raises(RuntimeError, match=r"pico_bridge >= 0\.2\.1"):
         Pico4InputProvider(timeout=0.01, bridge_cls=_LegacyBridge)
 
 
@@ -152,15 +167,86 @@ def test_pico4_provider_pushes_video_frame_to_bridge() -> None:
         delattr(_FakeBridge, "push_video_frame")
 
 
-def test_pico4_provider_normalizes_pico_bridge_body_pose_convention() -> None:
+def test_pico4_provider_converts_pico_native_body_pose_convention() -> None:
     body_poses = _body_poses(0.0)
     body_poses[0] = [1.0, 2.0, 3.0, 0.1, 0.2, 0.3, 0.9]
 
-    converted = Pico4InputProvider._normalize_pico_bridge_body_joints(body_poses)
-    np.testing.assert_allclose(converted[0], [1.0, 2.0, -3.0, 0.1, 0.2, -0.3, -0.9])
-
     frame = Pico4InputProvider._convert_body_joints_to_frame(body_poses)
-    np.testing.assert_allclose(frame["Pelvis"][0], [1.0, 3.0, 2.0], atol=1e-6)
+    np.testing.assert_allclose(frame["Pelvis"][0], [1.0, -3.0, 2.0], atol=1e-6)
+
+
+def test_pico4_provider_applies_fixed_ground_alignment_from_first_real_frame() -> None:
+    provider = _make_provider()
+    body_poses = np.zeros((len(BODY_JOINT_NAMES), 7), dtype=np.float64)
+    pelvis_idx = BODY_JOINT_NAMES.index("Pelvis")
+    left_ankle_idx = BODY_JOINT_NAMES.index("Left_Ankle")
+    right_ankle_idx = BODY_JOINT_NAMES.index("Right_Ankle")
+    body_poses[pelvis_idx, 0:3] = [0.0, 0.8, 0.0]
+    body_poses[left_ankle_idx, 0:3] = [0.1, -0.2, 0.0]
+    body_poses[right_ankle_idx, 0:3] = [-0.1, 0.1, 0.0]
+    body_poses[:, 6] = 1.0
+
+    assert provider._accept_pico_frame(_pico_frame(body_poses, seq=1, timestamp=1.0)) is True
+    first_frame, _, _ = provider._frame_cache.latest_packet()
+    np.testing.assert_allclose(first_frame["Pelvis"][0][2], 0.8 + 0.2, atol=1e-6)
+    np.testing.assert_allclose(first_frame["Left_Ankle"][0][2], 0.0, atol=1e-6)
+    assert provider._ground_alignment_offset == pytest.approx(0.2)
+
+    body_poses[:, 1] += 0.3
+    assert provider._accept_pico_frame(_pico_frame(body_poses, seq=2, timestamp=1.1)) is True
+    second_frame, _, _ = provider._frame_cache.latest_packet()
+    np.testing.assert_allclose(second_frame["Pelvis"][0][2], first_frame["Pelvis"][0][2] + 0.3, atol=1e-6)
+    np.testing.assert_allclose(second_frame["Left_Ankle"][0][2], 0.3, atol=1e-6)
+
+
+def test_pico4_provider_aligns_floating_first_frame_down_to_ground() -> None:
+    provider = _make_provider()
+    body_poses = np.zeros((len(BODY_JOINT_NAMES), 7), dtype=np.float64)
+    pelvis_idx = BODY_JOINT_NAMES.index("Pelvis")
+    left_ankle_idx = BODY_JOINT_NAMES.index("Left_Ankle")
+    right_ankle_idx = BODY_JOINT_NAMES.index("Right_Ankle")
+    body_poses[:, 1] = 0.2
+    body_poses[pelvis_idx, 0:3] = [0.0, 0.9, 0.0]
+    body_poses[left_ankle_idx, 0:3] = [0.1, 0.2, 0.0]
+    body_poses[right_ankle_idx, 0:3] = [-0.1, 0.4, 0.0]
+    body_poses[:, 6] = 1.0
+
+    assert provider._accept_pico_frame(_pico_frame(body_poses, seq=1, timestamp=1.0)) is True
+    first_frame, _, _ = provider._frame_cache.latest_packet()
+    np.testing.assert_allclose(first_frame["Left_Ankle"][0][2], 0.0, atol=1e-6)
+    np.testing.assert_allclose(first_frame["Pelvis"][0][2], 0.7, atol=1e-6)
+    assert provider._ground_alignment_offset == pytest.approx(-0.2)
+
+    body_poses[:, 1] += 0.3
+    assert provider._accept_pico_frame(_pico_frame(body_poses, seq=2, timestamp=1.1)) is True
+    second_frame, _, _ = provider._frame_cache.latest_packet()
+    np.testing.assert_allclose(second_frame["Left_Ankle"][0][2], 0.3, atol=1e-6)
+    np.testing.assert_allclose(second_frame["Pelvis"][0][2], 1.0, atol=1e-6)
+
+
+def test_pico4_provider_recomputes_ground_alignment_after_timestamp_gap_reset() -> None:
+    provider = _make_provider()
+    body_poses = np.zeros((len(BODY_JOINT_NAMES), 7), dtype=np.float64)
+    pelvis_idx = BODY_JOINT_NAMES.index("Pelvis")
+    left_ankle_idx = BODY_JOINT_NAMES.index("Left_Ankle")
+    right_ankle_idx = BODY_JOINT_NAMES.index("Right_Ankle")
+    body_poses[pelvis_idx, 0:3] = [0.0, 0.8, 0.0]
+    body_poses[left_ankle_idx, 0:3] = [0.1, -0.2, 0.0]
+    body_poses[right_ankle_idx, 0:3] = [-0.1, 0.1, 0.0]
+    body_poses[:, 6] = 1.0
+
+    assert provider._accept_pico_frame(_pico_frame(body_poses, seq=1, timestamp=1.0)) is True
+    assert provider._ground_alignment_offset == pytest.approx(0.2)
+
+    body_poses[pelvis_idx, 1] = 0.7
+    body_poses[left_ankle_idx, 1] = -0.5
+    body_poses[right_ankle_idx, 1] = 0.2
+    assert provider._accept_pico_frame(_pico_frame(body_poses, seq=2, timestamp=1.3)) is True
+    latest_frame, _, _ = provider._frame_cache.latest_packet()
+    np.testing.assert_allclose(latest_frame["Left_Ankle"][0][2], 0.0, atol=1e-6)
+    np.testing.assert_allclose(latest_frame["Pelvis"][0][2], 1.2, atol=1e-6)
+    assert provider._ground_alignment_offset == pytest.approx(0.5)
+    assert len(provider._frame_cache) == 1
 
 
 def test_pico4_provider_drops_duplicate_raw_body_pose() -> None:
@@ -201,6 +287,35 @@ def test_pico4_provider_exposes_pause_control_events_once() -> None:
     assert packet.control_events == ()
 
 
+def test_pico4_provider_exposes_arms_control_events_once() -> None:
+    provider = _make_provider()
+
+    assert provider._accept_pico_frame(
+        _pico_frame(_body_poses(1.0), seq=1, timestamp=1.0, right_secondary=True)
+    ) is True
+
+    packet = provider.get_realtime_input_packet()
+    assert [event.event_type for event in packet.control_events] == [ControlEventType.TOGGLE_ARMS]
+
+    packet = provider.get_realtime_input_packet()
+    assert packet.control_events == ()
+
+
+def test_pico4_provider_marks_controller_present_without_raw_field() -> None:
+    provider = _make_provider()
+    frame = _pico_frame(_body_poses(1.0), seq=1, timestamp=1.0)
+    frame.controllers.left.axis = {"grip": 0.8, "trigger": 0.4}
+
+    assert provider._accept_pico_frame(frame) is True
+
+    snapshot = provider.get_controller_snapshot()
+    assert snapshot is not None
+    assert snapshot.left.present is True
+    assert snapshot.left.raw is False
+    assert snapshot.left.grip == pytest.approx(0.8)
+    assert snapshot.left.trigger == pytest.approx(0.4)
+
+
 def test_pico4_provider_reads_pause_control_events_when_body_inactive() -> None:
     provider = _make_provider()
 
@@ -211,3 +326,22 @@ def test_pico4_provider_reads_pause_control_events_when_body_inactive() -> None:
     events = provider.pop_control_events()
     assert [event.event_type for event in events] == [ControlEventType.TOGGLE_PAUSE]
     assert provider._last_source_seq == 1
+
+
+def test_pico4_provider_exposes_hand_snapshot_when_body_inactive() -> None:
+    provider = _make_provider()
+    frame = _pico_frame(_body_poses(1.0), seq=4, timestamp=2.0, body_active=False)
+    frame.left_hand = _hand_state(active=True, value=1.5)
+    frame.right_hand = _hand_state(active=False, value=2.5)
+
+    assert provider._accept_pico_frame(frame) is False
+
+    snapshot = provider.get_hand_snapshot()
+    assert snapshot is not None
+    assert snapshot.seq == 4
+    assert snapshot.timestamp_s == pytest.approx(2.0)
+    assert snapshot.left.present is True
+    assert snapshot.left.active is True
+    assert snapshot.right.present is True
+    assert snapshot.right.active is False
+    np.testing.assert_allclose(snapshot.left.joints[:, 0:3], 1.5)

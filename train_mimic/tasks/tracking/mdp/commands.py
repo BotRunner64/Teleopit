@@ -2,16 +2,23 @@ from __future__ import annotations
 
 import copy
 import logging
-import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+import h5py
 import mujoco
 import numpy as np
 import torch
 
-from train_mimic.data.dataset_lib import compute_clip_sample_ranges, parse_window_steps
+from train_mimic.data.dataset_lib import (
+    MOTION_ARRAY_KEYS,
+    compute_clip_sample_ranges,
+    compute_dataset_stats,
+    find_precomputed_motion_shards,
+    parse_window_steps,
+    validate_precomputed_motion_shard,
+)
 
 from mjlab.managers import CommandTerm, CommandTermCfg
 from mjlab.utils.lab_api.math import (
@@ -58,193 +65,166 @@ def _batched_quat_slerp(
     return result / result.norm(dim=-1, keepdim=True)
 
 
-def _compute_clip_counts(
-    motion_ids: torch.Tensor, episode_failed: torch.Tensor, bin_count: int
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return (exposure_count, failure_count) per clip bin."""
-    exposure = torch.bincount(motion_ids, minlength=bin_count).float()
-    failure = torch.bincount(
-        motion_ids[episode_failed], minlength=bin_count
-    ).float()
-    return exposure, failure
+@dataclass
+class _MotionBatch:
+    tensors: dict[str, torch.Tensor]
+    frame_offsets: torch.Tensor
+    lengths: torch.Tensor
+    fps: torch.Tensor
+    sample_starts: torch.Tensor
+    sample_ends: torch.Tensor
 
 
-def _compute_clip_failure_rate(
-    motion_ids: torch.Tensor, episode_failed: torch.Tensor, bin_count: int
+def _read_selected_body_array(
+    h5: h5py.File,
+    key: str,
+    body_idx_np: np.ndarray,
 ) -> torch.Tensor:
-    """Compute per-clip failure rate for the current adaptive-sampling window."""
-    exposure, failure = _compute_clip_counts(motion_ids, episode_failed, bin_count)
-    rate = torch.zeros(bin_count, dtype=torch.float32, device=motion_ids.device)
-    valid = exposure > 0
-    rate[valid] = failure[valid] / exposure[valid]
-    return rate
+    """Read only the requested body axis while preserving caller order."""
+    dataset = h5[key]
+    idx = np.asarray(body_idx_np, dtype=np.int64)
+    if idx.ndim != 1:
+        raise ValueError(f"body indexes must be 1-D, got {idx.shape}")
+    if idx.size == 0:
+        frames = int(dataset.shape[0])
+        width = int(dataset.shape[2])
+        return torch.empty((frames, 0, width), dtype=torch.float32)
 
-
-def _is_distributed() -> bool:
-    """Return True when running inside an initialized torch.distributed group."""
-    return torch.distributed.is_available() and torch.distributed.is_initialized()
-
-
-def _normalize_sampling_probabilities(
-    sampling_probabilities: torch.Tensor,
-    *,
-    adaptive_uniform_ratio: float,
-    bin_count: int,
-) -> torch.Tensor:
-    """Normalize adaptive sampling weights and fail fast on invalid mass."""
-    prob_sum = sampling_probabilities.sum()
-    if not torch.isfinite(prob_sum) or prob_sum <= 0:
-        raise ValueError(
-            "Adaptive sampling produced an invalid probability mass. "
-            f"sum={prob_sum.item() if torch.isfinite(prob_sum) else prob_sum}, "
-            f"adaptive_uniform_ratio={adaptive_uniform_ratio}, bin_count={bin_count}. "
-            "Increase adaptive_uniform_ratio or accumulate failure statistics before "
-            "using pure adaptive sampling."
+    if np.any(idx < 0) or np.any(idx >= dataset.shape[1]):
+        raise IndexError(
+            f"body indexes out of range for {key}: indexes={idx.tolist()}, "
+            f"num_bodies={dataset.shape[1]}"
         )
 
-    sampling_probabilities = sampling_probabilities / prob_sum
-    if not torch.isfinite(sampling_probabilities).all():
-        raise ValueError("Adaptive sampling probabilities contain NaN or Inf values.")
-    return sampling_probabilities
-
-
-def _cap_failure_rates(rates: torch.Tensor, beta: float) -> torch.Tensor:
-    """Clamp per-bin failure rates to ``beta * mean(rates)``.
-
-    When all rates are zero the cap is zero and the returned tensor is all-zero,
-    which is safe — callers fall back to uniform sampling via the blend term.
-    """
-    f_mean = rates.mean()
-    return torch.clamp(rates, max=beta * f_mean)
-
-
-def _validate_legacy_adaptive_config(*, adaptive_kernel_size: int, adaptive_lambda: float) -> None:
-    """Reject legacy adaptive knobs that are no longer implemented."""
-    if adaptive_kernel_size != 1:
-        raise ValueError(
-            "adaptive_kernel_size is not implemented in the restored adaptive sampler. "
-            f"Expected 1, got {adaptive_kernel_size}."
-        )
-    if adaptive_lambda != 0.8:
-        raise ValueError(
-            "adaptive_lambda is not implemented in the restored adaptive sampler. "
-            f"Expected 0.8, got {adaptive_lambda}."
-        )
-
-
-def _load_shard_dir(shard_dir: Path) -> dict[str, Any]:
-    """Load and merge all shard NPZ files from a directory.
-
-    Each shard must be a self-contained merged NPZ with clip metadata.
-    This function concatenates motion arrays across shards and rebuilds the
-    clip-level metadata (``clip_starts`` offsets are adjusted).
-    """
-    shard_files = sorted(shard_dir.glob("*.npz"))
-    if not shard_files:
-        raise FileNotFoundError(f"No .npz files found in {shard_dir}")
-
-    _LOG.info("Loading %d shards from %s ...", len(shard_files), shard_dir)
-
-    motion_keys = [
-        "joint_pos", "joint_vel", "body_pos_w", "body_quat_w",
-        "body_lin_vel_w", "body_ang_vel_w",
+    parts = [
+        np.asarray(dataset[:, int(body_idx) : int(body_idx) + 1, :], dtype=np.float32)
+        for body_idx in idx
     ]
-    arrays: dict[str, list[np.ndarray]] = {k: [] for k in motion_keys}
-    all_clip_lengths: list[np.ndarray] = []
-    all_clip_fps: list[np.ndarray] = []
-    all_clip_weights: list[np.ndarray] = []
-    all_clip_sample_starts: list[np.ndarray] = []
-    all_clip_sample_ends: list[np.ndarray] = []
-    window_steps: np.ndarray | None = None
-    fps = None
-    body_names: np.ndarray | None = None
+    arr = np.concatenate(parts, axis=1)
+    return torch.from_numpy(arr)
 
-    for sf in shard_files:
-        d = np.load(sf, allow_pickle=True)
-        for k in motion_keys:
-            arrays[k].append(np.asarray(d[k]))
 
-        # --- validate metadata consistency across shards ---
-        cur_fps = d["fps"]
-        cur_body_names = np.asarray(d["body_names"])
-        if fps is None:
-            fps = cur_fps
-            body_names = cur_body_names
-        else:
-            if int(cur_fps) != int(fps):
-                raise ValueError(
-                    f"Inconsistent fps across shards: {sf} has {int(cur_fps)}, "
-                    f"expected {int(fps)}"
-                )
-            if not np.array_equal(cur_body_names, body_names):
-                raise ValueError(
-                    f"Inconsistent body_names across shards: {sf} differs from first shard"
-                )
-
-        if "clip_lengths" not in d or "clip_fps" not in d or "clip_weights" not in d:
-            raise ValueError(
-                f"Shard {sf} is missing required clip metadata. "
-                "Expected clip_lengths, clip_fps, and clip_weights."
-            )
-        shard_clip_lengths = np.asarray(d["clip_lengths"])
-        n_clips = len(shard_clip_lengths)
-        all_clip_lengths.append(shard_clip_lengths)
-        all_clip_fps.append(np.asarray(d["clip_fps"]))
-        all_clip_weights.append(np.asarray(d["clip_weights"]))
-
-        if "clip_sample_starts" in d:
-            all_clip_sample_starts.append(np.asarray(d["clip_sample_starts"]))
-        if "clip_sample_ends" in d:
-            all_clip_sample_ends.append(np.asarray(d["clip_sample_ends"]))
-        if "window_steps" in d and window_steps is None:
-            window_steps = np.asarray(d["window_steps"])
-
-    merged: dict[str, Any] = {k: np.concatenate(v, axis=0) for k, v in arrays.items()}
-    merged["fps"] = fps
-    merged["body_names"] = body_names
-
-    clip_lengths = np.concatenate(all_clip_lengths)
-    clip_starts = np.zeros(len(clip_lengths), dtype=np.int64)
-    if len(clip_lengths) > 1:
-        clip_starts[1:] = np.cumsum(clip_lengths[:-1])
-    merged["clip_starts"] = clip_starts
-    merged["clip_lengths"] = clip_lengths
-    merged["clip_fps"] = np.concatenate(all_clip_fps)
-    merged["clip_weights"] = np.concatenate(all_clip_weights)
-
-    # Propagate precomputed sample ranges if all shards had them
-    n_total_clips = len(clip_lengths)
-    if all_clip_sample_starts and sum(len(a) for a in all_clip_sample_starts) == n_total_clips:
-        merged["clip_sample_starts"] = np.concatenate(all_clip_sample_starts)
-    if all_clip_sample_ends and sum(len(a) for a in all_clip_sample_ends) == n_total_clips:
-        merged["clip_sample_ends"] = np.concatenate(all_clip_sample_ends)
-    if window_steps is not None:
-        merged["window_steps"] = window_steps
-
+def _load_all_precomputed_motion(
+    motion_dir: Path,
+    *,
+    body_idx_np: np.ndarray,
+    device: str,
+    window_steps: tuple[int, ...],
+) -> _MotionBatch:
+    shard_paths = find_precomputed_motion_shards(motion_dir)
+    stats = compute_dataset_stats(motion_dir, precomputed=True)
+    for shard_path in shard_paths:
+        validate_precomputed_motion_shard(shard_path)
     _LOG.info(
-        "Loaded %d shards: %d clips, %d total frames",
-        len(shard_files), len(clip_lengths), merged["joint_pos"].shape[0],
+        "Loading full motion dataset: root=%s shards=%d windows=%d source_clips=%d frames=%d fps=%s",
+        motion_dir,
+        stats["shards"],
+        stats["windows"],
+        stats["source_clips"],
+        stats["frames"],
+        stats["fps"],
     )
-    return merged
+
+    max_future = max((step for step in window_steps if step > 0), default=0)
+    max_history = -min((step for step in window_steps if step < 0), default=0)
+    min_clip_length = max_history + 1 + max_future + 1  # +1 for interpolation
+
+    arrays: dict[str, list[torch.Tensor]] = {key: [] for key in MOTION_ARRAY_KEYS}
+    lengths_out: list[int] = []
+    fps_out: list[int] = []
+    sample_starts_out: list[int] = []
+    sample_ends_out: list[int] = []
+    frame_offsets_out: list[int] = []
+    skipped_short = 0
+    loaded_frames = 0
+    for shard_path in shard_paths:
+        with h5py.File(shard_path, "r") as h5:
+            starts = np.asarray(h5["clip_starts"], dtype=np.int64)
+            lengths = np.asarray(h5["clip_lengths"], dtype=np.int64)
+            fps = np.asarray(h5["clip_fps"], dtype=np.int64)
+            frames = int(h5["joint_pos"].shape[0])
+            if np.any(starts < 0) or np.any(starts + lengths > frames):
+                raise ValueError(
+                    f"HDF5 shard {shard_path} has clip windows outside joint_pos "
+                    f"frame range: frames={frames}"
+                )
+
+            valid_mask = lengths >= min_clip_length
+            skipped_short += int(np.count_nonzero(~valid_mask))
+            if not np.any(valid_mask):
+                continue
+
+            shard_frame_base = loaded_frames
+            arrays["joint_pos"].append(
+                torch.from_numpy(np.asarray(h5["joint_pos"], dtype=np.float32))
+            )
+            arrays["joint_vel"].append(
+                torch.from_numpy(np.asarray(h5["joint_vel"], dtype=np.float32))
+            )
+            arrays["body_pos_w"].append(
+                _read_selected_body_array(h5, "body_pos_w", body_idx_np)
+            )
+            arrays["body_quat_w"].append(
+                _read_selected_body_array(h5, "body_quat_w", body_idx_np)
+            )
+            arrays["body_lin_vel_w"].append(
+                _read_selected_body_array(h5, "body_lin_vel_w", body_idx_np)
+            )
+            arrays["body_ang_vel_w"].append(
+                _read_selected_body_array(h5, "body_ang_vel_w", body_idx_np)
+            )
+            loaded_frames += frames
+
+            valid_starts = starts[valid_mask]
+            valid_lengths = lengths[valid_mask]
+            valid_fps = fps[valid_mask]
+            sample_starts, sample_ends = compute_clip_sample_ranges(
+                valid_lengths,
+                window_steps=window_steps,
+            )
+            valid_frame_offsets = (shard_frame_base + valid_starts).astype(np.int64)
+            frame_offsets_out.extend(int(offset) for offset in valid_frame_offsets)
+            lengths_out.extend(int(length) for length in valid_lengths)
+            fps_out.extend(int(cur_fps) for cur_fps in valid_fps)
+            sample_starts_out.extend(int(start) for start in sample_starts)
+            sample_ends_out.extend(int(end) for end in sample_ends)
+    if not lengths_out:
+        raise ValueError(f"HDF5 motion dataset is empty: {motion_dir}")
+    if skipped_short > 0:
+        _LOG.warning(
+            "Ignoring %d HDF5 motion windows shorter than %d frames (window_steps=%s)",
+            skipped_short,
+            min_clip_length,
+            list(window_steps),
+        )
+
+    device_obj = torch.device(device)
+    lengths = torch.tensor(lengths_out, dtype=torch.long)
+    frame_offsets = torch.tensor(frame_offsets_out, dtype=torch.long)
+    return _MotionBatch(
+        tensors={
+            key: torch.cat(values, dim=0).to(device_obj)
+            for key, values in arrays.items()
+        },
+        frame_offsets=frame_offsets.to(device_obj),
+        lengths=lengths.to(device_obj),
+        fps=torch.tensor(fps_out, dtype=torch.float32, device=device_obj),
+        sample_starts=torch.tensor(sample_starts_out, dtype=torch.long, device=device_obj),
+        sample_ends=torch.tensor(sample_ends_out, dtype=torch.long, device=device_obj),
+    )
 
 
 class MotionLib:
     """Clip-aware motion library.
 
-    Loads a directory of shard NPZ files. Each shard contains flat motion arrays
-    plus per-clip metadata (``clip_starts``, ``clip_lengths``, ``clip_fps``,
-    ``clip_weights``).
-
-    Motion data is stored as GPU tensors for fast gather+lerp interpolation.
-    All indexing, lerp, and slerp run entirely on device with zero CPU
-    round-trips.  Numpy arrays are kept alongside for external consumers
-    (e.g. runner checkpoint buffers).
+    Loads all precomputed HDF5 motion windows into memory at startup.
     """
 
     def __init__(
         self,
         motion_file: str,
         body_indexes: torch.Tensor,
+        body_names: tuple[str, ...] | list[str] | None = None,
         device: str = "cpu",
         window_steps: tuple[int, ...] | list[int] | None = None,
     ) -> None:
@@ -252,122 +232,83 @@ class MotionLib:
         self.window_steps = parse_window_steps(window_steps)
 
         motion_path = Path(motion_file)
-        if not motion_path.is_dir():
+        if not motion_path.exists():
             raise FileNotFoundError(
-                f"motion_file must be a shard directory, got: {motion_file}"
+                f"motion_file must be a dataset root directory or .h5 shard, got: {motion_file}"
             )
-        data = _load_shard_dir(motion_path)
-        body_idx_np = body_indexes.cpu().numpy()
+        stats = compute_dataset_stats(motion_path, precomputed=True)
 
-        self._joint_pos = np.asarray(data["joint_pos"], dtype=np.float32)  # (T, 29)
-        self._joint_vel = np.asarray(data["joint_vel"], dtype=np.float32)  # (T, 29)
-
-        # Body arrays: index by selected bodies immediately.  Accessing an
-        # NpzFile key inflates that array from the zip; the intermediate full
-        # array is released once we slice and discard the reference.
-        self._body_pos_w = np.asarray(
-            data["body_pos_w"], dtype=np.float32
-        )[:, body_idx_np]
-        self._body_quat_w = np.asarray(
-            data["body_quat_w"], dtype=np.float32
-        )[:, body_idx_np]
-        self._body_lin_vel_w = np.asarray(
-            data["body_lin_vel_w"], dtype=np.float32
-        )[:, body_idx_np]
-        self._body_ang_vel_w = np.asarray(
-            data["body_ang_vel_w"], dtype=np.float32
-        )[:, body_idx_np]
-
-        self.time_step_total = self._joint_pos.shape[0]
-
-        # GPU tensors for fast gather+lerp interpolation (zero CPU round-trips).
-        self._joint_pos_t = torch.from_numpy(self._joint_pos).to(device)
-        self._joint_vel_t = torch.from_numpy(self._joint_vel).to(device)
-        self._body_pos_w_t = torch.from_numpy(self._body_pos_w).to(device)
-        self._body_quat_w_t = torch.from_numpy(self._body_quat_w).to(device)
-        self._body_lin_vel_w_t = torch.from_numpy(self._body_lin_vel_w).to(device)
-        self._body_ang_vel_w_t = torch.from_numpy(self._body_ang_vel_w).to(device)
-
-        # --- clip-aware metadata (small — lives on GPU for sampling) ---
-        self.clip_starts = torch.tensor(data["clip_starts"], dtype=torch.long, device=device)
-        self.clip_lengths = torch.tensor(data["clip_lengths"], dtype=torch.long, device=device)
-        self.clip_weights = torch.tensor(
-            data["clip_weights"], dtype=torch.float32, device=device
-        )
-        fps_arr = np.asarray(data["clip_fps"])
-        if fps_arr.ndim == 0:
-            self.clip_fps = torch.full(
-                (len(self.clip_starts),), float(fps_arr), dtype=torch.float32, device=device
-            )
+        if body_names is None:
+            body_idx_np = body_indexes.cpu().numpy()
         else:
-            self.clip_fps = torch.tensor(fps_arr, dtype=torch.float32, device=device)
+            dataset_body_names = [str(name) for name in stats["body_names"]]
+            dataset_body_index_by_name = {
+                name: index for index, name in enumerate(dataset_body_names)
+            }
+            missing_body_names = [
+                name for name in body_names if name not in dataset_body_index_by_name
+            ]
+            if missing_body_names:
+                raise ValueError(
+                    "Motion dataset body_names do not contain all requested tracking "
+                    f"bodies. Missing: {missing_body_names}. "
+                    "Rebuild the dataset with the current G1 body metadata or update "
+                    "motion command body_names."
+                )
+            body_idx_np = np.asarray(
+                [dataset_body_index_by_name[name] for name in body_names],
+                dtype=np.int64,
+            )
 
-        self.num_clips = len(self.clip_starts)
+        batch = _load_all_precomputed_motion(
+            motion_path,
+            body_idx_np=body_idx_np,
+            device=device,
+            window_steps=self.window_steps,
+        )
+        self._set_batch(batch)
+
+    def _set_batch(self, batch: _MotionBatch) -> None:
+        self._batch = batch
+        self._joint_pos_t = batch.tensors["joint_pos"]
+        self._joint_vel_t = batch.tensors["joint_vel"]
+        self._body_pos_w_t = batch.tensors["body_pos_w"]
+        self._body_quat_w_t = batch.tensors["body_quat_w"]
+        self._body_lin_vel_w_t = batch.tensors["body_lin_vel_w"]
+        self._body_ang_vel_w_t = batch.tensors["body_ang_vel_w"]
+        self.clip_frame_offsets = batch.frame_offsets
+
+        self.clip_lengths = batch.lengths
+        self.clip_fps = batch.fps
+        self.num_clips = int(batch.lengths.shape[0])
+        self.time_step_total = int(batch.lengths.max().item())
         self.clip_dt = 1.0 / self.clip_fps
         self.clip_duration_s = (self.clip_lengths.float() - 1.0) * self.clip_dt
-
-        # Compute minimum clip length required by the window
-        max_future = max((s for s in self.window_steps if s > 0), default=0)
-        max_history = -min((s for s in self.window_steps if s < 0), default=0)
-        min_clip_length = max_history + 1 + max_future + 1  # +1 for interpolation
-        short_mask = self.clip_lengths < min_clip_length
-        n_short = int(short_mask.sum().item())
-        if n_short > 0:
-            _LOG.warning(
-                "Disabling %d/%d clips shorter than %d frames (window_steps=%s)",
-                n_short, self.num_clips, min_clip_length, list(self.window_steps),
-            )
-            self.clip_weights = self.clip_weights.clone()
-            self.clip_weights[short_mask] = 0.0
-
-        file_window_steps = parse_window_steps(data["window_steps"]) if "window_steps" in data else (0,)
-        if (
-            "clip_sample_starts" in data
-            and "clip_sample_ends" in data
-            and file_window_steps == self.window_steps
-        ):
-            self.clip_sample_starts = torch.tensor(
-                data["clip_sample_starts"], dtype=torch.long, device=device
-            )
-            self.clip_sample_ends = torch.tensor(
-                data["clip_sample_ends"], dtype=torch.long, device=device
-            )
-        else:
-            # Only compute ranges for clips long enough; short ones get dummy [0,1)
-            lengths_np = self.clip_lengths.cpu().numpy()
-            sample_starts = np.zeros(self.num_clips, dtype=np.int64)
-            sample_ends = np.ones(self.num_clips, dtype=np.int64)
-            long_mask = ~short_mask.cpu().numpy()
-            if long_mask.any():
-                s, e = compute_clip_sample_ranges(
-                    lengths_np[long_mask],
-                    window_steps=self.window_steps,
-                )
-                sample_starts[long_mask] = s
-                sample_ends[long_mask] = e
-            self.clip_sample_starts = torch.tensor(
-                sample_starts, dtype=torch.long, device=device
-            )
-            self.clip_sample_ends = torch.tensor(
-                sample_ends, dtype=torch.long, device=device
-            )
+        self.clip_sample_starts = batch.sample_starts
+        self.clip_sample_ends = batch.sample_ends
         self.clip_sample_start_s = self.clip_sample_starts.float() * self.clip_dt
         self.clip_sample_end_s = self.clip_sample_ends.float() * self.clip_dt
+        self.clip_starts = self.clip_frame_offsets
+        ref_valid_seconds = (
+            (self.clip_sample_ends - self.clip_sample_starts).float() / self.clip_fps
+        )
+        if torch.any(ref_valid_seconds <= 0.0):
+            raise ValueError(
+                "HDF5 motion dataset contains windows with no valid sample duration "
+                f"after applying window_steps={list(self.window_steps)}"
+            )
+        self.sample_weights = ref_valid_seconds / torch.sum(ref_valid_seconds)
+
+    def close(self) -> None:
+        return None
 
     # ------------------------------------------------------------------
     # Sampling helpers
     # ------------------------------------------------------------------
 
     def sample_motion_ids(self, n: int) -> torch.Tensor:
-        """Sample *n* clip indices weighted by ``clip_weights``."""
-        total = self.clip_weights.sum()
-        if total <= 0:
-            raise ValueError(
-                "All clip weights are zero — cannot sample. "
-                "Check that the shard dataset was built with positive weights."
-            )
-        probs = self.clip_weights / total
-        return torch.multinomial(probs, n, replacement=True)
+        """Sample *n* clip indices by valid-duration weights."""
+        return torch.multinomial(self.sample_weights, int(n), replacement=True)
 
     def sample_times(self, motion_ids: torch.Tensor) -> torch.Tensor:
         """Uniform random time over valid center frames for each motion id."""
@@ -386,69 +327,6 @@ class MotionLib:
         """Return the earliest valid center time for each motion id."""
         return self.clip_sample_start_s[motion_ids]
 
-    def build_time_bins(
-        self, bin_duration_s: float
-    ) -> dict[str, torch.Tensor | int]:
-        """Partition clips into fixed-duration time bins.
-
-        Each clip is independently split into bins of ``bin_duration_s`` seconds.
-        The last bin in a clip may be shorter than ``bin_duration_s``.
-
-        Returns a dict with:
-        - ``num_bins``: total number of bins across all clips.
-        - ``bin_clip_id``: (num_bins,) which clip each bin belongs to.
-        - ``bin_start_s``: (num_bins,) start time (seconds) within the clip.
-        - ``bin_end_s``: (num_bins,) end time (seconds) within the clip.
-        - ``bin_duration``: (num_bins,) actual duration of each bin.
-        - ``clip_bin_offset``: (num_clips,) index of the first bin for each clip
-          (-1 for zero-weight clips).
-        """
-        clip_ids: list[int] = []
-        starts: list[float] = []
-        ends: list[float] = []
-        clip_bin_offsets = torch.full(
-            (self.num_clips,), -1, dtype=torch.long, device=self._device
-        )
-
-        for i in range(self.num_clips):
-            w = self.clip_weights[i].item()
-            if w <= 0:
-                continue
-            t0 = self.clip_sample_start_s[i].item()
-            t1 = self.clip_sample_end_s[i].item()
-            sampleable = t1 - t0
-            if sampleable <= 0:
-                continue
-
-            clip_bin_offsets[i] = len(clip_ids)
-            n_bins = math.ceil(sampleable / bin_duration_s)
-            for j in range(n_bins):
-                b_start = t0 + j * bin_duration_s
-                b_end = min(t0 + (j + 1) * bin_duration_s, t1)
-                clip_ids.append(i)
-                starts.append(b_start)
-                ends.append(b_end)
-
-        if not clip_ids:
-            raise ValueError(
-                "No valid time bins could be created — all clips have zero "
-                "weight or zero sampleable range."
-            )
-
-        bin_clip_id = torch.tensor(clip_ids, dtype=torch.long, device=self._device)
-        bin_start_s = torch.tensor(starts, dtype=torch.float32, device=self._device)
-        bin_end_s = torch.tensor(ends, dtype=torch.float32, device=self._device)
-        bin_duration = bin_end_s - bin_start_s
-
-        return {
-            "num_bins": len(clip_ids),
-            "bin_clip_id": bin_clip_id,
-            "bin_start_s": bin_start_s,
-            "bin_end_s": bin_end_s,
-            "bin_duration": bin_duration,
-            "clip_bin_offset": clip_bin_offsets,
-        }
-
     def _compute_interpolation_state(
         self,
         motion_ids: torch.Tensor,
@@ -456,7 +334,6 @@ class MotionLib:
         steps: tuple[int, ...],
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         fps = self.clip_fps[motion_ids]
-        starts = self.clip_starts[motion_ids]
         lengths = self.clip_lengths[motion_ids]
         durations = self.clip_duration_s[motion_ids]
 
@@ -475,10 +352,8 @@ class MotionLib:
         frame_i0 = torch.clamp(frame_i0, min=zero, max=max_frame)
         frame_i1 = torch.clamp(frame_i1, min=zero, max=max_frame)
 
-        idx0 = (starts[:, None] + frame_i0).reshape(-1)
-        idx1 = (starts[:, None] + frame_i1).reshape(-1)
         window = len(steps)
-        return idx0, idx1, alpha.reshape(-1), window
+        return frame_i0.reshape(-1), frame_i1.reshape(-1), alpha.reshape(-1), window
 
     _ALL_KEYS = frozenset((
         "joint_pos", "joint_vel",
@@ -511,6 +386,9 @@ class MotionLib:
             steps,
         )
         batch = motion_ids.shape[0]
+        frame_offsets = self.clip_frame_offsets[motion_ids]
+        flat_idx0 = (frame_offsets[:, None] + idx0.reshape(batch, window)).reshape(-1)
+        flat_idx1 = (frame_offsets[:, None] + idx1.reshape(batch, window)).reshape(-1)
         want = self._ALL_KEYS if keys is None else keys
 
         result: dict[str, torch.Tensor] = {}
@@ -520,7 +398,7 @@ class MotionLib:
         for key, arr_t in (("joint_pos", self._joint_pos_t), ("joint_vel", self._joint_vel_t)):
             if key not in want:
                 continue
-            v0, v1 = arr_t[idx0], arr_t[idx1]
+            v0, v1 = arr_t[flat_idx0], arr_t[flat_idx1]
             result[key] = (v0 + a1 * (v1 - v0)).reshape(batch, window, -1)
 
         # body arrays: (T, B, D) — GPU gather + lerp, optionally pre-slice bodies
@@ -533,20 +411,21 @@ class MotionLib:
             if key not in want:
                 continue
             if body_indices is not None:
-                v0, v1 = arr_t[idx0][:, body_indices], arr_t[idx1][:, body_indices]
+                v0 = arr_t[flat_idx0][:, body_indices]
+                v1 = arr_t[flat_idx1][:, body_indices]
             else:
-                v0, v1 = arr_t[idx0], arr_t[idx1]
+                v0, v1 = arr_t[flat_idx0], arr_t[flat_idx1]
             interp = v0 + a2 * (v1 - v0)
             result[key] = interp.reshape(batch, window, *interp.shape[1:])
 
         # body_quat_w: GPU slerp, optionally pre-slice bodies
         if "body_quat_w" in want:
             if body_indices is not None:
-                q0 = self._body_quat_w_t[idx0][:, body_indices]
-                q1 = self._body_quat_w_t[idx1][:, body_indices]
+                q0 = self._body_quat_w_t[flat_idx0][:, body_indices]
+                q1 = self._body_quat_w_t[flat_idx1][:, body_indices]
             else:
-                q0 = self._body_quat_w_t[idx0]
-                q1 = self._body_quat_w_t[idx1]
+                q0 = self._body_quat_w_t[flat_idx0]
+                q1 = self._body_quat_w_t[flat_idx1]
             nb = q0.shape[1]
             q0_flat = q0.reshape(-1, 4)
             q1_flat = q1.reshape(-1, 4)
@@ -574,9 +453,18 @@ class MotionLib:
             key: value[:, 0] for key, value in windowed.items()
         }
 
-
-# Backward compatibility alias
-MotionLoader = MotionLib
+def _validate_rewind_sampling_cfg(cfg: Any) -> None:
+    if cfg.rewind_min_steps < 0:
+        raise ValueError(
+            f"rewind_min_steps must be non-negative, got {cfg.rewind_min_steps}"
+        )
+    if cfg.rewind_max_steps < cfg.rewind_min_steps:
+        raise ValueError(
+            "rewind_max_steps must be >= rewind_min_steps, got "
+            f"{cfg.rewind_max_steps} < {cfg.rewind_min_steps}"
+        )
+    if not 0.0 <= cfg.rewind_prob <= 1.0:
+        raise ValueError(f"rewind_prob must be in [0, 1], got {cfg.rewind_prob}")
 
 
 class MotionCommand(CommandTerm):
@@ -585,10 +473,8 @@ class MotionCommand(CommandTerm):
 
     def __init__(self, cfg: MotionCommandCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
-        _validate_legacy_adaptive_config(
-            adaptive_kernel_size=cfg.adaptive_kernel_size,
-            adaptive_lambda=cfg.adaptive_lambda,
-        )
+        if self.cfg.sampling_mode == "rewind":
+            _validate_rewind_sampling_cfg(self.cfg)
 
         self.robot: Entity = env.scene[cfg.entity_name]
         self.robot_anchor_body_index = self.robot.body_names.index(
@@ -604,6 +490,7 @@ class MotionCommand(CommandTerm):
         self.motion = MotionLib(
             self.cfg.motion_file,
             self.body_indexes,
+            body_names=self.cfg.body_names,
             device=self.device,
             window_steps=self.cfg.window_steps,
         )
@@ -632,50 +519,6 @@ class MotionCommand(CommandTerm):
         self.body_lin_vel_b = torch.zeros(self.num_envs, nb, 3, device=self.device)
         self.body_ang_vel_b = torch.zeros(self.num_envs, nb, 3, device=self.device)
 
-        self.bin_count = max(self.motion.num_clips, 1)
-        self.bin_failed_rate = torch.zeros(
-            self.bin_count, dtype=torch.float, device=self.device
-        )
-        self._accum_exposure_count = torch.zeros(
-            self.bin_count, dtype=torch.float, device=self.device
-        )
-        self._accum_failure_count = torch.zeros(
-            self.bin_count, dtype=torch.float, device=self.device
-        )
-        self.kernel = torch.ones(1, device=self.device)
-
-        # --- adaptive_bin mode: time-bin data structures ---
-        if self.cfg.sampling_mode == "adaptive_bin":
-            bin_data = self.motion.build_time_bins(self.cfg.adaptive_bin_duration_s)
-            self.num_time_bins: int = bin_data["num_bins"]
-            self.tb_clip_id: torch.Tensor = bin_data["bin_clip_id"]
-            self.tb_start_s: torch.Tensor = bin_data["bin_start_s"]
-            self.tb_end_s: torch.Tensor = bin_data["bin_end_s"]
-            self.tb_duration: torch.Tensor = bin_data["bin_duration"]
-            self.tb_clip_bin_offset: torch.Tensor = bin_data["clip_bin_offset"]
-
-            self.tb_failed_rate = torch.zeros(
-                self.num_time_bins, dtype=torch.float, device=self.device
-            )
-            self._tb_accum_exposure = torch.zeros(
-                self.num_time_bins, dtype=torch.float, device=self.device
-            )
-            self._tb_accum_failure = torch.zeros(
-                self.num_time_bins, dtype=torch.float, device=self.device
-            )
-            self._env_bin_ids = torch.zeros(
-                self.num_envs, dtype=torch.long, device=self.device
-            )
-            # Override bin_count so metrics (entropy, top1) use time bins
-            self.bin_count = self.num_time_bins
-            _LOG.info(
-                "adaptive_bin: %d time bins (duration=%.1fs, beta=%.1f, alpha=%.2f)",
-                self.num_time_bins,
-                self.cfg.adaptive_bin_duration_s,
-                self.cfg.adaptive_bin_beta,
-                self.cfg.adaptive_bin_alpha,
-            )
-
         self.metrics["error_anchor_pos"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["error_anchor_rot"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["error_anchor_lin_vel"] = torch.zeros(
@@ -688,11 +531,7 @@ class MotionCommand(CommandTerm):
         self.metrics["error_body_rot"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["error_joint_pos"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["error_joint_vel"] = torch.zeros(self.num_envs, device=self.device)
-        self.metrics["sampling_entropy"] = torch.zeros(self.num_envs, device=self.device)
-        self.metrics["sampling_top1_prob"] = torch.zeros(self.num_envs, device=self.device)
-        self.metrics["sampling_top1_bin"] = torch.zeros(self.num_envs, device=self.device)
 
-        # Feet standing state (for feet_air_time_ref rewards)
         if self.cfg.feet_body_names:
             self._feet_body_indexes = [
                 self.cfg.body_names.index(n) for n in self.cfg.feet_body_names
@@ -932,110 +771,44 @@ class MotionCommand(CommandTerm):
     # Sampling
     # ------------------------------------------------------------------
 
-    def _adaptive_sampling(self, env_ids: torch.Tensor):
-        current_motion_ids = self.motion_ids[env_ids]
-        episode_failed = self._env.termination_manager.terminated[env_ids]
-        exposure, failure = _compute_clip_counts(
-            current_motion_ids, episode_failed, self.bin_count
-        )
-        self._accum_exposure_count += exposure
-        self._accum_failure_count += failure
-
-        sampling_probabilities = (
-            self.bin_failed_rate
-            + self.cfg.adaptive_uniform_ratio / float(self.bin_count)
-        )
-        sampling_probabilities = _normalize_sampling_probabilities(
-            sampling_probabilities,
-            adaptive_uniform_ratio=self.cfg.adaptive_uniform_ratio,
-            bin_count=self.bin_count,
-        )
-
-        sampled_clips = torch.multinomial(
-            sampling_probabilities, len(env_ids), replacement=True
-        )
-        self.motion_ids[env_ids] = sampled_clips
-        self.motion_times[env_ids] = self.motion.sample_times(sampled_clips)
-
-        entropy = -(sampling_probabilities * (sampling_probabilities + 1e-12).log()).sum()
-        entropy_norm = entropy / math.log(self.bin_count) if self.bin_count > 1 else 1.0
-        top1_prob, top1_bin = sampling_probabilities.max(dim=0)
-        self.metrics["sampling_entropy"][:] = entropy_norm
-        self.metrics["sampling_top1_prob"][:] = top1_prob
-        self.metrics["sampling_top1_bin"][:] = top1_bin.float() / self.bin_count
-
     def _uniform_sampling(self, env_ids: torch.Tensor):
         self.motion_ids[env_ids] = self.motion.sample_motion_ids(len(env_ids))
         self.motion_times[env_ids] = self.motion.sample_times(self.motion_ids[env_ids])
-        self.metrics["sampling_entropy"][:] = 1.0
-        self.metrics["sampling_top1_prob"][:] = 1.0 / max(self.bin_count, 1)
-        self.metrics["sampling_top1_bin"][:] = 0.5
 
-    def _time_to_bin_index(
-        self, motion_ids: torch.Tensor, motion_times: torch.Tensor
-    ) -> torch.Tensor:
-        """Map (clip_id, time_in_clip) pairs to time-bin indices."""
-        offsets = self.tb_clip_bin_offset[motion_ids]  # first bin of each clip
-        local_time = motion_times - self.tb_start_s[offsets]
-        bin_within_clip = (local_time / self.cfg.adaptive_bin_duration_s).long()
-        # Clamp to valid range: last bin of each clip
-        # Total bins per clip = number of consecutive bins with same clip_id
-        # Simple approach: clamp so offset + bin_within_clip stays < num_time_bins
-        # and the clip_id matches
-        bin_within_clip = torch.clamp(bin_within_clip, min=0)
-        result = offsets + bin_within_clip
-        result = torch.clamp(result, max=self.num_time_bins - 1)
-        return result
+    def _rewind_sampling(self, env_ids: torch.Tensor) -> None:
+        _validate_rewind_sampling_cfg(self.cfg)
 
-    def _adaptive_bin_sampling(self, env_ids: torch.Tensor):
-        """SONIC-inspired bin-based adaptive sampling."""
-        # 1. Accumulate failure statistics per time bin
-        current_bin_ids = self._env_bin_ids[env_ids]
+        previous_motion_ids = self.motion_ids[env_ids].clone()
+        previous_motion_times = self.motion_times[env_ids].clone()
+        self._uniform_sampling(env_ids)
+        if env_ids.numel() == 0 or self.cfg.rewind_prob <= 0.0:
+            return
+
         episode_failed = self._env.termination_manager.terminated[env_ids]
-        exposure = torch.bincount(
-            current_bin_ids, minlength=self.num_time_bins
-        ).float()
-        failure = torch.bincount(
-            current_bin_ids[episode_failed], minlength=self.num_time_bins
-        ).float()
-        self._tb_accum_exposure += exposure
-        self._tb_accum_failure += failure
-
-        # 2. Compute capped, blended probabilities
-        capped = _cap_failure_rates(self.tb_failed_rate, self.cfg.adaptive_bin_beta)
-        capped_sum = capped.sum()
-        if capped_sum > 0:
-            p_hat = capped / capped_sum
-        else:
-            p_hat = torch.ones_like(capped) / self.num_time_bins
-
-        alpha = self.cfg.adaptive_bin_alpha
-        p_final = alpha * p_hat + (1.0 - alpha) / self.num_time_bins
-        # Normalize for numerical safety
-        p_final = p_final / p_final.sum()
-
-        # 3. Sample bins, then sample frames within bins
-        sampled_bins = torch.multinomial(p_final, len(env_ids), replacement=True)
-        sampled_clip_ids = self.tb_clip_id[sampled_bins]
-        bin_starts = self.tb_start_s[sampled_bins]
-        bin_durs = self.tb_duration[sampled_bins]
-        sampled_times = bin_starts + torch.rand(
-            len(env_ids), device=self.device
-        ) * bin_durs
-
-        self.motion_ids[env_ids] = sampled_clip_ids
-        self.motion_times[env_ids] = sampled_times
-        self._env_bin_ids[env_ids] = sampled_bins
-
-        # 4. Update metrics
-        entropy = -(p_final * (p_final + 1e-12).log()).sum()
-        entropy_norm = (
-            entropy / math.log(self.num_time_bins) if self.num_time_bins > 1 else 1.0
+        use_rewind = episode_failed & (
+            torch.rand(env_ids.numel(), device=self.device) < self.cfg.rewind_prob
         )
-        top1_prob, top1_bin = p_final.max(dim=0)
-        self.metrics["sampling_entropy"][:] = entropy_norm
-        self.metrics["sampling_top1_prob"][:] = top1_prob
-        self.metrics["sampling_top1_bin"][:] = top1_bin.float() / self.num_time_bins
+        if not torch.any(use_rewind):
+            return
+
+        rewind_env_ids = env_ids[use_rewind]
+        rewind_steps = torch.randint(
+            self.cfg.rewind_min_steps,
+            self.cfg.rewind_max_steps + 1,
+            (rewind_env_ids.numel(),),
+            device=self.device,
+            dtype=torch.long,
+        )
+        rewind_s = rewind_steps.to(dtype=self.motion_times.dtype) * float(self._step_dt)
+        motion_ids = previous_motion_ids[use_rewind]
+        rewind_times = previous_motion_times[use_rewind] - rewind_s
+        rewind_times = torch.maximum(
+            rewind_times,
+            self.motion.clip_sample_start_s[motion_ids],
+        )
+
+        self.motion_ids[rewind_env_ids] = motion_ids
+        self.motion_times[rewind_env_ids] = rewind_times
 
     def _resample_command(self, env_ids: torch.Tensor):
         if self.cfg.sampling_mode == "start":
@@ -1043,12 +816,17 @@ class MotionCommand(CommandTerm):
             self.motion_times[env_ids] = self.motion.sample_start_times(self.motion_ids[env_ids])
         elif self.cfg.sampling_mode == "uniform":
             self._uniform_sampling(env_ids)
-        elif self.cfg.sampling_mode == "adaptive_bin":
-            self._adaptive_bin_sampling(env_ids)
+        elif self.cfg.sampling_mode == "rewind":
+            self._rewind_sampling(env_ids)
         else:
-            assert self.cfg.sampling_mode == "adaptive"
-            self._adaptive_sampling(env_ids)
+            raise ValueError(
+                f"Unsupported motion sampling_mode={self.cfg.sampling_mode!r}. "
+                "Supported modes are 'uniform', 'start', and 'rewind'."
+            )
 
+        self._reset_envs_to_current_reference(env_ids)
+
+    def _reset_envs_to_current_reference(self, env_ids: torch.Tensor) -> None:
         if env_ids.numel() == 0:
             return
 
@@ -1174,54 +952,6 @@ class MotionCommand(CommandTerm):
         self._refresh_body_local_cache()
         self._update_feet_standing()
 
-        if self.cfg.sampling_mode == "adaptive":
-            # Sync raw counts across ranks for unified statistics
-            if _is_distributed():
-                torch.distributed.all_reduce(self._accum_exposure_count)
-                torch.distributed.all_reduce(self._accum_failure_count)
-
-            # Only update EMA when new data exists (fixes decay-on-empty-step)
-            if self._accum_exposure_count.sum() > 0:
-                valid = self._accum_exposure_count > 0
-                global_rate = torch.zeros_like(self.bin_failed_rate)
-                global_rate[valid] = (
-                    self._accum_failure_count[valid]
-                    / self._accum_exposure_count[valid]
-                )
-                self.bin_failed_rate = (
-                    self.cfg.adaptive_alpha * global_rate
-                    + (1 - self.cfg.adaptive_alpha) * self.bin_failed_rate
-                )
-
-            self._accum_exposure_count.zero_()
-            self._accum_failure_count.zero_()
-
-        elif self.cfg.sampling_mode == "adaptive_bin":
-            # Keep bin ids in sync with current motion_times so that
-            # failures are attributed to the bin the agent is *in*, not the
-            # bin it was initially sampled from.
-            self._env_bin_ids = self._time_to_bin_index(
-                self.motion_ids, self.motion_times
-            )
-
-            if _is_distributed():
-                torch.distributed.all_reduce(self._tb_accum_exposure)
-                torch.distributed.all_reduce(self._tb_accum_failure)
-
-            if self._tb_accum_exposure.sum() > 0:
-                valid = self._tb_accum_exposure > 0
-                global_rate = torch.zeros_like(self.tb_failed_rate)
-                global_rate[valid] = (
-                    self._tb_accum_failure[valid] / self._tb_accum_exposure[valid]
-                )
-                ema = self.cfg.adaptive_bin_alpha_ema
-                self.tb_failed_rate = (
-                    ema * global_rate + (1 - ema) * self.tb_failed_rate
-                )
-
-            self._tb_accum_exposure.zero_()
-            self._tb_accum_failure.zero_()
-
     # ------------------------------------------------------------------
     # Visualization
     # ------------------------------------------------------------------
@@ -1306,17 +1036,11 @@ class MotionCommandCfg(CommandTermCfg):
     pose_range: dict[str, tuple[float, float]] = field(default_factory=dict)
     velocity_range: dict[str, tuple[float, float]] = field(default_factory=dict)
     joint_position_range: tuple[float, float] = (-0.52, 0.52)
-    adaptive_kernel_size: int = 1
-    adaptive_lambda: float = 0.8
-    adaptive_uniform_ratio: float = 0.1
-    adaptive_alpha: float = 0.001
-    sampling_mode: Literal["adaptive", "adaptive_bin", "uniform", "start"] = "uniform"
-    # --- adaptive_bin mode params ---
-    adaptive_bin_duration_s: float = 5.0
-    adaptive_bin_beta: float = 5.0
-    adaptive_bin_alpha: float = 0.8
-    adaptive_bin_alpha_ema: float = 0.001
+    sampling_mode: Literal["uniform", "start", "rewind"] = "rewind"
     window_steps: tuple[int, ...] = (0,)
+    rewind_prob: float = 0.8
+    rewind_min_steps: int = 25
+    rewind_max_steps: int = 75
     feet_body_names: tuple[str, ...] = ()
     feet_standing_z_threshold: float = 0.18
     feet_standing_vxy_threshold: float = 0.2

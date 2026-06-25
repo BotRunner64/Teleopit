@@ -21,9 +21,7 @@ There are two deployment styles:
 Both styles use `Pico4InputProvider` and the in-process pico-bridge receiver.
 There is no separate onboard Pico input mode.
 
-For Teleopit 0.3.0, keep the host receiver on pico-bridge 0.2.0. pico-bridge
-0.2.1 changes interface semantics and is not the supported receiver version for
-this Teleopit release.
+Teleopit targets pico-bridge 0.2.1 and its `pico_native` tracking semantics.
 
 ## 1. Install Runtime Dependencies
 
@@ -97,6 +95,32 @@ python scripts/run/run_sim2real.py \
     real_robot.network_interface=eth0
 ```
 
+## Optional HDF5 Recording
+
+Install the recording extra on the machine that owns Pico input and RealSense:
+
+```bash
+pip install -e '.[recording]'
+```
+
+Run the recording config:
+
+```bash
+python scripts/run/run_sim2real.py \
+    --config-name sim2real_record \
+    controller.policy_path=track.onnx \
+    real_robot.network_interface=enp130s0 \
+    recording.task="walk forward"
+```
+
+Terminal controls are `R` start episode, `S` save, `D` discard, and `Q`
+shutdown. `STANDING`, `MOCAP`, `ARMS`, and paused mocap can be recorded;
+saved episodes cannot be discarded afterward. Episodes are saved as `.h5` files
+under `data/recordings/sim2real_hdf5/episodes/`, with compressed MP4 sidecar
+videos under `data/recordings/sim2real_hdf5/videos/`. The HDF5 episode stores
+`frame_index` and `timestamp` sync arrays plus `observation.state(68)`,
+`observation.mode(1)`, `action(36)`, and `action.hand(12)` at 30 Hz.
+
 ## Operator Flow
 
 Keep the Unitree remote in hand. `L1+R1` is the emergency stop path into
@@ -107,6 +131,7 @@ Keep the Unitree remote in hand. `L1+R1` is the emergency stop path into
 | Unitree remote `Start` | Enter `STANDING` |
 | Unitree remote `Y` | Enter `MOCAP` |
 | Pico/controller `A` | Pause / resume live mocap |
+| Pico/controller `B` | Toggle `MOCAP` / `ARMS` |
 | Unitree remote `X` | Return to `STANDING` |
 | Unitree remote `L1+R1` | Emergency stop (`DAMPING`) |
 
@@ -124,10 +149,15 @@ Pico body frames -> retarget -> reference buffer -> observation -> policy -> G1 
 
 When entering `STANDING`, Teleopit releases active Unitree modes, enters
 debug/low-level control, locks the current joints briefly, resets policy state,
-and ramps Kp to reduce startup spikes.
+and ramps Kp without changing policy targets.
 
-When entering `MOCAP`, Teleopit resets policy/reference state and blends the
-reference from the current robot state into the live mocap command.
+When entering `MOCAP`, Teleopit resets policy/reference state and starts tracking
+the live mocap command through the realtime reference timeline.
+
+`ARMS` keeps the same live retargeting timeline running, but sends the motion
+tracker a composed reference: body, waist, and legs stay at the standing pose
+while both arms follow the live retargeted result. Entering or leaving `ARMS`
+resets policy/reference alignment and uses the same Kp ramp safety path.
 
 ## Pause / Resume
 
@@ -141,6 +171,92 @@ Pico pause/resume is a mocap-session control event.
 Resume while standing still and close to the paused pose. This reduces sudden
 reference changes when live tracking resumes.
 :::
+
+## Optional LinkerHand Control
+
+Pico sim2real can drive LinkerHand hands from Pico input:
+
+- `gripper`: hold the matching side grip as a deadman switch; the matching
+  trigger closes that hand. This mode supports `hands.driver=linkerhand_l6` and
+  `hands.driver=linkerhand_o6`; speed and open/close poses come from the matching
+  driver config.
+- `vr_hand_pose`: L6-only mode that retargets Pico hand pose through somehand and
+  commands the continuous L6 hand target. If a hand pose disappears, that side
+  keeps its last commanded pose. This mode uses Teleopit's Pico landmark adapter
+  and the public `somehand.api` from somehand 0.2.0. It always sets L6 speed to
+  the maximum.
+
+When `hands.enabled=true`, hand control remains active in all sim2real modes.
+Shutdown and hand-runtime failure send the configured open pose.
+
+Install the local hand-control packages first if they were not installed with
+the main Pico profile:
+
+```bash
+git submodule update --init --recursive
+pip install -e third_party/linkerhand-python-sdk
+pip install -e third_party/somehand
+scripts/setup/download_somehand_l6_assets.sh
+```
+
+Bring up the CAN interfaces before testing or running hand control:
+
+```bash
+sudo /usr/sbin/ip link set can0 up type can bitrate 1000000
+sudo /usr/sbin/ip link set can1 up type can bitrate 1000000
+```
+
+Before enabling full sim2real, verify the hand connection with a standalone
+open/close test. The test runs until Ctrl-C:
+
+```bash
+python scripts/dev/test_linkerhand_l6.py \
+    --hand-type both \
+    --left-can can0 \
+    --right-can can1
+```
+
+For an O6 standalone open/close test, add the O6 driver:
+
+```bash
+python scripts/dev/test_linkerhand_l6.py \
+    --driver linkerhand_o6 \
+    --hand-type both \
+    --left-can can0 \
+    --right-can can1
+```
+
+To test O6 with live Pico gripper input, add `--mode gripper`.
+
+Then enable L6 gripper control in Pico sim2real:
+
+```bash
+hands.enabled=true
+hands.driver=linkerhand_l6
+hands.mode=gripper
+hands.linkerhand_l6.left_can=can0
+hands.linkerhand_l6.right_can=can1
+```
+
+For O6 gripper control, use:
+
+```bash
+hands.enabled=true
+hands.driver=linkerhand_o6
+hands.mode=gripper
+hands.linkerhand_o6.left_can=can0
+hands.linkerhand_o6.right_can=can1
+```
+
+For continuous VR hand-pose control, use:
+
+```bash
+hands.enabled=true
+hands.driver=linkerhand_l6
+hands.mode=vr_hand_pose
+hands.linkerhand_l6.left_can=can0
+hands.linkerhand_l6.right_can=can1
+```
 
 ## Optional RealSense Preview
 
@@ -172,14 +288,13 @@ input.bridge_advertise_ip=192.168.1.20
 # Consecutive valid mocap frames required before MOCAP
 mocap_switch.check_frames=10
 
-# Smooth transition into mocap reference
-transition_duration=2.0
-
-# Realtime frames to collect before resume
-pause_resume_warmup_steps=2
-
 # Change Pico pause button
 input.pause_button=right_axis_click
+
+# Enable LinkerHand gripper control
+hands.enabled=true
+hands.driver=linkerhand_l6
+hands.mode=gripper
 
 # Enable headset video preview
 input.video.enabled=true
@@ -194,4 +309,5 @@ input.video.enabled=true
 | Cannot enter debug mode | Unitree mode release failed | Stop other robot modes and press `Start` again |
 | Robot enters `STANDING` but not `MOCAP` | Mocap validation failed | Keep tracking active and stable; check `mocap_switch.check_frames` logs |
 | Pico pause does not return to `STANDING` | Expected behavior | Pico pause freezes mocap; press remote `X` for `STANDING` |
+| LinkerHand does not move | `hands.enabled=false`, gripper deadman released, SDK/assets not installed, or CAN channel wrong | Enable `hands.enabled`, set `hands.mode`, run `scripts/dev/test_linkerhand_l6.py`, and check the selected driver's `left_can` / `right_can` |
 | Video preview is unavailable | RealSense or video source failed | Check camera permissions, `input.video.source`, and logs |

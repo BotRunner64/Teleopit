@@ -4,7 +4,7 @@
 Usage:
     python scripts/setup/download_assets.py                       # download everything (ModelScope)
     python scripts/setup/download_assets.py --source huggingface  # download from HuggingFace
-    python scripts/setup/download_assets.py --only gmr            # only GMR retargeting assets
+    python scripts/setup/download_assets.py --only robots gmr     # only robot XML/meshes + GMR retargeting assets
     python scripts/setup/download_assets.py --only ckpt           # only checkpoints
     python scripts/setup/download_assets.py --only data           # only training data
     python scripts/setup/download_assets.py --only bvh            # only sample BVH

@@ -22,20 +22,91 @@ def test_general_tracking_task_is_registered() -> None:
     critic_terms = env_cfg.observations["critic"].terms
 
     assert DEFAULT_TASK == GENERAL_TRACKING_TASK
-    for terms in (actor_terms, critic_terms):
-        assert "projected_gravity" in terms
-        assert "ref_base_lin_vel_b" in terms
-        assert "ref_base_ang_vel_b" in terms
-        assert "ref_projected_gravity_b" in terms
-    assert "motion_anchor_pos_b" not in actor_terms
-    assert "base_lin_vel" not in actor_terms
+    assert list(actor_terms) == [
+        "ref_joint_pos",
+        "ref_joint_vel",
+        "ref_anchor_ori_b",
+        "robot_base_ang_vel_b",
+        "robot_joint_pos_rel",
+        "robot_joint_vel",
+        "prev_action",
+        "robot_projected_gravity_b",
+        "ref_anchor_lin_vel_b",
+        "ref_anchor_ang_vel_b",
+        "ref_projected_gravity_b",
+        "ref_anchor_height",
+    ]
+    assert list(critic_terms) == [
+        "ref_joint_pos",
+        "ref_joint_vel",
+        "ref_anchor_pos_b",
+        "ref_anchor_ori_b",
+        "robot_tracking_body_pos_b",
+        "robot_tracking_body_ori_b",
+        "robot_base_lin_vel_b",
+        "robot_base_ang_vel_b",
+        "robot_joint_pos_rel",
+        "robot_joint_vel",
+        "prev_action",
+        "robot_projected_gravity_b",
+        "ref_anchor_lin_vel_b",
+        "ref_anchor_ang_vel_b",
+        "ref_projected_gravity_b",
+        "ref_anchor_height",
+    ]
     assert "actor_history" in env_cfg.observations
     assert "critic_history" in env_cfg.observations
-    assert env_cfg.commands["motion"].sampling_mode == "uniform"
+    assert env_cfg.commands["motion"].sampling_mode == "rewind"
     assert env_cfg.commands["motion"].window_steps == (0,)
+    assert env_cfg.rewards["motion_global_root_lin_vel"].weight == 1.0
+    assert env_cfg.rewards["motion_global_root_lin_vel"].params == {
+        "command_name": "motion",
+        "std": 1.0,
+    }
+    assert env_cfg.rewards["motion_global_root_ang_vel"].weight == 1.0
+    assert env_cfg.rewards["motion_global_root_ang_vel"].params == {
+        "command_name": "motion",
+        "std": 3.0,
+    }
+    assert env_cfg.rewards["motion_joint_pos"].weight == 1.0
+    assert env_cfg.rewards["motion_joint_pos"].params == {
+        "command_name": "motion",
+        "std": 0.5,
+    }
+    assert env_cfg.rewards["motion_joint_vel"].weight == 0.5
+    assert env_cfg.rewards["motion_joint_vel"].params == {
+        "command_name": "motion",
+        "std": 3.0,
+    }
+    assert env_cfg.rewards["survival"].weight == 3.0
+    assert env_cfg.rewards["survival"].params == {}
+    reward = env_cfg.rewards["self_collisions"]
+    assert reward.weight == -0.1
+    assert reward.params == {
+        "sensor_name": "self_collision",
+        "force_threshold": 1.0,
+    }
+    assert "undesired_contacts" not in env_cfg.rewards
+    sensors = {sensor.name: sensor for sensor in env_cfg.scene.sensors}
+    assert set(sensors) == {"self_collision"}
+    assert sensors["self_collision"].primary.mode == "body"
+    assert sensors["self_collision"].primary.pattern == r".*"
+    assert sensors["self_collision"].primary.exclude == (
+        "left_wrist_yaw_link",
+        "right_wrist_yaw_link",
+    )
+    assert sensors["self_collision"].secondary.mode == "subtree"
+    assert sensors["self_collision"].secondary.pattern == "pelvis"
+    assert sensors["self_collision"].reduce == "maxforce"
+    assert sensors["self_collision"].history_length == 4
+    feet_acc = env_cfg.rewards["feet_acc"]
+    assert feet_acc.weight == -2.5e-6
+    assert feet_acc.params["asset_cfg"].name == "robot"
+    assert feet_acc.params["asset_cfg"].joint_names == r".*ankle.*"
+    assert "anti_shake_ang_vel" not in env_cfg.rewards
     rl_cfg = load_rl_cfg(DEFAULT_TASK)
     assert rl_cfg.experiment_name == GENERAL_TRACKING_EXPERIMENT_NAME
-    assert rl_cfg.actor.hidden_dims == (1024, 512, 256, 256, 128)
+    assert rl_cfg.actor.hidden_dims == (2048, 1024, 512, 256, 128)
     assert load_runner_cls(DEFAULT_TASK) is MotionTrackingOnPolicyRunner
 
 

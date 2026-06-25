@@ -37,25 +37,13 @@ def build_simulation_cfg(cfg: Any) -> dict[str, object]:
     return {
         "policy_hz": float(cfg_get(cfg, "policy_hz", 50.0)),
         "pd_hz": float(cfg_get(cfg, "pd_hz", 1000.0)),
-        "transition_duration": float(cfg_get(cfg, "transition_duration", 0.0) or 0.0),
-        "pause_resume_transition_duration": float(
-            cfg_get(cfg, "pause_resume_transition_duration", cfg_get(cfg, "transition_duration", 0.0)) or 0.0
-        ),
-        "pause_resume_warmup_steps": cfg_get(cfg, "pause_resume_warmup_steps", None),
         "retarget_buffer_enabled": bool(cfg_get(cfg, "retarget_buffer_enabled", True)),
         "retarget_buffer_window_s": float(cfg_get(cfg, "retarget_buffer_window_s", 0.5)),
         "retarget_buffer_delay_s": cfg_get(cfg, "retarget_buffer_delay_s", None),
         "reference_steps": cfg_get(cfg, "reference_steps", [0]),
         "reference_debug_log": bool(cfg_get(cfg, "reference_debug_log", False)),
         "realtime_input_delay_s": cfg_get(cfg, "realtime_input_delay_s", None),
-        "realtime_buffer_low_watermark_steps": cfg_get(cfg, "realtime_buffer_low_watermark_steps", None),
-        "realtime_buffer_high_watermark_steps": cfg_get(cfg, "realtime_buffer_high_watermark_steps", None),
         "realtime_buffer_warmup_steps": cfg_get(cfg, "realtime_buffer_warmup_steps", None),
-        "realtime_catchup_enabled": bool(cfg_get(cfg, "realtime_catchup_enabled", False)),
-        "realtime_catchup_trigger_steps": cfg_get(cfg, "realtime_catchup_trigger_steps", None),
-        "realtime_catchup_release_steps": cfg_get(cfg, "realtime_catchup_release_steps", None),
-        "realtime_catchup_target_delay_s": cfg_get(cfg, "realtime_catchup_target_delay_s", None),
-        "reference_qpos_smoothing_alpha": float(cfg_get(cfg, "reference_qpos_smoothing_alpha", 1.0)),
         "reference_velocity_smoothing_alpha": float(cfg_get(cfg, "reference_velocity_smoothing_alpha", 1.0)),
         "reference_anchor_velocity_smoothing_alpha": float(
             cfg_get(cfg, "reference_anchor_velocity_smoothing_alpha", 1.0)
@@ -164,11 +152,6 @@ def _build_policy_components(
     policy_dim = getattr(controller, "_expected_obs_dim", None)
     builder_dim = getattr(obs_builder, "total_obs_size", None)
     if policy_dim is not None and builder_dim is not None and policy_dim != builder_dim:
-        if builder_dim == 166:
-            raise ValueError(
-                f"Only 166D velcmd_history ONNX policies are supported here; "
-                f"obs_builder produces 166D but policy expects {policy_dim}D."
-            )
         raise ValueError(
             f"Observation dimension mismatch at startup: obs_builder produces {builder_dim}D "
             f"but policy expects {policy_dim}D. Use a matching ONNX model."

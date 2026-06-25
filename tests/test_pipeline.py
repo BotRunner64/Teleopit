@@ -18,7 +18,7 @@ def test_pipeline_inherits_robot_action_decode_config(monkeypatch, tmp_path: Pat
             captured["robot_cfg"] = cfg
 
     class DummyController:
-        _expected_obs_dim = 166
+        _expected_obs_dim = 167
         _multi_input = True
 
         def __init__(self, cfg: object) -> None:
@@ -28,7 +28,7 @@ def test_pipeline_inherits_robot_action_decode_config(monkeypatch, tmp_path: Pat
             pass
 
     class DummyObsBuilder:
-        total_obs_size = 166
+        total_obs_size = 167
 
         def __init__(self, cfg: object) -> None:
             captured["obs_cfg"] = cfg
@@ -81,14 +81,10 @@ def test_pipeline_inherits_robot_action_decode_config(monkeypatch, tmp_path: Pat
             },
             "policy_hz": 50,
             "pd_hz": 1000,
-            "transition_duration": 1.5,
-            "pause_resume_transition_duration": 0.75,
-            "pause_resume_warmup_steps": 3,
             "keyboard": {"enabled": True},
             "retarget_buffer_enabled": True,
             "retarget_buffer_window_s": 0.75,
             "retarget_buffer_delay_s": 0.02,
-            "reference_qpos_smoothing_alpha": 0.4,
             "reference_steps": [0, 1, -1],
             "realtime": True,
             "viewers": ["retarget", "sim2sim"],
@@ -108,14 +104,10 @@ def test_pipeline_inherits_robot_action_decode_config(monkeypatch, tmp_path: Pat
     loop_cfg = captured["loop_args"][4]
     assert list(controller_cfg.default_dof_pos) == robot_default_angles
     assert list(controller_cfg.action_scale) == robot_action_scale
-    assert loop_cfg["transition_duration"] == pytest.approx(1.5)
-    assert loop_cfg["pause_resume_transition_duration"] == pytest.approx(0.75)
-    assert loop_cfg["pause_resume_warmup_steps"] == 3
     assert loop_cfg["keyboard"]["enabled"] is True
     assert loop_cfg["retarget_buffer_enabled"] is True
     assert loop_cfg["retarget_buffer_window_s"] == pytest.approx(0.75)
     assert loop_cfg["retarget_buffer_delay_s"] == pytest.approx(0.02)
-    assert loop_cfg["reference_qpos_smoothing_alpha"] == pytest.approx(0.4)
     assert list(loop_cfg["reference_steps"]) == [0, 1, -1]
     assert loop_cfg["realtime"] is True
     assert captured["loop_kwargs"]["viewers"] == {"retarget", "sim2sim"}
@@ -127,7 +119,7 @@ def test_pipeline_rejects_legacy_viewer_key(monkeypatch, tmp_path: Path) -> None
             pass
 
     class DummyController:
-        _expected_obs_dim = 166
+        _expected_obs_dim = 167
         _multi_input = True
 
         def __init__(self, cfg: object) -> None:
@@ -137,7 +129,7 @@ def test_pipeline_rejects_legacy_viewer_key(monkeypatch, tmp_path: Path) -> None
             pass
 
     class DummyObsBuilder:
-        total_obs_size = 166
+        total_obs_size = 167
 
         def __init__(self, cfg: object) -> None:
             pass
@@ -196,7 +188,7 @@ def test_pipeline_uses_default_human_height_when_input_height_unset(monkeypatch,
             pass
 
     class DummyController:
-        _expected_obs_dim = 166
+        _expected_obs_dim = 167
         _multi_input = True
 
         def __init__(self, cfg: object) -> None:
@@ -206,7 +198,7 @@ def test_pipeline_uses_default_human_height_when_input_height_unset(monkeypatch,
             pass
 
     class DummyObsBuilder:
-        total_obs_size = 166
+        total_obs_size = 167
 
         def __init__(self, cfg: object) -> None:
             pass
@@ -276,7 +268,7 @@ def test_pipeline_prefers_explicit_input_human_height(monkeypatch, tmp_path: Pat
             pass
 
     class DummyController:
-        _expected_obs_dim = 166
+        _expected_obs_dim = 167
         _multi_input = True
 
         def __init__(self, cfg: object) -> None:
@@ -286,7 +278,7 @@ def test_pipeline_prefers_explicit_input_human_height(monkeypatch, tmp_path: Pat
             pass
 
     class DummyObsBuilder:
-        total_obs_size = 166
+        total_obs_size = 167
 
         def __init__(self, cfg: object) -> None:
             pass
@@ -392,7 +384,7 @@ def _pipeline_cfg(tmp_path: Path) -> dict:
 
 @requires_mujoco
 @_skip_no_xml
-def test_pipeline_166d_policy_required(monkeypatch, tmp_path: Path) -> None:
+def test_pipeline_policy_dim_mismatch_required(monkeypatch, tmp_path: Path) -> None:
     class DummyController160:
         _expected_obs_dim = 160
         _multi_input = True
@@ -428,7 +420,7 @@ def test_pipeline_166d_policy_required(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("teleopit.pipeline.SimulationLoop", DummyLoop)
 
     cfg = OmegaConf.create(_pipeline_cfg(tmp_path))
-    with pytest.raises(ValueError, match="Only 166D"):
+    with pytest.raises(ValueError, match="Observation dimension mismatch"):
         TeleopPipeline(cfg)
 
 
@@ -436,7 +428,7 @@ def test_pipeline_166d_policy_required(monkeypatch, tmp_path: Path) -> None:
 @_skip_no_xml
 def test_pipeline_requires_dual_input_policy(monkeypatch, tmp_path: Path) -> None:
     class DummyControllerSingle:
-        _expected_obs_dim = 166
+        _expected_obs_dim = 167
         _multi_input = False
 
         def __init__(self, cfg: object) -> None:
@@ -477,8 +469,8 @@ def test_pipeline_requires_dual_input_policy(monkeypatch, tmp_path: Path) -> Non
 @requires_mujoco
 @_skip_no_xml
 def test_pipeline_dim_match_passes(monkeypatch, tmp_path: Path) -> None:
-    class DummyController166:
-        _expected_obs_dim = 166
+    class DummyController167:
+        _expected_obs_dim = 167
         _multi_input = True
 
         def __init__(self, cfg: object) -> None:
@@ -505,7 +497,7 @@ def test_pipeline_dim_match_passes(monkeypatch, tmp_path: Path) -> None:
         def __init__(self, *args: object, **kwargs: object) -> None:
             pass
 
-    monkeypatch.setattr("teleopit.pipeline.RLPolicyController", DummyController166)
+    monkeypatch.setattr("teleopit.pipeline.RLPolicyController", DummyController167)
     monkeypatch.setattr("teleopit.pipeline.MuJoCoRobot", DummyRobot)
     monkeypatch.setattr("teleopit.pipeline.BVHInputProvider", DummyInputProvider)
     monkeypatch.setattr("teleopit.pipeline.RetargetingModule", DummyRetargeter)
@@ -513,4 +505,4 @@ def test_pipeline_dim_match_passes(monkeypatch, tmp_path: Path) -> None:
 
     cfg = OmegaConf.create(_pipeline_cfg(tmp_path))
     pipeline = TeleopPipeline(cfg)
-    assert pipeline.obs_builder.total_obs_size == 166
+    assert pipeline.obs_builder.total_obs_size == 167

@@ -35,7 +35,7 @@ sidebar_position: 5
 
 ```bash
 python train_mimic/scripts/data/check_motion_npz_fk.py \
-    --npz data/datasets/<dataset>/clips/<source>/<clip>.npz
+    --npz data/lafan1_clips/lafan1/<clip>.npz
 ```
 
 推荐判据：`pos_max < 1e-3 m`、`quat_mean < 0.05 rad`、`quat_p95 < 0.10 rad`。
@@ -45,7 +45,7 @@ python train_mimic/scripts/data/check_motion_npz_fk.py \
 ```bash
 python train_mimic/scripts/train.py \
     --num_envs 64 --max_iterations 100 \
-    --motion_file data/datasets/<dataset>/train
+    --motion_file data/datasets/<dataset>_precomputed
 ```
 
 预期：`Mean episode length` 明显大于 1，`error_anchor_pos` 开始下降。
@@ -126,7 +126,7 @@ self.sim.nconmax = 150_000
 ```bash
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/<dataset>/val \
+    --motion_file data/datasets/<dataset>_precomputed \
     --num_envs 1 --num_eval_steps 2000 \
     --video --video_length 600
 ```
@@ -168,6 +168,6 @@ print(cfg.init_state.joint_pos)  # 必须与 g1.yaml default_angles 一致
 
 ### 解决方案
 
-更新 `teleopit/configs/robot/g1.yaml` 和 `g1_mjlab.xml`，使其与训练环境的值一致（default angles、armature、condim）。
+更新 `teleopit/configs/robot/g1.yaml` 和 `assets/robots/unitree_g1/g1_29dof.xml`，使其与训练环境的值一致（default angles、armature、condim）。
 
 此修复同时影响 sim2real 路径，因为 `default_angles` 被 `rl_policy.py` 和 `observation.py` 共用。

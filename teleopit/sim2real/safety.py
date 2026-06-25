@@ -30,18 +30,18 @@ class Sim2RealSafetyManager:
     ) -> None:
         self._robot = robot
         self._policy_hz = policy_hz
-
         real_cfg = cfg_get(cfg, "real_robot")
 
-        # KP ramp (gradually increase PD gains after episode-reset)
-        _legacy_ramp_dur = cfg_get(cfg, "startup_ramp_duration", cfg_get(real_cfg, "startup_ramp_duration", 2.0))
-        kp_ramp_dur = float(cfg_get(cfg, "kp_ramp_duration", _legacy_ramp_dur))
-        self._kp_ramp_duration_steps: int = max(1, int(kp_ramp_dur * policy_hz))
+        # Kp ramp gradually increases PD gains after episode-reset.
+        startup_ramp_duration = float(cfg_get(cfg, "startup_ramp_duration", 2.0))
+        self._default_kp_ramp_duration_steps: int = max(1, int(startup_ramp_duration * policy_hz))
+        self._kp_ramp_duration_steps: int = self._default_kp_ramp_duration_steps
         self._kp_ramp_step: int = 0
         self._kp_ramp_active: bool = False
         self._kp_nominal = np.asarray(cfg_get(real_cfg, "kp_real", [100] * num_actions), dtype=np.float32)
         self._kd_nominal = np.asarray(cfg_get(real_cfg, "kd_real", [2] * num_actions), dtype=np.float32)
-        self._kp_ramp_floor_ratio: float = float(cfg_get(cfg, "kp_ramp_floor_ratio", 0.1))
+        self._default_kp_ramp_floor_ratio: float = float(cfg_get(cfg, "kp_ramp_floor_ratio", 0.1))
+        self._kp_ramp_floor_ratio: float = self._default_kp_ramp_floor_ratio
 
         # Joint safety limits
         self._joint_vel_limit: float = float(
@@ -71,8 +71,21 @@ class Sim2RealSafetyManager:
 
         return np.asarray(kp, dtype=np.float32), self._kd_nominal.copy()
 
-    def start_kp_ramp(self) -> None:
+    def start_kp_ramp(
+        self,
+        *,
+        duration_s: float | None = None,
+        floor_ratio: float | None = None,
+    ) -> None:
         """Arm the Kp ramp for gradual PD gain increase."""
+        if duration_s is None:
+            self._kp_ramp_duration_steps = self._default_kp_ramp_duration_steps
+        else:
+            self._kp_ramp_duration_steps = max(1, int(float(duration_s) * self._policy_hz))
+        if floor_ratio is None:
+            self._kp_ramp_floor_ratio = self._default_kp_ramp_floor_ratio
+        else:
+            self._kp_ramp_floor_ratio = float(floor_ratio)
         self._kp_ramp_step = 0
         self._kp_ramp_active = True
         logger.info(

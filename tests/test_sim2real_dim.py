@@ -1,134 +1,54 @@
-"""Integration tests for Sim2RealController startup validation."""
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import MagicMock
+from types import SimpleNamespace
 
 import pytest
 
-from conftest import find_g1_xml_path, requires_mujoco
+from teleopit.sim2real.mp.runtime import _RobotControlWorker
 
 
-_XML_PATH = find_g1_xml_path()
-_skip_no_xml = pytest.mark.skipif(_XML_PATH is None, reason="Robot XML not found")
-
-_DEFAULT_ANGLES_29 = [
-    -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
-    -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
-    0.0, 0.0, 0.0,
-    0.2, 0.2, 0.0, 0.6, 0.0, 0.0, 0.0,
-    0.2, -0.2, 0.0, 0.6, 0.0, 0.0, 0.0,
-]
-
-
-def _make_dummy_policy(expected_obs_dim: int, *, multi_input: bool = True) -> MagicMock:
-    policy = MagicMock()
-    policy._expected_obs_dim = expected_obs_dim
-    policy._multi_input = multi_input
-    return policy
-
-
-def _make_sim2real_cfg(tmp_path: Path) -> dict:
-    policy_path = tmp_path / "policy.onnx"
-    policy_path.write_bytes(b"dummy")
-    bvh_path = tmp_path / "clip.bvh"
-    bvh_path.write_text("HIERARCHY\n", encoding="utf-8")
-
+def _cfg() -> dict[str, object]:
     return {
         "policy_hz": 50.0,
-        "real_robot": {"network_interface": "lo"},
-        "gamepad": {},
-        "mocap_switch": {},
-        "input": {
-            "provider": "bvh",
-            "bvh_file": str(bvh_path),
-            "bvh_format": "hc_mocap",
-            "robot_name": "unitree_g1",
-        },
-        "controller": {
-            "policy_path": str(policy_path),
-            "action_scale": [0.5] * 29,
-            "default_dof_pos": list(_DEFAULT_ANGLES_29),
-        },
+        "input": {"provider": "bvh"},
+        "runtime": {},
+        "real_robot": {},
+        "controller": {},
         "robot": {
             "num_actions": 29,
-            "xml_path": _XML_PATH or "",
-            "default_angles": _DEFAULT_ANGLES_29,
-            "action_scale": [0.5] * 29,
-            "anchor_body_name": "torso_link",
+            "default_angles": [0.0] * 29,
+            "xml_path": "robot.xml",
         },
     }
 
 
-def _apply_sim2real_mocks(monkeypatch, policy_mock: MagicMock) -> None:
-    dummy_provider = MagicMock()
-    dummy_provider.human_format = "hc_mocap"
-    dummy_provider.fps = 30
-    dummy_provider.__len__.return_value = 1
-    dummy_provider.get_frame_by_index.return_value = {}
-    obs_builder = MagicMock(total_obs_size=166)
-
-    def _build_components(*args, **kwargs):
-        if policy_mock._expected_obs_dim != 166:
-            raise ValueError(
-                f"Only 166D velcmd_history ONNX policies are supported here; "
-                f"obs_builder produces 166D but policy expects {policy_mock._expected_obs_dim}D."
-            )
-        if not policy_mock._multi_input:
-            raise ValueError(
-                "Sim2real requires an ONNX policy with dual inputs ('obs' and 'obs_history')."
-            )
-        return MagicMock(
-            input_provider=dummy_provider,
-            retargeter=MagicMock(),
-            controller=policy_mock,
-            obs_builder=obs_builder,
-        )
-
+def test_robot_worker_requires_dual_input_policy(monkeypatch) -> None:
+    policy = SimpleNamespace(_multi_input=False)
+    obs_builder = SimpleNamespace(total_obs_size=167)
     monkeypatch.setattr(
-        "teleopit.sim2real.controller.UnitreeG1Robot",
-        lambda cfg: MagicMock(check_mode=MagicMock(return_value={"name": "mock"})),
-    )
-    monkeypatch.setattr(
-        "teleopit.sim2real.controller.UnitreeRemote",
-        MagicMock,
+        "teleopit.sim2real.mp.runtime._build_policy_components",
+        lambda **_kwargs: (policy, obs_builder),
     )
 
+    worker = object.__new__(_RobotControlWorker)
+    worker.cfg = _cfg()
+
+    with pytest.raises(ValueError, match="dual inputs"):
+        worker._build_policy_and_obs()
+
+
+def test_robot_worker_accepts_167d_dual_input_policy(monkeypatch) -> None:
+    policy = SimpleNamespace(_multi_input=True)
+    obs_builder = SimpleNamespace(total_obs_size=167)
     monkeypatch.setattr(
-        "teleopit.sim2real.controller.build_sim2real_mocap_components",
-        _build_components,
+        "teleopit.sim2real.mp.runtime._build_policy_components",
+        lambda **_kwargs: (policy, obs_builder),
     )
 
+    worker = object.__new__(_RobotControlWorker)
+    worker.cfg = _cfg()
 
-@requires_mujoco
-@_skip_no_xml
-class TestSim2RealStartupDim:
-    def test_velcmd_history_startup_builds_166d_obs(self, monkeypatch, tmp_path: Path) -> None:
-        from teleopit.sim2real.controller import Sim2RealController
+    built_policy, built_obs_builder = worker._build_policy_and_obs()
 
-        policy_mock = _make_dummy_policy(166, multi_input=True)
-        _apply_sim2real_mocks(monkeypatch, policy_mock)
-        cfg = _make_sim2real_cfg(tmp_path)
-
-        ctrl = Sim2RealController(cfg)
-        assert ctrl.obs_builder.total_obs_size == 166
-
-    def test_non_166_policy_is_rejected(self, monkeypatch, tmp_path: Path) -> None:
-        from teleopit.sim2real.controller import Sim2RealController
-
-        policy_mock = _make_dummy_policy(160, multi_input=True)
-        _apply_sim2real_mocks(monkeypatch, policy_mock)
-        cfg = _make_sim2real_cfg(tmp_path)
-
-        with pytest.raises(ValueError, match="Only 166D"):
-            Sim2RealController(cfg)
-
-    def test_single_input_policy_is_rejected(self, monkeypatch, tmp_path: Path) -> None:
-        from teleopit.sim2real.controller import Sim2RealController
-
-        policy_mock = _make_dummy_policy(166, multi_input=False)
-        _apply_sim2real_mocks(monkeypatch, policy_mock)
-        cfg = _make_sim2real_cfg(tmp_path)
-
-        with pytest.raises(ValueError, match="dual inputs"):
-            Sim2RealController(cfg)
+    assert built_policy is policy
+    assert built_obs_builder is obs_builder

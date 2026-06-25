@@ -7,8 +7,7 @@ sidebar_position: 3
 ## 为什么设置了 `policy_path` 还是启动不了？
 
 1. 确认文件存在
-2. 确认不是旧的 1402D / TWIST2 ONNX 模型
-3. 确认输入维度是 `166`，且为双输入 ONNX（`obs` + `obs_history`）
+2. 确认输入维度是 `167`，且为双输入 ONNX（`obs` + `obs_history`）
 
 ## 为什么必须显式指定 `input.bvh_file`？
 

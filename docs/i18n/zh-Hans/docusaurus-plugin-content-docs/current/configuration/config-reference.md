@@ -15,7 +15,6 @@ sidebar_position: 2
 | `viewers` | str/list | `sim2sim` | 可视化窗口集合：`mocap`、`retarget`、`sim2sim`、`camera`、`all`、`none`。`all` 打开 `mocap`、`retarget` 和 `sim2sim`；如需相机画面需显式加入 `camera` |
 | `realtime` | bool | `false` | 是否启用实时模式（实机部署时需开启） |
 | `num_steps` | int | — | 仿真总步数；设为 `-1` 表示无限运行 |
-| `transition_duration` | float | — | 从静止姿态过渡到策略控制的时长（秒） |
 | `keyboard.enabled` | bool | `false` | 是否启用 sim2sim 实时键盘模式控制 |
 | `playback.pause_on_end` | bool | `false` | 回放结束后是否暂停（而非退出） |
 | `playback.keyboard.enabled` | bool | `false` | 是否启用键盘控制回放进度 |
@@ -80,13 +79,15 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 | `pico4_buffer_size` | int | `60` | 帧缓冲区大小 |
 | `pause_button` | str | `A` | 用于暂停/恢复的手柄按钮名称 |
 | `pause_debounce_s` | float | `0.25` | 暂停按钮防抖时间 |
+| `arms_button` | str | `B` | Pico 中用于切换 `MOCAP` / `ARMS` 的按钮 |
+| `arms_debounce_s` | float | `0.25` | 双臂模式按钮防抖时间 |
 | `bridge_host` | str | `0.0.0.0` | Teleopit host receiver 绑定地址 |
 | `bridge_port` | int | `63901` | Teleopit host receiver TCP/UDP 端口 |
 | `bridge_discovery` | bool | `true` | 是否启用 pico-bridge 发现广播 |
 | `bridge_advertise_ip` | str/null | `null` | 可选的 host 广播 IP 覆盖 |
 | `bridge_start_timeout` | float | `10.0` | 启动 bridge 的超时时间 |
 | `bridge_history_size` | int | `120` | bridge 保留的 Pico 帧历史长度 |
-| `video.enabled` | bool | `false` | 通过 pico-bridge 0.2.0 将 host 相机预览发送回 Pico |
+| `video.enabled` | bool | `false` | 通过 pico-bridge 0.2.1 将 host 相机预览发送回 Pico |
 | `video.source` | str/null | `null` | 视频源：`mujoco`、`realsense` 或 `test-pattern` |
 | `video.width` / `height` / `fps` | int | `1280` / `720` / `30` | 视频采集/渲染设置 |
 | `video.device` | str/null | `null` | 可选的 RealSense 序列号 |
@@ -103,8 +104,6 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 | `retarget_buffer_delay_s` | 缓冲延迟 |
 | `reference_steps` | 参考轨迹窗口步数 |
 | `realtime_buffer_warmup_steps` | 播放前预热帧数 |
-| `realtime_buffer_low_watermark_steps` | 低水位线 |
-| `realtime_buffer_high_watermark_steps` | 高水位线 |
 | `reference_velocity_smoothing_alpha` | 速度平滑系数 |
 | `reference_anchor_velocity_smoothing_alpha` | 锚点速度平滑系数 |
 
@@ -112,14 +111,18 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 
 以下字段用于 sim2real 配置（`sim2real.yaml`、`pico4_sim2real.yaml`）。
 
+sim2real 默认使用 `viewers=none`。设置 `viewers=retarget` 可打开一个可选的
+MuJoCo 窗口显示重定向参考；`sim2sim`、`mocap`、`camera` 和 `all`
+仅用于仿真 viewer。
+
 ### 安全相关
 
 | 字段 | 说明 | 默认值 |
 |---|---|---|
-| `startup_ramp_duration` | 从锁定位置平滑过渡到策略控制的时长（秒） | `2.0` |
+| `startup_ramp_duration` | 进入 `STANDING` 后的 Kp ramp 时长；逐步提高 PD 增益，不改变 policy target | `2.0` |
 | `joint_vel_limit` | 关节速度限制（rad/s），超过时触发急停 | `10.0` |
 | `mocap_switch.check_frames` | 切换到 MOCAP 前所需的连续有效帧数 | `10` |
-| `mocap_switch.max_position_value` | 位置合理性阈值（米） | `5.0` |
+| `arm_mocap.controlled_joint_indices` | Pico `ARMS` 模式下由实时 retargeting 驱动的 G1 关节 | `[15..28]` |
 
 ### 真机 SDK
 
@@ -135,19 +138,87 @@ target = clip(action, clip_range) * action_scale + default_dof_pos
 
 ### 暂停/恢复（Pico sim2real）
 
-| 字段 | 说明 | 默认值 |
-|---|---|---|
-| `pause_resume_transition_duration` | 离线回放恢复时的混合时长；实时 Pico 恢复使用实时追踪重新居中 | `1.0` |
-| `pause_resume_warmup_steps` | 恢复追踪前采集的实时动捕帧数 | `2` |
-
 实时 Pico 恢复追踪时会先重新居中航向和地面平面位置。操作者应保持静止，并尽量贴近暂停时的姿态，以减少参考突变。
 
-### 实时追赶（Pico sim2real）
+### 灵巧手（Pico sim2real）
+
+`hands.enabled=true` 要求 `input.provider=pico4`，并以本地 editable 方式安装
+`third_party/linkerhand-python-sdk` 和 `third_party/somehand`。启用后，手控会在所有 sim2real 模式中保持生效。
+`gripper` 支持 `linkerhand_l6` 和 `linkerhand_o6`，会用 Pico trigger 在配置的张开和闭合姿态之间插值。
+`vr_hand_pose` 只支持 L6：手部 pose 消失时，对应侧会保持上一条命令；L6 速度会设为最大值；
+Teleopit 会先将 Pico 手部状态转成 21 个 landmarks，再只通过 somehand 0.2.0 公开的 `somehand.api` 调用。
 
 | 字段 | 说明 | 默认值 |
 |---|---|---|
-| `realtime_catchup_enabled` | 缓冲区过大时启用追赶 | `true` |
-| `realtime_catchup_trigger_steps` | 触发追赶的缓冲区深度 | `6` |
-| `realtime_catchup_release_steps` | 释放追赶的缓冲区深度 | `3` |
-| `realtime_catchup_target_delay_s` | 追赶目标延迟 | `0.04` |
-| `reference_qpos_smoothing_alpha` | 关节位置平滑系数（1.0 = 无平滑） | `0.4` |
+| `hands.enabled` | 启用可选手部运行时 | `false` |
+| `hands.mode` | `gripper` 或 `vr_hand_pose` | `gripper` |
+| `hands.driver` | 手部设备驱动：`linkerhand_l6` 或 `linkerhand_o6` | `linkerhand_l6` |
+| `hands.sides` | 控制侧 | `[left, right]` |
+| `hands.rate_hz` | gripper 最大命令频率（Hz） | `30.0` |
+| `hands.frame_timeout_s` | 手柄或手部 pose 过期阈值 | `0.3` |
+| `hands.linkerhand_l6.left_can` / `right_can` | 左右手 CAN 通道 | `can0` / `can1` |
+| `hands.linkerhand_l6.speed` | `gripper` 使用的 L6 速度；`vr_hand_pose` 会覆盖为最大速度 | 见配置 |
+| `hands.linkerhand_l6.deadman_threshold` | 启用单侧控制所需的最小 grip 值 | `0.5` |
+| `hands.linkerhand_l6.trigger_deadzone` | trigger 两端死区 | `0.05` |
+| `hands.linkerhand_l6.open_pose` / `close_pose` | L6 的 6 维张开/闭合姿态 | 见配置 |
+| `hands.linkerhand_o6.left_can` / `right_can` | 左右 O6 手 CAN 通道 | `can0` / `can1` |
+| `hands.linkerhand_o6.speed` | `gripper` 使用的 O6 速度 | 见配置 |
+| `hands.linkerhand_o6.open_pose` / `close_pose` | O6 的 6 维张开/闭合姿态 | 见配置 |
+| `hands.somehand.config_path` | `vr_hand_pose` 使用的 somehand 双手 L6 配置 | 见配置 |
+| `hands.somehand.rate_hz` | 低延时 `vr_hand_pose` 命令频率（Hz） | `60.0` |
+| `hands.somehand.max_iterations` | `vr_hand_pose` 的 somehand solver 迭代上限 | `12` |
+| `hands.somehand.temporal_filter_alpha` | somehand 输入 landmarks 平滑 alpha；`1.0` 表示关闭平滑延时 | `1.0` |
+| `hands.somehand.output_alpha` | somehand qpos 输出平滑 alpha；`1.0` 表示关闭平滑延时 | `1.0` |
+
+### HDF5 录制（Pico sim2real）
+
+`recording.enabled=true` 只支持 `input.provider=pico4`、
+`input.video.enabled=true`、`input.video.source=realsense`，并且需要交互式终端。
+录制是手动控制：`R` 开始 episode，`S` 保存当前 episode，`D` 丢弃当前 episode，
+`Q` 关闭。可以录制 `STANDING`、`MOCAP`、`ARMS` 和暂停状态的 mocap。
+
+`sim2real_record.yaml` 会同时启用录制和必需的 RealSense `input.video`
+路径。录制不会打开第二路相机，而是消费 `pico_input` 已经产生的同一批帧。
+
+| 字段 | 说明 | 默认值 |
+|---|---|---|
+| `recording.enabled` | 启用手动 HDF5 录制 | `false` |
+| `recording.output_dir` | 数据集根目录 | `data/recordings/sim2real_hdf5` |
+| `recording.task` | 写入 frame 的任务字符串 | `demo` |
+| `recording.fps` | 录制/视频主时钟频率 | `30` |
+| `recording.min_episode_seconds` | 保存时短于该时长的 episode 会被丢弃 | `1.0` |
+| `recording.record_modes` | 允许开始录制和写帧的模式 | `[standing, mocap, arms, pause]` |
+| `recording.camera.key` | RGB 图像数据集 key | `observation.images.d435i_rgb` |
+| `recording.camera.width` / `height` / `fps` | RealSense RGB 采集设置 | `640` / `480` / `30` |
+| `recording.camera.device` | 可选 RealSense 序列号 | `null` |
+| `recording.video.codec` / `quality` / `pixelformat` | MP4 sidecar 编码设置 | `libx264` / `8` / `yuv420p` |
+
+相机失败时的行为由 `input.video.fail_on_error` 控制。
+
+每个保存的 episode 会在 `recording.output_dir/episodes/` 下写入一个 `.h5`
+文件，并在 `recording.output_dir/videos/<camera_key>/` 下写入一个压缩 MP4
+sidecar。HDF5 episode 保存 `frame_index` 和 `timestamp` 数组，并在根属性中
+记录 `video_path`、`video_fps` 和 `video_frames` 用于同步。录制不会写入原始
+RGB 图像 dataset。
+
+HDF5 datasets：
+
+```text
+frame_index                    int64[N]
+timestamp                      float64[N]
+observation.state              float32[68]
+observation.mode               float32[1]
+action                         float32[36]
+action.hand                    float32[12]
+```
+
+根属性包含 Teleopit HDF5 recording format、schema version、task、fps、
+frame count 和视频同步元数据。
+
+`observation.state` 的顺序是 `joint_pos(29)`、`joint_vel(29)`、
+`base_quat_wxyz(4)`、`base_ang_vel(3)` 和 `projected_gravity(3)`。
+`observation.mode` 是数值类别：`standing=0`、`mocap=1`、
+`arms=2`、`pause=3`。`action` 是当前 reference qpos：
+`root_pos(3) + root_quat_wxyz(4) + joint_pos(29)`。
+`action.hand` 是手部 worker 最新的 LinkerHand 命令：
+`left_pose(6) + right_pose(6)`，使用 SDK 的 0-255 pose 数值。

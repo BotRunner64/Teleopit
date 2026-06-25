@@ -23,6 +23,14 @@ Verify:
 python -c "import train_mimic.tasks; print('training OK')"
 ```
 
+Download the minimal seed dataset and generate the precomputed training shard:
+
+```bash
+python scripts/setup/download_assets.py --only robots data
+python train_mimic/scripts/data/precompute_dataset.py \
+    data/datasets/seed --outdir data/datasets/seed_precomputed --jobs 8
+```
+
 ## Training
 
 ### Smoke Test
@@ -31,7 +39,7 @@ python -c "import train_mimic.tasks; print('training OK')"
 python train_mimic/scripts/train.py \
     --num_envs 64 \
     --max_iterations 100 \
-    --motion_file data/datasets/seed/train
+    --motion_file data/datasets/seed_precomputed
 ```
 
 ### Full Training
@@ -40,7 +48,7 @@ python train_mimic/scripts/train.py \
 python train_mimic/scripts/train.py \
     --num_envs 4096 \
     --max_iterations 30000 \
-    --motion_file data/datasets/seed/train
+    --motion_file data/datasets/seed_precomputed
 ```
 
 ### Multi-GPU
@@ -50,13 +58,33 @@ python train_mimic/scripts/train.py \
     --gpu_ids 0 1 2 3 \
     --num_envs 1024 \
     --max_iterations 30000 \
-    --motion_file data/datasets/seed/train
+    --motion_file data/datasets/seed_precomputed
+```
+
+### Multi-Node Multi-GPU
+
+Use `torchrun` directly when training across multiple machines:
+
+```bash
+torchrun \
+    --nnodes=$PET_NNODES \
+    --nproc_per_node=$PET_NPROC_PER_NODE \
+    --node_rank=$PET_NODE_RANK \
+    --master_addr=$PET_MASTER_ADDR \
+    --master_port=$PET_MASTER_PORT \
+    train_mimic/scripts/train.py \
+    --num_envs 1024 \
+    --max_iterations 1000 \
+    --motion_file data/datasets/seed_precomputed
 ```
 
 **Notes:**
 - `--num_envs` is per-GPU in multi-GPU mode
-- Default logger is TensorBoard; pass `--wandb_project <name>` to enable W&B
-- `--motion_file` accepts only shard directories (containing `shard_*.npz` files)
+- `--num_envs` is also per-process in multi-node mode, so total environments scale with `world_size`
+- Default logger is TensorBoard. Use `--logger wandb` or `--logger swanlab` to select W&B or SwanLab; the project name defaults to `experiment_name`
+- `--motion_file` accepts a precomputed training dataset root directory or a single precomputed `.h5` shard; shard discovery is recursive
+- If you only have the minimal distributed shards, first run `python train_mimic/scripts/data/precompute_dataset.py <minimal_dataset> --outdir <precomputed_dataset>` and pass the precomputed output to training.
+- Training loads all discovered precomputed motion windows into memory at startup.
 - `--max_iterations` means additional iterations; resuming from `model_12000.pt` with `--max_iterations 18000` trains to `model_30000.pt`
 
 ## Export ONNX
@@ -68,7 +96,7 @@ python train_mimic/scripts/save_onnx.py \
     --history_length 10
 ```
 
-The exported model is a dual-input ONNX (`obs` + `obs_history`). The inference side only supports 166D dual-input ONNX.
+The exported model is a dual-input ONNX (`obs` + `obs_history`). The inference side expects a 167D dual-input ONNX policy matching the current `velcmd_history` observation.
 
 ## Evaluation
 
@@ -77,7 +105,7 @@ The exported model is a dual-input ONNX (`obs` + `obs_history`). The inference s
 ```bash
 python train_mimic/scripts/play.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/seed/val
+    --motion_file data/datasets/seed_precomputed
 ```
 
 ### Benchmark
@@ -85,7 +113,7 @@ python train_mimic/scripts/play.py \
 ```bash
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/seed/val \
+    --motion_file data/datasets/seed_precomputed \
     --num_envs 1
 ```
 
@@ -94,7 +122,7 @@ python train_mimic/scripts/benchmark.py \
 ```bash
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/seed/val \
+    --motion_file data/datasets/seed_precomputed \
     --num_envs 1 \
     --video \
     --video_length 600
@@ -113,4 +141,4 @@ Key files:
 - `train_mimic/app.py` - Shared entry point for train/play/benchmark
 - `train_mimic/tasks/tracking/config/env.py` - General-Tracking-G1 env builder
 - `train_mimic/tasks/tracking/config/rl.py` - TemporalCNN PPO config
-- `train_mimic/tasks/tracking/mdp/commands.py` - Supports `adaptive` / `uniform` / `start` sampling modes
+- `train_mimic/tasks/tracking/mdp/commands.py` - Supports `uniform`, `start`, and `rewind` sampling modes. Training defaults to `rewind`; playback/benchmark use `start`.

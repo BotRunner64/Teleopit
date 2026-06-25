@@ -46,14 +46,13 @@ python -c "from pico_bridge import PicoBridge; print('OK')"
 Teleopit 会通过 `Pico4InputProvider` 在进程内启动 `pico_bridge.PicoBridge`。
 后续 wired 和 onboard sim2real 部署也使用同一条 Pico 输入路径。
 
-Teleopit 0.3.0 请保持 host receiver 使用 pico-bridge 0.2.0。pico-bridge
-0.2.1 修改了接口语义，不是该 Teleopit 版本支持的 receiver 版本。
+Teleopit 面向 pico-bridge 0.2.1 及其 `pico_native` tracking 语义。
 
 ## 3. 下载资源
 
 ```bash
 pip install modelscope
-python scripts/setup/download_assets.py --only gmr ckpt bvh
+python scripts/setup/download_assets.py --only robots gmr ckpt bvh
 ```
 
 ## 4. 运行 Pico Sim2Sim
@@ -70,6 +69,7 @@ python scripts/run/run_sim.py \
 |------|------|
 | `Y` | 进入 `MOCAP` |
 | `A` | 暂停 / 恢复实时动捕 |
+| `B` | 在 `MOCAP` / `ARMS` 之间切换 |
 | `X` | 返回 `STANDING` |
 | `Q` | 退出 |
 
@@ -86,9 +86,12 @@ Pico 暂停/恢复会冻结 mocap session；它不是切回 `STANDING`。
 默认 Pico 暂停键是 `A`。支持的覆盖值包括 `B`、`X`、`Y`、`left_axis_click`、
 `right_axis_click`、`left_menu_button` 和 `right_menu_button`。
 
+默认 Pico 双臂模式按钮是 `B`。`ARMS` 会让身体、腰部和腿部保持站立姿态，同时双臂跟随
+实时 retarget 结果。
+
 ## 可选头显视频预览
 
-pico-bridge 0.2.0 可以在头显中显示 host 侧视频流。在仿真中，Teleopit 可以推送
+pico-bridge 0.2.1 可以在头显中显示 host 侧视频流。在仿真中，Teleopit 可以推送
 MuJoCo `d435i_rgb` 相机：
 
 ```bash
@@ -132,7 +135,7 @@ input.video.enabled=true
 | 现象 | 可能原因 | 解决方法 |
 |------|----------|----------|
 | `ImportError: pico_bridge` | 未安装 Pico extra | 执行 `pip install -e '.[pico4]'` |
-| 启动提示 pico-bridge 太旧 | 已安装 receiver 不支持视频参数 | 重新安装 Pico extra，确保使用 pico-bridge 0.2.0 |
+| 启动提示 pico-bridge 太旧 | 已安装 receiver 不支持所需 API 或 tracking 语义 | 重新安装 Pico extra，确保使用 pico-bridge 0.2.1 |
 | `TimeoutError: No Pico4 body data` | 头显未连接或 body tracking 未激活 | 检查头显 app、网络和 `input.pico4_timeout` |
 | discovery 找不到 host | 广播 IP 不对或 UDP 被阻断 | 设置 `input.bridge_advertise_ip=<host-ip>`，确认 UDP 端口 `63901` 可达 |
 | 仿真机器人不跟随 | 循环仍在 `STANDING` | 追踪准备好后按 `Y` |

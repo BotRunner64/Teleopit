@@ -31,6 +31,14 @@ ASSET_GROUPS: dict[str, list[AssetEntry]] = {
             mode="extract",
         ),
     ],
+    "robots": [
+        AssetEntry(
+            "archives/robot_assets.tar.gz",
+            "assets/robots",
+            repo="model",
+            mode="extract",
+        ),
+    ],
     "bvh": [
         AssetEntry(
             "archives/sample_bvh.tar.gz",
@@ -40,7 +48,6 @@ ASSET_GROUPS: dict[str, list[AssetEntry]] = {
         ),
     ],
     "data": [
-        AssetEntry("data/train", "data/datasets/seed/train", repo="dataset"),
-        AssetEntry("data/val", "data/datasets/seed/val", repo="dataset"),
+        AssetEntry("data", "data/datasets/seed", repo="dataset"),
     ],
 }

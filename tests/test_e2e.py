@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import cast
 
 import numpy as np
 import pytest
@@ -21,7 +20,6 @@ def _has_module(name: str) -> bool:
 
 requires_mujoco = pytest.mark.skipif(not _has_module("mujoco"), reason="mujoco not installed")
 requires_onnxruntime = pytest.mark.skipif(not _has_module("onnxruntime"), reason="onnxruntime not installed")
-requires_h5py = pytest.mark.skipif(not _has_module("h5py"), reason="h5py not installed")
 requires_mink = pytest.mark.skipif(not _has_module("mink"), reason="mink not installed")
 
 
@@ -37,16 +35,14 @@ def _asset_paths(project_root: Path) -> tuple[Path, Path, Path]:
 @requires_mujoco
 @requires_onnxruntime
 @requires_mink
-@requires_h5py
-def test_bvh_to_mujoco_pipeline_stands_and_records(project_root: Path, tmp_dir: Path) -> None:
-    import h5py
+def test_bvh_to_mujoco_pipeline_stands(project_root: Path) -> None:
     from omegaconf import OmegaConf
 
     from teleopit.pipeline import TeleopPipeline
 
     policy_path, bvh_path, xml_path = _asset_paths(project_root)
     if not policy_path.exists() or not bvh_path.exists() or not xml_path.exists():
-        pytest.skip("set TELEOPIT_TEST_POLICY_ONNX to a compatible 166D ONNX policy to run this e2e test")
+        pytest.skip("set TELEOPIT_TEST_POLICY_ONNX to a compatible 167D ONNX policy to run this e2e test")
 
     robot_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "robot" / "g1.yaml")
     controller_cfg = OmegaConf.load(project_root / "teleopit" / "configs" / "controller" / "rl_policy.yaml")
@@ -64,7 +60,6 @@ def test_bvh_to_mujoco_pipeline_stands_and_records(project_root: Path, tmp_dir: 
     input_cfg.human_format = "bvh_xsens"
     input_cfg.robot_name = "unitree_g1"
 
-    recording_path = tmp_dir / "e2e.h5"
     cfg = OmegaConf.create(
         {
             "robot": robot_cfg,
@@ -72,7 +67,6 @@ def test_bvh_to_mujoco_pipeline_stands_and_records(project_root: Path, tmp_dir: 
             "input": input_cfg,
                 "policy_hz": 50,
                 "pd_hz": 50,
-            "recording": {"output_path": str(recording_path)},
         }
     )
 
@@ -86,7 +80,7 @@ def test_bvh_to_mujoco_pipeline_stands_and_records(project_root: Path, tmp_dir: 
     pipeline.bus.subscribe(TOPIC_MIMIC_OBS, lambda _: mimic_count.append(1))
     pipeline.bus.subscribe(TOPIC_ROBOT_STATE, lambda _: state_count.append(1))
 
-    result = pipeline.run(num_steps=100, record=True)
+    result = pipeline.run(num_steps=100)
 
     assert float(result["root_height"]) > 0.3
     assert int(result["steps"]) == 100
@@ -104,20 +98,3 @@ def test_bvh_to_mujoco_pipeline_stands_and_records(project_root: Path, tmp_dir: 
     assert isinstance(latest_mimic, np.ndarray)
     assert latest_mimic.shape == (35,)
     assert latest_state is not None
-
-    record_path = Path(str(result["record_path"]))
-    assert record_path.exists()
-
-    with h5py.File(record_path, "r") as f:
-        total_frames = int(np.asarray(f.attrs["total_frames"]).item())
-        assert total_frames == 100
-
-        joint_pos = cast(h5py.Dataset, f["joint_pos"])
-        joint_vel = cast(h5py.Dataset, f["joint_vel"])
-        mimic_obs = cast(h5py.Dataset, f["mimic_obs"])
-        action = cast(h5py.Dataset, f["action"])
-
-        assert joint_pos.shape[0] == 100
-        assert joint_vel.shape[0] == 100
-        assert mimic_obs.shape == (100, 35)
-        assert action.shape == (100, 29)

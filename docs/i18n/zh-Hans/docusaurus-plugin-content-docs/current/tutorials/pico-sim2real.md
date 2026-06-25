@@ -21,8 +21,7 @@ Pico 头显 -> Teleopit host -> retarget -> RL policy -> g1_bridge_sdk -> G1
 两种方式都使用 `Pico4InputProvider` 和进程内 pico-bridge receiver。不存在单独的
 onboard Pico 输入模式。
 
-Teleopit 0.3.0 请保持 host receiver 使用 pico-bridge 0.2.0。pico-bridge
-0.2.1 修改了接口语义，不是该 Teleopit 版本支持的 receiver 版本。
+Teleopit 面向 pico-bridge 0.2.1 及其 `pico_native` tracking 语义。
 
 ## 1. 安装运行时依赖
 
@@ -92,6 +91,32 @@ python scripts/run/run_sim2real.py \
     real_robot.network_interface=eth0
 ```
 
+## 可选 HDF5 录制
+
+在负责 Pico 输入和 RealSense 的机器上安装 recording extra：
+
+```bash
+pip install -e '.[recording]'
+```
+
+运行录制配置：
+
+```bash
+python scripts/run/run_sim2real.py \
+    --config-name sim2real_record \
+    controller.policy_path=track.onnx \
+    real_robot.network_interface=enp130s0 \
+    recording.task="walk forward"
+```
+
+终端控制为：`R` 开始 episode，`S` 保存，`D` 丢弃，`Q` 关闭。可以录制
+`STANDING`、`MOCAP`、`ARMS` 和暂停状态的 mocap；已经保存的 episode 不支持再丢弃。
+episode 会保存为 `data/recordings/sim2real_hdf5/episodes/` 下的 `.h5` 文件，
+压缩 MP4 sidecar 视频保存在 `data/recordings/sim2real_hdf5/videos/` 下。
+HDF5 episode 以 30 Hz 保存 `frame_index` 和 `timestamp` 同步数组，以及
+`observation.state(68)`、`observation.mode(1)`、`action(36)` 和
+`action.hand(12)`。
+
 ## 操作流程
 
 始终把 Unitree 遥控器拿在手里。`L1+R1` 是进入 `DAMPING` 的急停路径。
@@ -101,6 +126,7 @@ python scripts/run/run_sim2real.py \
 | Unitree remote `Start` | 进入 `STANDING` |
 | Unitree remote `Y` | 进入 `MOCAP` |
 | Pico/controller `A` | 暂停 / 恢复实时动捕 |
+| Pico/controller `B` | 在 `MOCAP` / `ARMS` 之间切换 |
 | Unitree remote `X` | 返回 `STANDING` |
 | Unitree remote `L1+R1` | 急停（`DAMPING`） |
 
@@ -116,10 +142,14 @@ Pico body frames -> retarget -> reference buffer -> observation -> policy -> G1 
 ```
 
 进入 `STANDING` 时，Teleopit 会释放当前 Unitree 模式，进入 debug/low-level 控制，
-短暂锁住当前关节，重置 policy 状态，并通过 Kp ramp 减少启动冲击。
+短暂锁住当前关节，重置 policy 状态，并在不改变 policy target 的情况下执行 Kp ramp。
 
-进入 `MOCAP` 时，Teleopit 会重置 policy/reference 状态，并将参考从当前机器人状态平滑过渡到
+进入 `MOCAP` 时，Teleopit 会重置 policy/reference 状态，并通过实时参考时间线开始跟踪
 实时 mocap 命令。
+
+`ARMS` 会保持同一条实时 retargeting 时间线继续运行，但发送给 motion tracker 的参考会被组合：
+身体、腰部和腿部保持站立姿态，双臂跟随实时 retarget 结果。进入或离开 `ARMS` 时会重置
+policy/reference 对齐，并使用同一套 Kp ramp 安全路径。
 
 ## 暂停 / 恢复
 
@@ -132,6 +162,88 @@ Pico 暂停/恢复是 mocap-session control event。
 :::warning
 恢复时请保持静止，并尽量接近暂停时的姿态。这样可以减少实时追踪恢复时的参考突变。
 :::
+
+## 可选 LinkerHand 控制
+
+Pico sim2real 可以用 Pico 输入控制 LinkerHand：
+
+- `gripper`：按住同侧 grip 作为 deadman，同侧 trigger 控制对应手闭合。
+  该模式支持 `hands.driver=linkerhand_l6` 和 `hands.driver=linkerhand_o6`；
+  速度和张开/闭合姿态来自对应 driver 配置。
+- `vr_hand_pose`：只支持 L6，通过 somehand 重定向 Pico 手部 pose，并下发连续 L6 手部目标。
+  如果某侧手部 pose 消失，该侧会保持上一条手势命令。这个模式使用 Teleopit 的
+  Pico landmark 适配器和 somehand 0.2.0 公开的 `somehand.api`，并始终将 L6
+  速度设为最大值。默认配置使用 60 Hz 的低延时 somehand 路径并减少平滑，所以响应会更快，
+  但可能比标准 somehand 设置更抖。
+
+`hands.enabled=true` 时，手控会在所有 sim2real 模式中保持生效。退出和手控运行时失败会发送配置的张开姿态。
+
+如果主 Pico profile 没有包含手控支持，先安装本地手控包：
+
+```bash
+git submodule update --init --recursive
+pip install -e third_party/linkerhand-python-sdk
+pip install -e third_party/somehand
+scripts/setup/download_somehand_l6_assets.sh
+```
+
+测试或运行手控前，先开启 CAN 接口：
+
+```bash
+sudo /usr/sbin/ip link set can0 up type can bitrate 1000000
+sudo /usr/sbin/ip link set can1 up type can bitrate 1000000
+```
+
+启用完整 sim2real 前，先用独立开合测试验证灵巧手连接。测试默认一直运行到 Ctrl-C：
+
+```bash
+python scripts/dev/test_linkerhand_l6.py \
+    --hand-type both \
+    --left-can can0 \
+    --right-can can1
+```
+
+O6 独立开合测试需要加上 O6 driver：
+
+```bash
+python scripts/dev/test_linkerhand_l6.py \
+    --driver linkerhand_o6 \
+    --hand-type both \
+    --left-can can0 \
+    --right-can can1
+```
+
+如果要用实时 Pico gripper 输入测试 O6，再加 `--mode gripper`。
+
+然后在 Pico sim2real 中启用 L6 gripper 控制：
+
+```bash
+hands.enabled=true
+hands.driver=linkerhand_l6
+hands.mode=gripper
+hands.linkerhand_l6.left_can=can0
+hands.linkerhand_l6.right_can=can1
+```
+
+O6 gripper 控制使用：
+
+```bash
+hands.enabled=true
+hands.driver=linkerhand_o6
+hands.mode=gripper
+hands.linkerhand_o6.left_can=can0
+hands.linkerhand_o6.right_can=can1
+```
+
+连续 VR 手部 pose 控制使用：
+
+```bash
+hands.enabled=true
+hands.driver=linkerhand_l6
+hands.mode=vr_hand_pose
+hands.linkerhand_l6.left_can=can0
+hands.linkerhand_l6.right_can=can1
+```
 
 ## 可选 RealSense 预览
 
@@ -163,14 +275,13 @@ input.bridge_advertise_ip=192.168.1.20
 # 进入 MOCAP 前要求的连续有效动捕帧数
 mocap_switch.check_frames=10
 
-# 平滑过渡到 mocap 参考
-transition_duration=2.0
-
-# 恢复前采集的实时帧数
-pause_resume_warmup_steps=2
-
 # 更换 Pico 暂停键
 input.pause_button=right_axis_click
+
+# 开启 LinkerHand gripper 控制
+hands.enabled=true
+hands.driver=linkerhand_l6
+hands.mode=gripper
 
 # 开启头显视频预览
 input.video.enabled=true
@@ -185,4 +296,5 @@ input.video.enabled=true
 | 无法进入 debug mode | Unitree mode 释放失败 | 停止其他机器人模式后再次按 `Start` |
 | 机器人进入 `STANDING` 但不进入 `MOCAP` | 动捕验证失败 | 保持追踪稳定，查看 `mocap_switch.check_frames` 日志 |
 | Pico 暂停没有返回 `STANDING` | 这是预期行为 | Pico 暂停只冻结 mocap；按遥控器 `X` 返回 `STANDING` |
+| LinkerHand 不动 | `hands.enabled=false`、gripper deadman 未按住、SDK/资产未安装，或 CAN 通道错误 | 设置 `hands.enabled=true` 和 `hands.mode`，运行 `scripts/dev/test_linkerhand_l6.py`，并检查所选 driver 的 `left_can` / `right_can` |
 | 视频预览不可用 | RealSense 或视频源失败 | 检查相机权限、`input.video.source` 和日志 |

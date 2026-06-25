@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+from types import SimpleNamespace
+
 import mujoco
 import numpy as np
 import pytest
@@ -157,3 +160,28 @@ def test_pico4_provider_exposes_mocap_skeleton_metadata() -> None:
 
     assert pico4.bone_names == list(BODY_JOINT_NAMES)
     np.testing.assert_array_equal(pico4.bone_parents, BODY_JOINT_PARENTS)
+
+
+def test_pico4_provider_exposes_controller_snapshot() -> None:
+    pico4 = object.__new__(Pico4InputProvider)
+    pico4._lock = threading.Lock()
+    pico4._controller_snapshot = None
+    pico4._last_source_seq = None
+
+    frame = SimpleNamespace(
+        seq=42,
+        controllers=SimpleNamespace(
+            left=SimpleNamespace(raw=True, axis={"grip": 0.75, "trigger": 0.25}),
+            right=SimpleNamespace(raw=False, axis={}),
+        ),
+    )
+    pico4._accept_controller_snapshot(frame, timestamp=12.5)
+
+    snapshot = pico4.get_controller_snapshot()
+    assert snapshot is not None
+    assert snapshot.seq == 42
+    assert snapshot.timestamp_s == pytest.approx(12.5)
+    assert snapshot.left.raw is True
+    assert snapshot.left.grip == pytest.approx(0.75)
+    assert snapshot.left.trigger == pytest.approx(0.25)
+    assert snapshot.right.raw is False

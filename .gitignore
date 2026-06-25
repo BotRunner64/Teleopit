@@ -91,7 +91,10 @@ Thumbs.db
 # GMR retargeting assets (downloaded from ModelScope)
 teleopit/retargeting/gmr/assets/
 
-# Legacy training-side robot assets are no longer tracked; FK tooling reuses GMR unitree_g1.
+# Canonical robot XML/meshes (downloaded from ModelScope)
+assets/robots/
+
+# Legacy training-side robot assets are no longer tracked.
 train_mimic/assets/
 
 # ModelScope download cache

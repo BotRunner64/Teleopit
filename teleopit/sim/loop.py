@@ -8,16 +8,18 @@ import numpy as np
 from numpy.typing import NDArray
 
 from teleopit.constants import FULL_QPOS_DIM, ROOT_DIM
-from teleopit.controllers.qpos_interpolator import QposInterpolator
+from teleopit.controllers.observation import align_motion_qpos_yaw
 from teleopit.runtime.reference_config import parse_reference_config
+from teleopit.runtime.arm_mocap import compose_arm_reference, parse_arm_joint_indices
+from teleopit.runtime.console import PlainConsole, sim_keyboard_controls
 from teleopit.inputs.realtime_packet import RealtimeInputPacket
-from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Recorder, Retargeter, Robot, RobotState
+from teleopit.interfaces import Controller, InputProvider, MessageBus, ObservationBuilder, Retargeter, Robot, RobotState
 from teleopit.sim.reference_timeline import (
     ReferenceWindow,
     ReferenceWindowBuilder,
 )
 from teleopit.sim.realtime_utils import RealtimeReferenceDiagnostics
-from teleopit.sim.runtime_components import MotionPreparation, PolicyStepRunner, RunRecorder, RuntimePublisher, ViewerManager
+from teleopit.sim.runtime_components import MotionPreparation, PolicyStepRunner, RuntimePublisher, ViewerManager
 from teleopit.sim.viewer_subprocess import mocap_viewer_proc, start_camera_viewer, start_robot_viewer
 from teleopit.runtime.mocap_session import MocapSessionManager
 from teleopit.runtime.offline_playback import OfflinePlaybackController
@@ -34,6 +36,7 @@ class SimulationMode(Enum):
     IDLE = "idle"
     STANDING = "standing"
     MOCAP = "mocap"
+    ARMS = "arms"
 
 
 @final
@@ -47,6 +50,7 @@ class SimulationLoop:
         cfg: object,
         viewers: set[str] | None = None,
         video_runtime: object | None = None,
+        console: PlainConsole | None = None,
     ) -> None:
         self.robot: Robot = robot
         self.controller: Controller = controller
@@ -54,6 +58,7 @@ class SimulationLoop:
         self.bus: MessageBus = bus
         self.cfg: object = cfg
         self._video_runtime = video_runtime
+        self._console = console or PlainConsole(title="Teleopit sim2sim")
 
         self.policy_hz: float = self._to_float(self._get_cfg("policy_hz", "sim.policy_hz", "control.policy_hz", "policy_frequency"))
         self.pd_hz: float = self._to_float(self._get_cfg("pd_hz", "sim.pd_hz", "control.pd_hz", "pd_frequency"))
@@ -75,19 +80,13 @@ class SimulationLoop:
 
         self._last_action: Float32Array = np.zeros((self._num_actions,), dtype=np.float32)
         self._last_retarget_qpos: Float64Array | None = None
+        self._standing_qpos: Float64Array | None = None
+        self._arm_joint_indices = parse_arm_joint_indices(cfg, num_actions=self._num_actions)
         self._realtime: bool = bool(self._try_get_cfg("realtime") or False)
         raw_debug_trace_path = self._try_get_cfg("debug_trace_path")
         self._debug_trace_path: str | None = None
         if raw_debug_trace_path not in (None, "", "null"):
             self._debug_trace_path = str(raw_debug_trace_path)
-
-        # Motion command transition smoothing
-        transition_dur = float(self._try_get_cfg("transition_duration") or 0.0)
-        self._mocap_transition_duration = transition_dur
-        self._pause_resume_transition_duration = float(
-            self._try_get_cfg("pause_resume_transition_duration") or transition_dur
-        )
-        self._qpos_interpolator = QposInterpolator(transition_dur, self.policy_hz)
 
         self._init_reference_config()
         self._init_components(viewers)
@@ -98,6 +97,7 @@ class SimulationLoop:
         self._playback_pause_on_end = bool(self._try_get_cfg("playback.pause_on_end", False))
         self._playback_keyboard_enabled = bool(self._try_get_cfg("playback.keyboard.enabled", False))
         self._realtime_keyboard_enabled = bool(self._try_get_cfg("keyboard.enabled", False))
+        self._console_controls = sim_keyboard_controls(self.cfg)
 
         # Shared reference config (parsed once, used by both sim and sim2real)
         self._ref_cfg = parse_reference_config(self.cfg)
@@ -115,7 +115,7 @@ class SimulationLoop:
             )
 
     def _init_components(self, viewers: set[str] | None) -> None:
-        """Build PolicyStepRunner, publisher, recorder helper, and viewer manager."""
+        """Build PolicyStepRunner, publisher, and viewer manager."""
         self._viewers: set[str] = set(viewers or set())
         self._step_runner = PolicyStepRunner(
             robot=self.robot,
@@ -128,13 +128,10 @@ class SimulationLoop:
             kds=self._kds,
             torque_limits=self._torque_limits,
             default_dof_pos=self._default_dof_pos,
-            qpos_interpolator=self._qpos_interpolator,
             reference_velocity_smoothing_alpha=self._ref_cfg.reference_velocity_smoothing_alpha,
             reference_anchor_velocity_smoothing_alpha=self._ref_cfg.reference_anchor_velocity_smoothing_alpha,
-            reference_qpos_smoothing_alpha=self._ref_cfg.reference_qpos_smoothing_alpha,
         )
         self._publisher = RuntimePublisher(self.bus)
-        self._recorder_helper = RunRecorder()
         self._viewer_manager = ViewerManager(
             robot=self.robot,
             viewers=self._viewers,
@@ -148,11 +145,10 @@ class SimulationLoop:
         input_provider: InputProvider,
         retargeter: Retargeter,
         num_steps: int,
-        recorder: Recorder | None = None,
     ) -> dict[str, float | int]:
         from teleopit.sim.session import SimLoopSession
 
-        session = SimLoopSession(self, input_provider, retargeter, num_steps, recorder)
+        session = SimLoopSession(self, input_provider, retargeter, num_steps)
         return session.run()
 
     def run_headless(
@@ -160,9 +156,8 @@ class SimulationLoop:
         input_provider: InputProvider,
         retargeter: Retargeter,
         num_steps: int,
-        recorder: Recorder | None = None,
     ) -> dict[str, float | int]:
-        return self.run(input_provider=input_provider, retargeter=retargeter, num_steps=num_steps, recorder=recorder)
+        return self.run(input_provider=input_provider, retargeter=retargeter, num_steps=num_steps)
 
     def _compute_target_dof_pos(self, action: Float32Array) -> Float32Array:
         return self._step_runner.compute_target_dof_pos(action)
@@ -171,9 +166,26 @@ class SimulationLoop:
         standing_qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
         if state.base_pos is not None:
             standing_qpos[0:3] = np.asarray(state.base_pos, dtype=np.float64)[:3]
-        standing_qpos[3:7] = np.asarray(state.quat, dtype=np.float64)[:4]
+        standing_qpos[3] = 1.0
+        align_motion_qpos_yaw(np.asarray(state.quat, dtype=np.float32), standing_qpos)
         standing_qpos[7:7 + self._num_actions] = self._default_dof_pos.astype(np.float64)[: self._num_actions]
         return standing_qpos
+
+    def _set_standing_reference(self, state: RobotState) -> Float64Array:
+        standing_qpos = self._build_standing_qpos(state)
+        self._standing_qpos = standing_qpos.copy()
+        return standing_qpos
+
+    def _compose_arm_reference(self, retarget_qpos: Float64Array) -> Float64Array:
+        if self._standing_qpos is None:
+            self._set_standing_reference(self.robot.get_state())
+        assert self._standing_qpos is not None
+        return compose_arm_reference(
+            standing_qpos=self._standing_qpos,
+            retarget_qpos=retarget_qpos,
+            arm_joint_indices=self._arm_joint_indices,
+            num_actions=self._num_actions,
+        )
 
     @staticmethod
     def _drain_realtime_control_events(input_provider: InputProvider) -> tuple[object, ...]:
@@ -258,7 +270,6 @@ class SimulationLoop:
         *,
         offline_playback: OfflinePlaybackController,
         mocap_session: MocapSessionManager,
-        retargeter: Retargeter,
     ) -> None:
         offline_playback.replay()
         mocap_session.reset()
@@ -266,7 +277,6 @@ class SimulationLoop:
         self._last_action = np.zeros((self._num_actions,), dtype=np.float32)
         self.controller.reset()
         self.obs_builder.reset()
-        retargeter.reset()
         self.robot.reset()
 
     def _pause_offline_playback(
@@ -275,14 +285,12 @@ class SimulationLoop:
         offline_playback: OfflinePlaybackController,
         mocap_session: MocapSessionManager,
         hold_qpos: Float64Array,
-        retargeter: Retargeter,
     ) -> None:
         offline_playback.pause()
         self._step_runner.reset()
         self._last_action = np.zeros((self._num_actions,), dtype=np.float32)
         self.controller.reset()
         self.obs_builder.reset()
-        retargeter.reset()
         mocap_session.pause(hold_qpos)
 
     def _resume_offline_playback(
@@ -290,24 +298,19 @@ class SimulationLoop:
         *,
         offline_playback: OfflinePlaybackController,
         mocap_session: MocapSessionManager,
-        retargeter: Retargeter,
         state: RobotState,
     ) -> None:
         if mocap_session.hold_qpos is None:
             raise RuntimeError("Cannot resume offline playback without a paused hold qpos")
-        resume_qpos = self._build_robot_state_qpos(state)
+        resume_qpos = self._build_resume_alignment_qpos(mocap_session.hold_qpos, state)
         offline_playback.resume()
         mocap_session.reset()
         self._step_runner.reset()
         self._last_action = np.zeros((self._num_actions,), dtype=np.float32)
         self.controller.reset()
         self.obs_builder.reset()
-        retargeter.reset()
+        self._step_runner.reset_reference_alignment(resume_qpos)
         self._step_runner.last_retarget_qpos = resume_qpos.copy()
-        self._step_runner.arm_motion_transition(
-            resume_qpos,
-            duration_s=self._pause_resume_transition_duration,
-        )
 
     def _build_observation(
         self,
@@ -325,17 +328,6 @@ class SimulationLoop:
 
     def _publish(self, mimic_obs: Float32Array, action: Float32Array, robot_state: object) -> None:
         self._publisher.publish(mimic_obs, action, robot_state)
-
-    def _record(
-        self,
-        recorder: Recorder | None,
-        state: object,
-        mimic_obs: Float32Array,
-        action: Float32Array,
-        target_dof_pos: Float32Array,
-        torque: Float32Array,
-    ) -> None:
-        self._recorder_helper.record(recorder, state, mimic_obs, action, target_dof_pos, torque)
 
     def _retarget_to_qpos(self, retargeted: object) -> Float64Array:
         return self._step_runner._retarget_to_qpos(retargeted)
@@ -444,8 +436,6 @@ class SimulationLoop:
             reference_future_horizon_steps=(None if realtime_reference_diag is None else np.asarray(getattr(realtime_reference_diag, "future_horizon_steps"), dtype=np.int64)),
             reference_real_frame_count=(None if realtime_reference_diag is None else np.asarray(getattr(realtime_reference_diag, "real_frame_count"), dtype=np.int64)),
             reference_warmup_done=(None if realtime_reference_diag is None else np.asarray(getattr(realtime_reference_diag, "warmup_done"), dtype=np.bool_)),
-            reference_used_repeat_padding=(None if realtime_reference_diag is None else np.asarray(getattr(realtime_reference_diag, "used_repeat_padding"), dtype=np.bool_)),
-            reference_padding_active=(None if realtime_reference_diag is None else np.asarray(getattr(realtime_reference_diag, "padding_active"), dtype=np.bool_)),
         )
 
     def _log_reference_window(self, reference_window: ReferenceWindow, buffer_len: int) -> None:
@@ -457,19 +447,4 @@ class SimulationLoop:
             reference_window.base_time_s,
             list(reference_window.reference_steps),
             list(reference_window.modes()),
-        )
-
-    def _log_repeat_padding(
-        self,
-        reference_window: ReferenceWindow,
-        diagnostics: RealtimeReferenceDiagnostics,
-        buffer_len: int,
-    ) -> None:
-        import logging
-
-        logging.getLogger(__name__).warning(
-            "Reference timeline repeat padding | buffer_len=%d | future_horizon_steps=%d | steps=%s",
-            buffer_len,
-            diagnostics.future_horizon_steps,
-            list(reference_window.reference_steps),
         )

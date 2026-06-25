@@ -2,12 +2,12 @@
 """Prepare and upload Teleopit assets to HuggingFace repos.
 
 Asset groups by destination repo:
-  model   (12e21/Teleopit-models):   ckpt, gmr, bvh
+  model   (12e21/Teleopit-models):   ckpt, robots, gmr, bvh
   dataset (12e21/Teleopit-datasets): data
 
 Usage:
     python scripts/setup/upload_hf_assets.py             # upload everything
-    python scripts/setup/upload_hf_assets.py --only gmr  # only GMR assets
+    python scripts/setup/upload_hf_assets.py --only robots gmr  # only robot + GMR assets
     python scripts/setup/upload_hf_assets.py --dry-run   # prepare files without uploading
 """
 

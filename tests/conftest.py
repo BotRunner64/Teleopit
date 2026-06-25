@@ -51,9 +51,7 @@ def find_g1_xml_path() -> str | None:
     """Return the preferred test XML path for G1 MuJoCo-based tests."""
     root = Path(__file__).parent.parent
     candidates = [
-        root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_mjlab.xml",
-        root / "GMR" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml",
-        root / "teleopit" / "retargeting" / "gmr" / "assets" / "unitree_g1" / "g1_sim2sim_29dof.xml",
+        root / "assets" / "robots" / "unitree_g1" / "g1_29dof.xml",
     ]
     for path in candidates:
         if path.exists():

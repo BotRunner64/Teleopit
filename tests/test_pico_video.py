@@ -87,11 +87,62 @@ def test_realsense_video_runtime_pushes_rgb_frames(monkeypatch: pytest.MonkeyPat
     assert sink.frames[-1].dtype == np.uint8
 
 
+def test_realsense_video_runtime_invokes_frame_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_rs = ModuleType("pyrealsense2")
+    fake_rs.stream = SimpleNamespace(color="color")
+    fake_rs.format = SimpleNamespace(rgb8="rgb8")
+
+    class FakeConfig:
+        def enable_stream(self, *_args: object) -> None:
+            pass
+
+    class FakeColorFrame:
+        def get_data(self) -> np.ndarray:
+            return np.full((2, 2, 3), 7, dtype=np.uint8)
+
+    class FakeFrames:
+        def get_color_frame(self) -> FakeColorFrame:
+            return FakeColorFrame()
+
+    class FakePipeline:
+        def start(self, _config: object) -> None:
+            pass
+
+        def wait_for_frames(self) -> FakeFrames:
+            time.sleep(0.005)
+            return FakeFrames()
+
+        def stop(self) -> None:
+            pass
+
+    fake_rs.config = FakeConfig
+    fake_rs.pipeline = FakePipeline
+    monkeypatch.setitem(sys.modules, "pyrealsense2", fake_rs)
+
+    sink = _FrameSink()
+    callback_frames: list[np.ndarray] = []
+    config = parse_pico_video_config({"video": {"enabled": True, "source": "realsense", "width": 2, "height": 2}})
+    runtime = PicoVideoRuntime(
+        provider=sink,
+        config=config,
+        mode="sim2real",
+        frame_callback=lambda frame, _timestamp_s: callback_frames.append(frame.copy()),
+    )
+
+    runtime.start()
+    time.sleep(0.03)
+    runtime.stop()
+
+    assert sink.frames
+    assert callback_frames
+    np.testing.assert_array_equal(callback_frames[-1], sink.frames[-1])
+
+
 def test_video_runtime_stops_producer_after_startup_error(monkeypatch: pytest.MonkeyPatch) -> None:
     stopped = False
 
     class FailingProducer:
-        def __init__(self, _provider: object, _config: object) -> None:
+        def __init__(self, _provider: object, _config: object, _frame_callback: object = None) -> None:
             pass
 
         def start(self) -> None:
@@ -120,7 +171,7 @@ def test_video_runtime_stops_producer_before_reraising_tick_error(monkeypatch: p
     stopped = False
 
     class FailingProducer:
-        def __init__(self, _provider: object, _config: object) -> None:
+        def __init__(self, _provider: object, _config: object, _frame_callback: object = None) -> None:
             pass
 
         def start(self) -> None:

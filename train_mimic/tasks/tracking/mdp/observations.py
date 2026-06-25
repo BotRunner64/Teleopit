@@ -18,7 +18,17 @@ if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
 
 
-def motion_anchor_pos_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+def ref_joint_pos(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    return command.joint_pos
+
+
+def ref_joint_vel(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+    command = cast(MotionCommand, env.command_manager.get_term(command_name))
+    return command.joint_vel
+
+
+def ref_anchor_pos_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     command = cast(MotionCommand, env.command_manager.get_term(command_name))
 
     pos, _ = subtract_frame_transforms(
@@ -31,7 +41,7 @@ def motion_anchor_pos_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tens
     return pos.view(env.num_envs, -1)
 
 
-def motion_anchor_ori_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+def ref_anchor_ori_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     command = cast(MotionCommand, env.command_manager.get_term(command_name))
 
     _, ori = subtract_frame_transforms(
@@ -44,7 +54,7 @@ def motion_anchor_ori_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tens
     return mat[..., :2].reshape(mat.shape[0], -1)
 
 
-def robot_body_pos_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+def robot_tracking_body_pos_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     command = cast(MotionCommand, env.command_manager.get_term(command_name))
 
     num_bodies = len(command.cfg.body_names)
@@ -58,7 +68,7 @@ def robot_body_pos_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     return pos_b.view(env.num_envs, -1)
 
 
-def robot_body_ori_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+def robot_tracking_body_ori_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     command = cast(MotionCommand, env.command_manager.get_term(command_name))
 
     num_bodies = len(command.cfg.body_names)
@@ -73,18 +83,17 @@ def robot_body_ori_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
 
 
 # ---------------------------------------------------------------------------
-# Velocity-command observation terms: reference velocities and projected
-# gravity for the VelCmd task variant.
+# Velocity-command observation terms: reference velocities and projected gravity.
 # ---------------------------------------------------------------------------
 
 
-def ref_base_lin_vel_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+def ref_anchor_lin_vel_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     """Reference anchor linear velocity in the robot's body frame. (N, 3)"""
     command = cast(MotionCommand, env.command_manager.get_term(command_name))
     return quat_apply(quat_inv(command.robot_anchor_quat_w), command.anchor_lin_vel_w)
 
 
-def ref_base_ang_vel_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+def ref_anchor_ang_vel_b(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     """Reference anchor angular velocity in the robot's body frame. (N, 3)"""
     command = cast(MotionCommand, env.command_manager.get_term(command_name))
     return quat_apply(quat_inv(command.robot_anchor_quat_w), command.anchor_ang_vel_w)
@@ -101,19 +110,19 @@ def ref_projected_gravity_b(env: ManagerBasedRlEnv, command_name: str) -> torch.
     return quat_apply(quat_inv(command.anchor_quat_w), asset.data.gravity_vec_w)
 
 
-def ref_base_height(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
-    """Reference anchor height (z-coordinate). (N, 1) — critic privileged."""
+def ref_anchor_height(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+    """Reference anchor height (z-coordinate). (N, 1)"""
     command = cast(MotionCommand, env.command_manager.get_term(command_name))
     return command.anchor_pos_w[:, 2:3]
 
 
 # ---------------------------------------------------------------------------
 # Yaw-only variants: use yaw_quat(robot_anchor_quat_w) to decouple
-# roll/pitch from the coordinate transform, matching the TWIST2 approach.
+# roll/pitch from the coordinate transform.
 # ---------------------------------------------------------------------------
 
 
-def motion_anchor_pos_b_yaw(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+def ref_anchor_pos_b_yaw(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     command = cast(MotionCommand, env.command_manager.get_term(command_name))
 
     pos, _ = subtract_frame_transforms(
@@ -126,7 +135,7 @@ def motion_anchor_pos_b_yaw(env: ManagerBasedRlEnv, command_name: str) -> torch.
     return pos.view(env.num_envs, -1)
 
 
-def motion_anchor_ori_b_yaw(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+def ref_anchor_ori_b_yaw(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     command = cast(MotionCommand, env.command_manager.get_term(command_name))
 
     _, ori = subtract_frame_transforms(
@@ -139,7 +148,7 @@ def motion_anchor_ori_b_yaw(env: ManagerBasedRlEnv, command_name: str) -> torch.
     return mat[..., :2].reshape(mat.shape[0], -1)
 
 
-def robot_body_pos_b_yaw(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+def robot_tracking_body_pos_b_yaw(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     command = cast(MotionCommand, env.command_manager.get_term(command_name))
 
     num_bodies = len(command.cfg.body_names)
@@ -154,7 +163,7 @@ def robot_body_pos_b_yaw(env: ManagerBasedRlEnv, command_name: str) -> torch.Ten
     return pos_b.view(env.num_envs, -1)
 
 
-def robot_body_ori_b_yaw(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
+def robot_tracking_body_ori_b_yaw(env: ManagerBasedRlEnv, command_name: str) -> torch.Tensor:
     command = cast(MotionCommand, env.command_manager.get_term(command_name))
 
     num_bodies = len(command.cfg.body_names)

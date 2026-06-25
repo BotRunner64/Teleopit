@@ -6,7 +6,6 @@ defaults:
 
 policy_hz: 50.0
 pd_hz: 200.0
-transition_duration: 2.0  # seconds to interpolate from default pose to motion command (0.0 to disable)
 viewers: "sim2sim"
 realtime: false
 debug_trace_path: null
@@ -14,6 +13,11 @@ playback:
   pause_on_end: false
   keyboard:
     enabled: false
+
+console:
+  log_level: warning
+  show_timing: false
+  timing_log_interval_s: 10.0
 
 hydra:
   run:

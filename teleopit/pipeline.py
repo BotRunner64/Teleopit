@@ -10,16 +10,16 @@ from teleopit.controllers.observation import VelCmdObservationBuilder
 from teleopit.controllers.rl_policy import RLPolicyController
 from teleopit.inputs import BVHInputProvider, Pico4InputProvider
 from teleopit.inputs.pico_video import PicoVideoRuntime, parse_pico_video_config
-from teleopit.recording.hdf5_recorder import HDF5Recorder
 from teleopit.retargeting.core import RetargetingModule
 from teleopit.robots.mujoco_robot import MuJoCoRobot
 from teleopit.runtime.common import cfg_get
+from teleopit.runtime.console import PlainConsole
 from teleopit.runtime.factory import build_inference_components
 from teleopit.sim.loop import SimulationLoop
 
 
 class TeleopPipeline:
-    def __init__(self, cfg: DictConfig | dict[str, Any]) -> None:
+    def __init__(self, cfg: DictConfig | dict[str, Any], *, console: PlainConsole | None = None) -> None:
         self.cfg = cfg
         self._project_root = Path(__file__).resolve().parent.parent
         components = build_inference_components(
@@ -54,31 +54,12 @@ class TeleopPipeline:
             components.sim_cfg,
             viewers=components.viewers,
             video_runtime=self.video_runtime,
+            console=console,
         )
 
-    def run(self, num_steps: int, record: bool = False) -> dict[str, float | int | str]:
+    def run(self, num_steps: int) -> dict[str, float | int | str]:
         if num_steps < 0:
             raise ValueError("num_steps must be non-negative (0 = infinite)")
 
         self.controller.reset()
-
-        if not record:
-            return dict(self.loop.run(cast(Any, self.input_provider), cast(Any, self.retargeter), num_steps=num_steps))
-
-        rec_cfg = cast(Any, cfg_get(self.cfg, "recording", {}))
-        output_path = Path(str(cfg_get(rec_cfg, "output_path", "teleop_session.h5"))).expanduser()
-        if not output_path.is_absolute():
-            output_path = (Path.cwd() / output_path).resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with HDF5Recorder(output_path) as recorder:
-            result = self.loop.run(
-                cast(Any, self.input_provider),
-                cast(Any, self.retargeter),
-                num_steps=num_steps,
-                recorder=cast(Any, recorder),
-            )
-
-        result_with_path: dict[str, float | int | str] = dict(result)
-        result_with_path["record_path"] = str(output_path)
-        return result_with_path
+        return dict(self.loop.run(cast(Any, self.input_provider), cast(Any, self.retargeter), num_steps=num_steps))

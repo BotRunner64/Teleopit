@@ -19,7 +19,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from teleopit.debug.rollout_trace import RolloutTraceWriter
-from teleopit.interfaces import InputProvider, Recorder, Retargeter, RobotState
+from teleopit.interfaces import InputProvider, Retargeter, RobotState
 from teleopit.sim.reference_motion import (
     OfflineReferenceMotion,
     interpolate_human_frames,
@@ -33,6 +33,7 @@ from teleopit.sim.reference_utils import (
 )
 from teleopit.sim.realtime_utils import RealtimeReferenceDiagnostics, RealtimeReferenceManager
 from teleopit.sim.runtime_components import MotionPreparation
+from teleopit.runtime.arm_mocap import compose_arm_reference_window
 from teleopit.runtime.mocap_session import MocapSessionManager, MocapSessionState
 from teleopit.runtime.offline_playback import OfflinePlaybackController
 from teleopit.runtime.terminal_keyboard import TerminalKeyboardReader
@@ -63,12 +64,10 @@ class SimLoopSession:
         input_provider: InputProvider,
         retargeter: Retargeter,
         num_steps: int,
-        recorder: Recorder | None,
     ) -> None:
         self._loop = loop
         self._input_provider = input_provider
         self._retargeter = retargeter
-        self._recorder = recorder
 
         # Convenience aliases for heavily-used loop attributes
         self._step_runner = loop._step_runner
@@ -148,13 +147,7 @@ class SimLoopSession:
         if self.reference_timeline is not None:
             self.realtime_reference_manager = RealtimeReferenceManager(
                 reference_window_builder=loop._reference_window_builder,
-                low_watermark_steps=ref_cfg.realtime_buffer_low_watermark_steps,
-                high_watermark_steps=ref_cfg.realtime_buffer_high_watermark_steps,
                 warmup_steps=ref_cfg.realtime_buffer_warmup_steps,
-                catchup_enabled=ref_cfg.realtime_catchup_enabled,
-                catchup_trigger_steps=ref_cfg.realtime_catchup_trigger_steps,
-                catchup_release_steps=ref_cfg.realtime_catchup_release_steps,
-                catchup_target_delay_s=ref_cfg.realtime_catchup_target_delay_s,
             )
 
         # Realtime live-frame tracking
@@ -198,6 +191,8 @@ class SimLoopSession:
         self.simulation_mode: SimulationMode = (
             SimulationMode.STANDING if self.realtime_keyboard_mode_enabled else SimulationMode.MOCAP
         )
+        if self.simulation_mode == SimulationMode.STANDING:
+            loop._set_standing_reference(loop.robot.get_state())
 
         # Debug writer
         self.debug_writer: RolloutTraceWriter | None = None
@@ -217,14 +212,12 @@ class SimLoopSession:
     # State-management methods (formerly closures with nonlocal)
     # ------------------------------------------------------------------
 
-    def reset_runtime_tracking(self, *, warmup_steps: int | None = None) -> None:
+    def reset_runtime_tracking(self) -> None:
         ref_cfg = self._loop._ref_cfg
         if self.reference_timeline is not None:
             self.reference_timeline.clear()
         if self.realtime_reference_manager is not None:
-            self.realtime_reference_manager.set_warmup_steps(
-                ref_cfg.realtime_buffer_warmup_steps if warmup_steps is None else warmup_steps
-            )
+            self.realtime_reference_manager.set_warmup_steps(ref_cfg.realtime_buffer_warmup_steps)
             self.realtime_reference_manager.reset()
         self.previous_live_human_frame = None
         self.previous_live_retargeted = None
@@ -236,57 +229,81 @@ class SimLoopSession:
         self.cached_human_frame = None
         self.cached_retargeted = None
 
-    def full_policy_reset(self, *, warmup_steps: int | None = None) -> None:
+    def reset_policy_reference_state(self, *, reset_mocap_session: bool = True) -> None:
         self._step_runner.reset()
         self._loop.controller.reset()
         self._loop.obs_builder.reset()
-        self._retargeter.reset()
-        self.mocap_session.reset()
+        if reset_mocap_session:
+            self.mocap_session.reset()
         self.last_commanded_motion_qpos = None
-        self.reset_runtime_tracking(warmup_steps=warmup_steps)
+        self.reset_runtime_tracking()
 
     def enter_standing_mode(self) -> None:
         from teleopit.sim.loop import SimulationMode
-        self.full_policy_reset()
+        self.reset_policy_reference_state()
+        self._loop._set_standing_reference(self._loop.robot.get_state())
         self.simulation_mode = SimulationMode.STANDING
 
-    def enter_mocap_mode(self) -> None:
+    def enter_mocap_mode(self) -> bool:
         from teleopit.sim.loop import SimulationMode
         loop = self._loop
         if not loop._realtime_input_has_frame(self._input_provider):
             _logger.warning("Cannot switch to MOCAP yet: realtime input has no frame available")
-            return
+            return False
         state = loop.robot.get_state()
         start_qpos = loop._resolve_hold_qpos(None, None, None, state)
-        self.full_policy_reset()
+        self.reset_policy_reference_state()
         self._step_runner.last_retarget_qpos = start_qpos.copy()
-        self._step_runner.arm_motion_transition(
-            start_qpos,
-            duration_s=loop._mocap_transition_duration,
-        )
         self.last_commanded_motion_qpos = start_qpos.copy()
         self.simulation_mode = SimulationMode.MOCAP
+        return True
 
-    def toggle_realtime_mocap_pause(self) -> None:
+    def toggle_arms_mode(self) -> bool:
+        from teleopit.sim.loop import SimulationMode
+        if not self.realtime_interpolated_input or self.simulation_mode not in (SimulationMode.MOCAP, SimulationMode.ARMS):
+            return False
+        if self.mocap_session.state == MocapSessionState.PAUSED:
+            _logger.info("Ignoring arm-only mode toggle while mocap session is paused")
+            return False
+        loop = self._loop
+        state = loop.robot.get_state()
+        resume_qpos = loop._build_resume_alignment_qpos(self.last_commanded_motion_qpos, state)
+        if self.simulation_mode == SimulationMode.MOCAP:
+            loop._set_standing_reference(state)
+            self.simulation_mode = SimulationMode.ARMS
+        else:
+            self.simulation_mode = SimulationMode.MOCAP
+        self._step_runner.reset()
+        loop.controller.reset()
+        loop.obs_builder.reset()
+        self.mocap_session.reset()
+        self.last_commanded_motion_qpos = None
+        self._step_runner.reset_reference_alignment(resume_qpos)
+        self.last_commanded_motion_qpos = resume_qpos.copy()
+        _logger.info("Simulation mode -> %s", self.simulation_mode.value.upper())
+        return True
+
+    def toggle_realtime_mocap_pause(self) -> str:
         loop = self._loop
         if self.mocap_session.state == MocapSessionState.PAUSED:
             hold_qpos = self.mocap_session.hold_qpos
             if hold_qpos is None:
                 raise RuntimeError("Cannot resume mocap without a paused hold qpos")
             resume_qpos = loop._build_resume_alignment_qpos(hold_qpos, loop.robot.get_state())
-            self.full_policy_reset(warmup_steps=loop._ref_cfg.pause_resume_warmup_steps)
+            self.reset_policy_reference_state()
             self._step_runner.reset_reference_alignment(resume_qpos)
             self.last_commanded_motion_qpos = resume_qpos.copy()
-            return
+            return "resumed"
         hold_qpos = loop._resolve_hold_qpos(
             self.last_commanded_motion_qpos,
             self._step_runner.last_retarget_qpos,
             self.latest_live_retargeted,
             loop.robot.get_state(),
         )
-        self.full_policy_reset()
+        self.reset_policy_reference_state()
         self.mocap_session.pause(hold_qpos)
         self.last_commanded_motion_qpos = hold_qpos.copy()
+        return "paused"
 
     # ------------------------------------------------------------------
     # Keyboard handling
@@ -298,18 +315,32 @@ class SimLoopSession:
         assert self.keyboard_reader is not None
         for key_event in self.keyboard_reader.poll():
             key = key_event.key.lower()
+            if key == "h":
+                self._loop._console.help(self._loop._console_controls)
+                continue
             if key == "q":
                 self.playback_stop_requested = True
+                self._loop._console.key_feedback("Q", "quit", result="stopping")
                 return True
             if self.simulation_mode == SimulationMode.STANDING:
                 if key == "y":
-                    self.enter_mocap_mode()
+                    if self.enter_mocap_mode():
+                        self._loop._console.key_feedback("Y", "mocap", result="MOCAP")
+                    else:
+                        self._loop._console.key_feedback("Y", "mocap", result="waiting for input")
                 continue
             if key == "x":
                 self.enter_standing_mode()
+                self._loop._console.key_feedback("X", "standing", result="STANDING")
+                continue
+            if key == "b":
+                if self.toggle_arms_mode():
+                    self._loop._console.key_feedback("B", "arms", result=self.simulation_mode.value.upper())
+                else:
+                    self._loop._console.key_feedback("B", "arms", result="ignored")
                 continue
             if key == "a":
-                self.toggle_realtime_mocap_pause()
+                self._loop._console.key_feedback("A", "pause/resume", result=self.toggle_realtime_mocap_pause())
         return False
 
     def _handle_offline_keyboard(self) -> bool:
@@ -319,18 +350,22 @@ class SimLoopSession:
         loop = self._loop
         for key_event in self.keyboard_reader.poll():
             key = key_event.key.lower()
+            if key == "h":
+                self._loop._console.help(self._loop._console_controls)
+                continue
             if key == "q":
                 self.playback_stop_requested = True
+                self._loop._console.key_feedback("Q", "stop", result="stopping")
                 return True
             if key == "r":
                 loop._restart_offline_playback(
                     offline_playback=self.offline_playback,
                     mocap_session=self.mocap_session,
-                    retargeter=self._retargeter,
                 )
                 self.cached_human_frame = None
                 self.cached_retargeted = None
                 self.last_commanded_motion_qpos = None
+                self._loop._console.key_feedback("R", "replay", result="frame 0")
                 continue
             if key not in (" ", "p"):
                 continue
@@ -339,14 +374,15 @@ class SimLoopSession:
                     logging.getLogger(__name__).info(
                         "Offline playback already ended; press r to replay from frame 0."
                     )
+                    self._loop._console.key_feedback("Space/P", "pause/resume", result="ended; press R")
                 else:
                     loop._resume_offline_playback(
                         offline_playback=self.offline_playback,
                         mocap_session=self.mocap_session,
-                        retargeter=self._retargeter,
                         state=loop.robot.get_state(),
                     )
                     self.last_commanded_motion_qpos = None
+                    self._loop._console.key_feedback("Space/P", "pause/resume", result="resumed")
             else:
                 hold_qpos = loop._resolve_hold_qpos(
                     self.last_commanded_motion_qpos,
@@ -358,8 +394,8 @@ class SimLoopSession:
                     offline_playback=self.offline_playback,
                     mocap_session=self.mocap_session,
                     hold_qpos=hold_qpos,
-                    retargeter=self._retargeter,
                 )
+                self._loop._console.key_feedback("Space/P", "pause/resume", result="paused")
         return False
 
     # ------------------------------------------------------------------
@@ -368,9 +404,11 @@ class SimLoopSession:
 
     def _fetch_standing_input(self) -> tuple[bool, ReferenceWindow | None, RealtimeReferenceDiagnostics | None]:
         """Fetch input when in STANDING mode (keyboard). Returns (new_bvh_frame, ref_window, diag)."""
-        state = self._loop.robot.get_state()
         self.cached_human_frame = None
-        self.cached_retargeted = self._loop._build_standing_qpos(state)
+        if self._loop._standing_qpos is None:
+            self.cached_retargeted = self._loop._set_standing_reference(self._loop.robot.get_state())
+        else:
+            self.cached_retargeted = self._loop._standing_qpos.copy()
         return False, None, None
 
     def _fetch_offline_reference_input(
@@ -423,9 +461,11 @@ class SimLoopSession:
         frame_timestamp = float(packet.timestamp_s)
         frame_seq = int(packet.seq)
         for control_event in packet.control_events:
-            if control_event.event_type != ControlEventType.TOGGLE_PAUSE:
+            if control_event.event_type == ControlEventType.TOGGLE_ARMS:
+                self.toggle_arms_mode()
                 continue
-            self.toggle_realtime_mocap_pause()
+            if control_event.event_type == ControlEventType.TOGGLE_PAUSE:
+                self.toggle_realtime_mocap_pause()
         new_bvh_frame = frame_seq != self.last_live_packet_seq
 
         if self.mocap_session.state == MocapSessionState.PAUSED:
@@ -485,11 +525,8 @@ class SimLoopSession:
                 self.reference_timeline,
                 target_base_time,
             )
-            if loop._ref_cfg.reference_debug_log:
-                if any(reference_window.fallback_mask()):
-                    loop._log_reference_window(reference_window, len(self.reference_timeline))
-                if realtime_reference_diag.used_repeat_padding:
-                    loop._log_repeat_padding(reference_window, realtime_reference_diag, len(self.reference_timeline))
+            if loop._ref_cfg.reference_debug_log and any(reference_window.fallback_mask()):
+                loop._log_reference_window(reference_window, len(self.reference_timeline))
             self.cached_retargeted = reference_window.current_sample().qpos
         else:
             if self.latest_live_retargeted is None:
@@ -511,6 +548,18 @@ class SimLoopSession:
                 )
             else:
                 self.cached_retargeted = self.latest_live_retargeted
+
+        from teleopit.sim.loop import SimulationMode
+        if self.simulation_mode == SimulationMode.ARMS:
+            self.cached_retargeted = loop._compose_arm_reference(cast(Float64Array, self.cached_retargeted))
+            if reference_window is not None:
+                assert loop._standing_qpos is not None
+                reference_window = compose_arm_reference_window(
+                    reference_window,
+                    standing_qpos=loop._standing_qpos,
+                    arm_joint_indices=loop._arm_joint_indices,
+                    num_actions=loop._num_actions,
+                )
 
         return new_bvh_frame, reference_window, realtime_reference_diag, False
 
@@ -560,7 +609,7 @@ class SimLoopSession:
                         if self.playback_stop_requested:
                             break
 
-                if self.realtime_keyboard_mode_enabled and self.simulation_mode != SimulationMode.MOCAP:
+                if self.realtime_keyboard_mode_enabled and self.simulation_mode == SimulationMode.STANDING:
                     loop._drain_realtime_control_events(self._input_provider)
 
                 # --- Compute time/frame ---
@@ -630,7 +679,6 @@ class SimLoopSession:
                 target_dof_pos = self._step_runner.compute_target_dof_pos(action)
                 torque, final_state = self._step_runner.apply_control(target_dof_pos)
                 loop._publisher.publish(preparation.mimic_obs, action, final_state)
-                loop._recorder_helper.record(self._recorder, final_state, preparation.mimic_obs, action, target_dof_pos, torque)
                 self._viewer_manager.write_sim2sim(loop.robot)
                 self._viewer_manager.write_camera(loop.robot)
                 if loop._video_runtime is not None:

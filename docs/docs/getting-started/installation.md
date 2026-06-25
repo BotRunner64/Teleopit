@@ -32,7 +32,7 @@ This is sufficient for offline BVH playback and MuJoCo simulation.
 pip install -e '.[train]'
 ```
 
-Adds `rsl-rl-lib`, `mjlab`, `wandb`, and training dependencies.
+Adds `rsl-rl-lib`, `mjlab`, `wandb`, `swanlab`, and training dependencies.
 
 ### Sim2Real (Hardware Deployment)
 
@@ -40,7 +40,7 @@ Adds `rsl-rl-lib`, `mjlab`, `wandb`, and training dependencies.
 pip install -e '.[sim2real]'
 ```
 
-Adds `opencv-python` and `g1_bridge_sdk`. You also need to initialize submodules and build the C++ bridge:
+Adds `opencv-python`. You also need to initialize submodules and build/install the C++ `g1_bridge_sdk` bridge:
 
 ```bash
 git submodule update --init --recursive
@@ -56,12 +56,38 @@ pip install -e '.[pico4]'
 ```
 
 Teleopit uses the in-process `pico_bridge.PicoBridge` receiver for Pico tracking.
-For Teleopit 0.3.0, use pico-bridge 0.2.0. Do not upgrade the receiver to
-pico-bridge 0.2.1, because 0.2.1 changes interface semantics that Teleopit
-0.3.0 does not target.
+Teleopit targets pico-bridge 0.2.1 and its `pico_native` tracking semantics.
 The receiver can run on a workstation PC or the robot onboard computer.
 See [Pico Sim2Sim](../tutorials/pico-sim2sim) and
 [Pico Sim2Real](../tutorials/pico-sim2real) for the full setup guides.
+
+Optional LinkerHand control for Pico sim2real uses local third-party packages.
+Install those packages directly after initializing the submodules:
+
+```bash
+git submodule update --init --recursive
+pip install -e third_party/linkerhand-python-sdk
+pip install -e third_party/somehand
+scripts/setup/download_somehand_l6_assets.sh
+```
+
+These packages are only required when `hands.enabled=true`.
+
+### Sim2Real Recording
+
+```bash
+pip install -e '.[recording]'
+```
+
+Adds the Pico sim2real stack plus the video dependencies used by
+`sim2real_record.yaml`. RealSense Python bindings are platform-specific: install
+`pyrealsense2` manually in the active environment when using
+`input.video.source=realsense`. On Arm machines, use conda-forge rather than the
+pip package:
+
+```bash
+conda install -c conda-forge pyrealsense2
+```
 
 ## Verify Installation
 

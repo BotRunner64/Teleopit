@@ -30,8 +30,6 @@ def test_exponential_vec_smoother_blends_and_resets() -> None:
 def test_realtime_reference_manager_warmup_counts_real_frames() -> None:
     manager = RealtimeReferenceManager(
         reference_window_builder=ReferenceWindowBuilder(policy_dt_s=0.02, reference_steps=[0, 1, 2]),
-        low_watermark_steps=1,
-        high_watermark_steps=3,
         warmup_steps=2,
     )
 
@@ -42,15 +40,13 @@ def test_realtime_reference_manager_warmup_counts_real_frames() -> None:
     assert manager.warmup_done is True
 
 
-def test_realtime_reference_manager_repeat_pads_future_window() -> None:
+def test_realtime_reference_manager_samples_without_padding_or_catchup() -> None:
     timeline = ReferenceTimeline(window_s=1.0)
     timeline.append(_qpos(0.0), 0.0)
     timeline.append(_qpos(1.0), 0.02)
 
     manager = RealtimeReferenceManager(
         reference_window_builder=ReferenceWindowBuilder(policy_dt_s=0.02, reference_steps=[0, 1, 2]),
-        low_watermark_steps=1,
-        high_watermark_steps=2,
         warmup_steps=0,
     )
     manager.note_realtime_frame()
@@ -59,71 +55,7 @@ def test_realtime_reference_manager_repeat_pads_future_window() -> None:
     window, diagnostics = manager.sample(timeline, 0.02)
 
     assert diagnostics.future_horizon_steps == 0
-    assert diagnostics.used_repeat_padding is True
-    assert diagnostics.padding_active is True
     np.testing.assert_allclose(window.current_sample().qpos[0], 1.0, atol=1e-6)
-    assert window.samples[1].mode == 'repeat_latest'
-    assert window.samples[2].mode == 'repeat_latest'
-    np.testing.assert_allclose(window.samples[1].timestamp_s, 0.04, atol=1e-6)
-    np.testing.assert_allclose(window.samples[2].timestamp_s, 0.06, atol=1e-6)
-
-
-def test_realtime_reference_manager_defaults_high_watermark_to_effective_low() -> None:
-    manager = RealtimeReferenceManager(
-        reference_window_builder=ReferenceWindowBuilder(policy_dt_s=0.02, reference_steps=[0, 1, 2, 3, 4]),
-        low_watermark_steps=0,
-        high_watermark_steps=None,
-        warmup_steps=0,
-    )
-
-    assert manager._low_watermark_steps == 4
-    assert manager._high_watermark_steps == 4
-
-
-def test_realtime_reference_manager_catchup_advances_base_time() -> None:
-    timeline = ReferenceTimeline(window_s=1.0)
-    for idx in range(11):
-        timeline.append(_qpos(float(idx)), idx * 0.02)
-
-    manager = RealtimeReferenceManager(
-        reference_window_builder=ReferenceWindowBuilder(policy_dt_s=0.02, reference_steps=[0]),
-        low_watermark_steps=2,
-        high_watermark_steps=4,
-        warmup_steps=0,
-        catchup_enabled=True,
-        catchup_trigger_steps=6,
-        catchup_release_steps=3,
-        catchup_target_delay_s=0.04,
-    )
-
-    window, diagnostics = manager.sample(timeline, 0.00)
-
-    assert diagnostics.used_catchup is True
-    assert diagnostics.catchup_active is True
-    np.testing.assert_allclose(diagnostics.effective_base_time_s, 0.16, atol=1e-6)
-    np.testing.assert_allclose(window.current_sample().qpos[0], 8.0, atol=1e-6)
-
-
-def test_realtime_reference_manager_catchup_releases_with_hysteresis() -> None:
-    timeline = ReferenceTimeline(window_s=1.0)
-    for idx in range(11):
-        timeline.append(_qpos(float(idx)), idx * 0.02)
-
-    manager = RealtimeReferenceManager(
-        reference_window_builder=ReferenceWindowBuilder(policy_dt_s=0.02, reference_steps=[0]),
-        low_watermark_steps=2,
-        high_watermark_steps=4,
-        warmup_steps=0,
-        catchup_enabled=True,
-        catchup_trigger_steps=6,
-        catchup_release_steps=3,
-        catchup_target_delay_s=0.04,
-    )
-
-    _, first_diag = manager.sample(timeline, 0.00)
-    _, second_diag = manager.sample(timeline, 0.18)
-
-    assert first_diag.catchup_active is True
-    assert second_diag.used_catchup is False
-    assert second_diag.catchup_active is False
-    np.testing.assert_allclose(second_diag.effective_base_time_s, 0.18, atol=1e-6)
+    assert window.samples[1].mode == "fallback_latest"
+    assert window.samples[2].mode == "fallback_latest"
+    np.testing.assert_allclose(diagnostics.effective_base_time_s, 0.02, atol=1e-6)

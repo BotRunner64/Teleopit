@@ -1,14 +1,16 @@
 """Pico4 VR full-body motion capture input provider.
 
 Uses the in-process ``pico_bridge`` receiver to collect PICO tracking frames.
-The provider converts native PICO/Unity poses (meters, xyzw quaternions) into
+The provider converts native PICO poses (meters, xyzw quaternions) into
 Teleopit's realtime ``HumanFrame`` format.
 """
 
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 import inspect
+from importlib.metadata import PackageNotFoundError, version
 import logging
 import threading
 import time
@@ -31,7 +33,7 @@ from teleopit.sim.reference_motion import interpolate_human_frames
 
 logger = logging.getLogger(__name__)
 
-# PICO/Unity -> Teleopit retarget input space.
+# PICO native -> Teleopit retarget input space.
 _INPUT_TO_TELEOPIT_MATRIX = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float64)
 _INPUT_TO_TELEOPIT_QUAT = R.from_matrix(_INPUT_TO_TELEOPIT_MATRIX).as_quat(scalar_first=True)
 
@@ -52,6 +54,46 @@ BODY_JOINT_PARENTS = np.array(
     dtype=np.int32,
 )
 
+
+@dataclass(frozen=True)
+class PicoControllerState:
+    """Latest per-controller input state exposed by pico_bridge."""
+
+    raw: bool
+    grip: float
+    trigger: float
+    present: bool = True
+
+
+@dataclass(frozen=True)
+class PicoControllerSnapshot:
+    """Immutable snapshot of Pico controller inputs for auxiliary runtimes."""
+
+    left: PicoControllerState
+    right: PicoControllerState
+    timestamp_s: float
+    seq: int
+
+
+@dataclass(frozen=True)
+class PicoHandState:
+    """Latest per-hand pose state exposed by pico_bridge."""
+
+    active: bool
+    joints: NDArray[np.float64]
+    present: bool = True
+
+
+@dataclass(frozen=True)
+class PicoHandSnapshot:
+    """Immutable snapshot of Pico hand poses for auxiliary runtimes."""
+
+    left: PicoHandState
+    right: PicoHandState
+    timestamp_s: float
+    seq: int
+
+
 _PAUSE_BUTTON_MAP: dict[str, tuple[str, str]] = {
     "A": ("right", "primaryButton"),
     "B": ("right", "secondaryButton"),
@@ -64,6 +106,32 @@ _PAUSE_BUTTON_MAP: dict[str, tuple[str, str]] = {
 }
 
 
+def _has_non_degenerate_positions(positions: NDArray[np.float64]) -> bool:
+    pos = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    if pos.size == 0:
+        return False
+    finite_mask = np.all(np.isfinite(pos), axis=1)
+    valid_pos = pos[finite_mask]
+    if valid_pos.shape[0] < 2:
+        return False
+    nonzero_pos = valid_pos[np.linalg.norm(valid_pos, axis=1) > 1e-9]
+    if nonzero_pos.shape[0] < 2:
+        return False
+    extent = float(np.max(np.ptp(nonzero_pos, axis=0)))
+    return extent > 1e-6
+
+
+def _compute_ground_alignment_offset(positions: NDArray[np.float64]) -> float:
+    pos = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    if pos.size == 0:
+        return 0.0
+    finite_mask = np.all(np.isfinite(pos), axis=1)
+    if not np.any(finite_mask):
+        return 0.0
+    min_z = float(np.min(pos[finite_mask, 2]))
+    return -min_z
+
+
 def _bridge_accepts_video_enabled(bridge_cls: type[Any]) -> bool:
     try:
         signature = inspect.signature(bridge_cls)
@@ -73,6 +141,20 @@ def _bridge_accepts_video_enabled(bridge_cls: type[Any]) -> bool:
     if "video_enabled" in parameters:
         return True
     return any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values())
+
+
+def _installed_pico_bridge_version() -> tuple[int, ...] | None:
+    try:
+        raw_version = version("pico-bridge")
+    except PackageNotFoundError:
+        return None
+    release = raw_version.split("+", 1)[0].split("-", 1)[0]
+    parts: list[int] = []
+    for part in release.split("."):
+        if not part.isdigit():
+            break
+        parts.append(int(part))
+    return tuple(parts) if parts else None
 
 
 def _coordinate_transform_input(body_pose_dict: dict[str, list]) -> dict[str, list]:
@@ -102,6 +184,8 @@ class Pico4InputProvider(RealtimeInputProvider):
         timestamp_gap_reset_s: float = 0.15,
         pause_button: str | None = "A",
         pause_debounce_s: float = 0.25,
+        arms_button: str | None = "B",
+        arms_debounce_s: float | None = None,
         bridge_host: str = "0.0.0.0",
         bridge_port: int = 63901,
         bridge_discovery: bool = True,
@@ -120,10 +204,16 @@ class Pico4InputProvider(RealtimeInputProvider):
                     "pico_bridge is required for Pico4 input. Install the receiver package, "
                     "for example: pip install -e '.[pico4]'"
                 ) from exc
+            installed_version = _installed_pico_bridge_version()
+            if installed_version is None or installed_version < (0, 2, 1):
+                raise RuntimeError(
+                    "pico_bridge >= 0.2.1 is required for Pico4 input. Reinstall the Pico extra with "
+                    "pip install -e '.[pico4]' so Teleopit receives pico_native tracking semantics."
+                )
             bridge_cls = PicoBridge
         if not _bridge_accepts_video_enabled(bridge_cls):
             raise RuntimeError(
-                "pico_bridge >= 0.2.0 is required for Pico4 input. Reinstall the Pico extra with "
+                "pico_bridge >= 0.2.1 is required for Pico4 input. Reinstall the Pico extra with "
                 "pip install -e '.[pico4]' so PicoBridge accepts video_enabled and push_video_frame()."
             )
 
@@ -136,13 +226,21 @@ class Pico4InputProvider(RealtimeInputProvider):
         self._timestamp_gap_reset_s = float(timestamp_gap_reset_s)
         self._pending_control_events: deque[ControlEvent] = deque()
         self._pause_button = None if pause_button in (None, "", "null") else str(pause_button)
+        self._arms_button = None if arms_button in (None, "", "null") else str(arms_button)
         self._pause_debounce_s = max(float(pause_debounce_s), 0.0)
+        self._arms_debounce_s = self._pause_debounce_s if arms_debounce_s is None else max(float(arms_debounce_s), 0.0)
         self._pause_button_path = self._resolve_button_path(self._pause_button)
+        self._arms_button_path = self._resolve_button_path(self._arms_button)
         self._last_pause_button_pressed = False
+        self._last_arms_button_pressed = False
         self._last_pause_toggle_timestamp: float | None = None
+        self._last_arms_toggle_timestamp: float | None = None
         self._last_raw_body_joints: NDArray[np.float64] | None = None
         self._last_frame_timestamp: float | None = None
         self._last_source_seq: int | None = None
+        self._controller_snapshot: PicoControllerSnapshot | None = None
+        self._hand_snapshot: PicoHandSnapshot | None = None
+        self._ground_alignment_offset: float | None = None
         self._bridge = bridge_cls(
             host=bridge_host,
             port=int(bridge_port),
@@ -160,6 +258,11 @@ class Pico4InputProvider(RealtimeInputProvider):
             logger.warning(
                 "Pico4InputProvider pause button '%s' is unsupported by pico_bridge; pause events disabled",
                 self._pause_button,
+            )
+        if self._arms_button is not None and self._arms_button_path is None:
+            logger.warning(
+                "Pico4InputProvider arms button '%s' is unsupported by pico_bridge; arms events disabled",
+                self._arms_button,
             )
         logger.info("Pico4InputProvider initialized (pico_bridge)")
 
@@ -223,11 +326,21 @@ class Pico4InputProvider(RealtimeInputProvider):
             self._pending_control_events.clear()
         return control_events
 
+    def get_controller_snapshot(self) -> PicoControllerSnapshot | None:
+        """Return the latest Pico controller-axis snapshot, if one has arrived."""
+        with self._lock:
+            return self._controller_snapshot
+
+    def get_hand_snapshot(self) -> PicoHandSnapshot | None:
+        """Return the latest Pico hand-pose snapshot, if one has arrived."""
+        with self._lock:
+            return self._hand_snapshot
+
     def push_video_frame(self, frame: NDArray[np.uint8]) -> int:
-        """Push one RGB camera frame to pico-bridge 0.2.0 video output."""
+        """Push one RGB camera frame to pico-bridge 0.2.1 video output."""
         push_video_frame = getattr(self._bridge, "push_video_frame", None)
         if not callable(push_video_frame):
-            raise RuntimeError("Installed pico_bridge does not expose push_video_frame(); use pico-bridge 0.2.0")
+            raise RuntimeError("Installed pico_bridge does not expose push_video_frame(); use pico-bridge 0.2.1")
         return int(push_video_frame(frame))
 
     def has_frame(self) -> bool:
@@ -287,6 +400,8 @@ class Pico4InputProvider(RealtimeInputProvider):
 
     def _accept_pico_frame(self, frame: Any) -> bool:
         timestamp = float(getattr(frame, "receive_time_s", time.monotonic()))
+        self._accept_controller_snapshot(frame, timestamp=timestamp)
+        self._accept_hand_snapshot(frame, timestamp=timestamp)
         self._poll_control_events(frame, timestamp=timestamp)
 
         body = getattr(frame, "body", None)
@@ -312,6 +427,7 @@ class Pico4InputProvider(RealtimeInputProvider):
                 and timestamp - self._last_frame_timestamp > self._timestamp_gap_reset_s
             ):
                 self._frame_cache.clear()
+                self._ground_alignment_offset = None
                 logger.warning(
                     "Pico4InputProvider timestamp-gap reset | gap=%.4fs",
                     timestamp - self._last_frame_timestamp,
@@ -319,6 +435,7 @@ class Pico4InputProvider(RealtimeInputProvider):
             if self._last_frame_timestamp is not None and timestamp <= self._last_frame_timestamp + 1e-9:
                 timestamp = self._last_frame_timestamp + 1e-6
 
+            human_frame = self._apply_ground_alignment(human_frame)
             self._frame_cache.append(human_frame, timestamp, fps_timestamp=timestamp)
             self._last_raw_body_joints = body_joints.copy()
             self._last_frame_timestamp = timestamp
@@ -327,47 +444,133 @@ class Pico4InputProvider(RealtimeInputProvider):
         self._frame_ready.set()
         return True
 
+    def _accept_controller_snapshot(self, frame: Any, *, timestamp: float) -> None:
+        seq = int(getattr(frame, "seq", self._last_source_seq or -1))
+        controllers = getattr(frame, "controllers", None)
+        snapshot = PicoControllerSnapshot(
+            left=self._read_controller_state(None if controllers is None else getattr(controllers, "left", None)),
+            right=self._read_controller_state(None if controllers is None else getattr(controllers, "right", None)),
+            timestamp_s=float(timestamp),
+            seq=seq,
+        )
+        with self._lock:
+            self._controller_snapshot = snapshot
+
+    def _accept_hand_snapshot(self, frame: Any, *, timestamp: float) -> None:
+        seq = int(getattr(frame, "seq", self._last_source_seq or -1))
+        snapshot = PicoHandSnapshot(
+            left=self._read_hand_state(getattr(frame, "left_hand", None)),
+            right=self._read_hand_state(getattr(frame, "right_hand", None)),
+            timestamp_s=float(timestamp),
+            seq=seq,
+        )
+        with self._lock:
+            self._hand_snapshot = snapshot
+
     def _poll_control_events(self, frame: Any, *, timestamp: float) -> bool:
-        if self._pause_button_path is None:
+        emitted = False
+        emitted = self._poll_button_control_event(
+            frame,
+            timestamp=timestamp,
+            button_path=self._pause_button_path,
+            button_label=self._pause_button,
+            event_type=ControlEventType.TOGGLE_PAUSE,
+            last_pressed_attr="_last_pause_button_pressed",
+            last_toggle_attr="_last_pause_toggle_timestamp",
+            debounce_s=self._pause_debounce_s,
+        ) or emitted
+        emitted = self._poll_button_control_event(
+            frame,
+            timestamp=timestamp,
+            button_path=self._arms_button_path,
+            button_label=self._arms_button,
+            event_type=ControlEventType.TOGGLE_ARMS,
+            last_pressed_attr="_last_arms_button_pressed",
+            last_toggle_attr="_last_arms_toggle_timestamp",
+            debounce_s=self._arms_debounce_s,
+        ) or emitted
+        return emitted
+
+    def _poll_button_control_event(
+        self,
+        frame: Any,
+        *,
+        timestamp: float,
+        button_path: tuple[str, str] | None,
+        button_label: str | None,
+        event_type: ControlEventType,
+        last_pressed_attr: str,
+        last_toggle_attr: str,
+        debounce_s: float,
+    ) -> bool:
+        if button_path is None:
             return False
 
-        side, button_name = self._pause_button_path
+        side, button_name = button_path
         controllers = getattr(frame, "controllers", None)
         controller = None if controllers is None else getattr(controllers, side, None)
         buttons = {} if controller is None else getattr(controller, "buttons", {}) or {}
         pressed = bool(buttons.get(button_name, False))
+        last_pressed = bool(getattr(self, last_pressed_attr))
         emitted = False
-        if pressed and not self._last_pause_button_pressed:
-            if (
-                self._last_pause_toggle_timestamp is None
-                or timestamp - self._last_pause_toggle_timestamp >= self._pause_debounce_s - 1e-9
-            ):
+        if pressed and not last_pressed:
+            last_toggle = getattr(self, last_toggle_attr)
+            if last_toggle is None or timestamp - float(last_toggle) >= debounce_s - 1e-9:
                 with self._lock:
                     self._pending_control_events.append(
                         ControlEvent(
-                            event_type=ControlEventType.TOGGLE_PAUSE,
-                            source=f"pico4:{self._pause_button}",
+                            event_type=event_type,
+                            source=f"pico4:{button_label}",
                             timestamp_s=float(timestamp),
                         )
                     )
-                self._last_pause_toggle_timestamp = float(timestamp)
+                logger.info("Pico control event: %s from %s", event_type.value, button_label)
+                setattr(self, last_toggle_attr, float(timestamp))
                 emitted = True
-        self._last_pause_button_pressed = pressed
+        setattr(self, last_pressed_attr, pressed)
         return emitted
 
     @staticmethod
-    def _resolve_button_path(pause_button: str | None) -> tuple[str, str] | None:
-        if pause_button is None:
+    def _resolve_button_path(button: str | None) -> tuple[str, str] | None:
+        if button is None:
             return None
-        return _PAUSE_BUTTON_MAP.get(pause_button)
+        return _PAUSE_BUTTON_MAP.get(button)
+
+    @staticmethod
+    def _read_controller_state(controller: Any) -> PicoControllerState:
+        axis = {} if controller is None else getattr(controller, "axis", {}) or {}
+        return PicoControllerState(
+            raw=bool(False if controller is None else getattr(controller, "raw", False)),
+            grip=float(axis.get("grip", 0.0)),
+            trigger=float(axis.get("trigger", 0.0)),
+            present=controller is not None,
+        )
+
+    @staticmethod
+    def _read_hand_state(hand: Any) -> PicoHandState:
+        joints = np.zeros((26, 7), dtype=np.float64)
+        valid_shape = False
+        if hand is None:
+            return PicoHandState(active=False, joints=joints, present=False)
+        try:
+            raw_joints = np.asarray(getattr(hand, "joints"), dtype=np.float64)
+            if raw_joints.shape == (26, 7):
+                joints = raw_joints.copy()
+                valid_shape = True
+        except (TypeError, ValueError):
+            pass
+        return PicoHandState(
+            active=bool(getattr(hand, "active", False)) and valid_shape,
+            joints=joints,
+            present=True,
+        )
 
     @staticmethod
     def _convert_body_joints_to_frame(body_joints: NDArray[np.float64]) -> HumanFrame:
-        body_joints = Pico4InputProvider._normalize_pico_bridge_body_joints(body_joints)
         body_pose_dict: dict[str, list] = {}
         for i, joint_name in enumerate(BODY_JOINT_NAMES):
             pos = [body_joints[i][0], body_joints[i][1], body_joints[i][2]]
-            # pico_bridge returns [x, y, z, qx, qy, qz, qw].
+            # pico_bridge 0.2.1 returns pico_native [x, y, z, qx, qy, qz, qw].
             rot = [body_joints[i][6], body_joints[i][3], body_joints[i][4], body_joints[i][5]]
             body_pose_dict[joint_name] = [pos, rot]
 
@@ -378,11 +581,21 @@ class Pico4InputProvider(RealtimeInputProvider):
             result[name] = (np.asarray(pos, dtype=np.float64), np.asarray(quat, dtype=np.float64))
         return result
 
-    @staticmethod
-    def _normalize_pico_bridge_body_joints(body_joints: NDArray[np.float64]) -> NDArray[np.float64]:
-        """Match Teleopit's calibrated Pico body-pose convention."""
-        converted = np.array(body_joints, dtype=np.float64, copy=True)
-        converted[:, 2] *= -1.0
-        converted[:, 5] *= -1.0
-        converted[:, 6] *= -1.0
-        return converted
+    def _apply_ground_alignment(self, human_frame: HumanFrame) -> HumanFrame:
+        """Apply one fixed Z offset so the initial Pico skeleton sits on the floor."""
+        if self._ground_alignment_offset is None:
+            positions = np.asarray([value[0] for value in human_frame.values()], dtype=np.float64)
+            if _has_non_degenerate_positions(positions):
+                self._ground_alignment_offset = _compute_ground_alignment_offset(positions)
+            else:
+                return human_frame
+
+        offset = float(self._ground_alignment_offset)
+        if abs(offset) <= 1e-12:
+            return human_frame
+
+        z_offset = np.array([0.0, 0.0, offset], dtype=np.float64)
+        lifted: HumanFrame = {}
+        for name, (pos, quat) in human_frame.items():
+            lifted[name] = (np.asarray(pos, dtype=np.float64) + z_offset, np.asarray(quat, dtype=np.float64))
+        return lifted

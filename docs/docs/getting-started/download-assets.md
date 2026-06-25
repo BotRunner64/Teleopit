@@ -20,25 +20,28 @@ python scripts/setup/download_assets.py
 Download only what you need for inference:
 
 ```bash
-python scripts/setup/download_assets.py --only gmr ckpt bvh
+python scripts/setup/download_assets.py --only robots gmr ckpt bvh
 ```
 
 ## Asset Inventory
 
-| Asset | Size | Purpose |
-|-------|------|---------|
-| `track.onnx` | 4 MB | ONNX inference model |
-| `track.pt` | 27 MB | PyTorch checkpoint (for resume training) |
-| `data/datasets/seed/train/shard_*.npz` | ~25 GB | Training dataset |
-| `data/datasets/seed/val/shard_*.npz` | ~1.4 GB | Validation dataset |
-| `data/sample_bvh/*.bvh` | 5 MB | Sample motion files |
-| `teleopit/retargeting/gmr/assets/` | ~1.2 GB | GMR retargeting robot models |
+Downloaded file sizes change as checkpoints, datasets, and asset bundles are updated. Use the repository paths below as the stable contract.
+
+| Local Path | Purpose |
+|------------|---------|
+| `track.onnx` | ONNX inference model |
+| `track.pt` | PyTorch checkpoint for resume training |
+| `data/datasets/seed/shard_*.h5` | Minimal motion dataset; run precompute before training |
+| `data/sample_bvh/*.bvh` | Sample motion files |
+| `assets/robots/unitree_g1/` | Canonical G1 XML and meshes used by training, sim2sim, retargeting, and FK validation |
+| `teleopit/retargeting/gmr/assets/` | GMR retargeting assets, IK configs, and non-canonical robot descriptions |
 
 ## Asset Groups
 
 | Group | ModelScope Repo | Contents |
 |-------|----------------|----------|
 | `ckpt` | `BingqianWu/Teleopit-models` | `track.onnx`, `track.pt` |
+| `robots` | `BingqianWu/Teleopit-models` | Canonical robot XML/meshes |
 | `gmr` | `BingqianWu/Teleopit-models` | GMR retargeting assets |
 | `bvh` | `BingqianWu/Teleopit-models` | Sample BVH motion files |
 | `data` | `BingqianWu/Teleopit-datasets` | Training/validation shards |

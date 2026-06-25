@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from train_mimic.tasks.tracking.rl.runner import (
+    _format_duration,
     _one_based_iteration_range,
     _resolve_total_iterations,
 )
@@ -36,3 +37,7 @@ def test_resolve_total_iterations_adds_requested_iterations_on_resume() -> None:
 def test_resolve_total_iterations_rejects_negative_requested_iterations() -> None:
     with pytest.raises(ValueError, match='non-negative'):
         _resolve_total_iterations(10, -1)
+
+
+def test_format_duration_keeps_hours_above_one_day() -> None:
+    assert _format_duration(33 * 3600 + 16 * 60 + 25) == "33:16:25"

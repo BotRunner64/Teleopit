@@ -5,8 +5,9 @@ sidebar_position: 3
 # Standalone Standing Test
 
 Run this before full sim2real control when bringing up a new robot, network
-setup, or policy. It verifies the G1 bridge and RL standing path without Pico,
-BVH playback, retargeting, or the full Teleopit mocap pipeline.
+setup, or policy. It verifies the G1 bridge and the same RL standing path used
+by sim2real, without Pico, BVH playback, retargeting, or the full mocap
+pipeline.
 
 ```text
 G1 LowState -> standing observation -> RL policy -> G1 LowCmd targets
@@ -58,12 +59,28 @@ python scripts/run/standalone_standing.py \
     --network-interface eth0
 ```
 
+Standalone standing reuses the sim2real standing components: `UnitreeG1Robot`,
+`Sim2RealSafetyManager`, `RLPolicyController`, `VelCmdObservationBuilder`, and
+`Sim2RealReferenceProcessor`. After locking the current joints, policy targets
+are sent while Kp ramps from 10% to the configured gains over 2 seconds. To tune
+this startup behavior:
+
+```bash
+python scripts/run/standalone_standing.py \
+    --policy track.onnx \
+    --network-interface eth0 \
+    --kp-ramp-duration 2.0 \
+    --kp-ramp-floor-ratio 0.1
+```
+
 ## What It Checks
 
 - `g1_bridge_sdk` imports correctly.
 - LowState is received from the robot.
 - The dual-input ONNX policy can run the standing observation path.
 - Low-level position targets can be published through the C++ bridge.
+- Observation construction, action scaling, default standing pose, Kp ramp, and
+  joint-limit clipping match the sim2real standing runtime.
 
 ## Next Steps
 

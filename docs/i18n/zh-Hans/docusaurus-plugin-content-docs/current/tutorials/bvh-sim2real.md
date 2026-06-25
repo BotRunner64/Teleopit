@@ -73,12 +73,6 @@ real_robot.network_interface=enp130s0
 # 在 BVH 最后一帧暂停
 playback.pause_on_end=true
 
-# 从 standing/当前机器人状态平滑进入回放
-transition_duration=2.0
-
-# 离线回放恢复混合时长
-pause_resume_transition_duration=1.0
-
 # 控制循环频率
 policy_hz=50
 ```

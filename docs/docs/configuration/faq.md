@@ -7,8 +7,7 @@ sidebar_position: 3
 ## Why does it fail even though I set `policy_path`?
 
 1. Verify the file exists
-2. Confirm it's not an old 1402D / TWIST2 ONNX model
-3. Confirm the input dimension is `166` with dual inputs (`obs` + `obs_history`)
+2. Confirm the input dimension is `167` with dual inputs (`obs` + `obs_history`)
 
 ## Why must I specify `input.bvh_file` explicitly?
 

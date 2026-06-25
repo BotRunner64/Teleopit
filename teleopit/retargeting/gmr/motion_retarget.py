@@ -7,6 +7,13 @@ from scipy.spatial.transform import Rotation as R
 from .params import ROBOT_XML_DICT, IK_CONFIG_DICT
 from rich import print
 
+_FRAME_TYPE_TO_MJ_OBJ = {
+    "body": mj.mjtObj.mjOBJ_BODY,
+    "geom": mj.mjtObj.mjOBJ_GEOM,
+    "site": mj.mjtObj.mjOBJ_SITE,
+}
+
+
 class GeneralMotionRetargeting:
     """General Motion Retargeting (GMR).
     """
@@ -28,8 +35,9 @@ class GeneralMotionRetargeting:
         self.model = mj.MjModel.from_xml_path(self.xml_file)
         
         # Print DoF names in order
-        print("[GMR] Robot Degrees of Freedom (DoF) names and their order:")
         self.robot_dof_names = {}
+        if verbose:
+            print("[GMR] Robot Degrees of Freedom (DoF) names and their order:")
         for i in range(self.model.nv):  # 'nv' is the number of DoFs
             dof_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_JOINT, self.model.dof_jntid[i])
             self.robot_dof_names[dof_name] = i
@@ -37,16 +45,18 @@ class GeneralMotionRetargeting:
                 print(f"DoF {i}: {dof_name}")
             
             
-        print("[GMR] Robot Body names and their IDs:")
         self.robot_body_names = {}
+        if verbose:
+            print("[GMR] Robot Body names and their IDs:")
         for i in range(self.model.nbody):  # 'nbody' is the number of bodies
             body_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_BODY, i)
             self.robot_body_names[body_name] = i
             if verbose:
                 print(f"Body ID {i}: {body_name}")
         
-        print("[GMR] Robot Motor (Actuator) names and their IDs:")
         self.robot_motor_names = {}
+        if verbose:
+            print("[GMR] Robot Motor (Actuator) names and their IDs:")
         for i in range(self.model.nu):  # 'nu' is the number of actuators (motors)
             motor_name = mj.mj_id2name(self.model, mj.mjtObj.mjOBJ_ACTUATOR, i)
             self.robot_motor_names[motor_name] = i
@@ -107,6 +117,47 @@ class GeneralMotionRetargeting:
         self._warmup_max_iter = 200
         self._warmup_dt = 0.1  # large integration step for fast convergence during warmup
 
+    def _parse_ik_entry(self, entry):
+        if len(entry) == 5:
+            body_name, pos_weight, rot_weight, pos_offset, rot_offset = entry
+            frame_type = "body"
+        elif len(entry) == 6:
+            body_name, pos_weight, rot_weight, pos_offset, rot_offset, frame_type = entry
+        else:
+            raise ValueError(
+                "IK config entries must be [human_body, pos_weight, rot_weight, "
+                "pos_offset, rot_offset] or the same list plus frame_type"
+            )
+        frame_type = str(frame_type)
+        if frame_type not in _FRAME_TYPE_TO_MJ_OBJ:
+            supported = ", ".join(sorted(_FRAME_TYPE_TO_MJ_OBJ))
+            raise ValueError(f"Unsupported IK frame_type '{frame_type}'. Supported values: {supported}")
+        return body_name, pos_weight, rot_weight, pos_offset, rot_offset, frame_type
+
+    def _available_frame_names(self, frame_type):
+        obj_type = _FRAME_TYPE_TO_MJ_OBJ[frame_type]
+        count = {
+            "body": self.model.nbody,
+            "geom": self.model.ngeom,
+            "site": self.model.nsite,
+        }[frame_type]
+        names = []
+        for idx in range(count):
+            name = mj.mj_id2name(self.model, obj_type, idx)
+            if name:
+                names.append(name)
+        return names
+
+    def _validate_frame(self, frame_name, frame_type, table_name):
+        obj_type = _FRAME_TYPE_TO_MJ_OBJ[frame_type]
+        if mj.mj_name2id(self.model, obj_type, frame_name) >= 0:
+            return
+        available = ", ".join(self._available_frame_names(frame_type))
+        raise ValueError(
+            f"IK config {table_name} references {frame_type} '{frame_name}', but it does not exist "
+            f"in robot model '{self.xml_file}'. Update the IK config to use one of: {available}"
+        )
+
     def reset_configuration(self):
         """Reset the IK configuration to the model's default qpos.
 
@@ -128,11 +179,12 @@ class GeneralMotionRetargeting:
         self.tasks2 = []
         
         for frame_name, entry in self.ik_match_table1.items():
-            body_name, pos_weight, rot_weight, pos_offset, rot_offset = entry
+            body_name, pos_weight, rot_weight, pos_offset, rot_offset, frame_type = self._parse_ik_entry(entry)
             if pos_weight != 0 or rot_weight != 0:
+                self._validate_frame(frame_name, frame_type, "ik_match_table1")
                 task = mink.FrameTask(
                     frame_name=frame_name,
-                    frame_type="body",
+                    frame_type=frame_type,
                     position_cost=pos_weight,
                     orientation_cost=rot_weight,
                     lm_damping=1,
@@ -146,11 +198,12 @@ class GeneralMotionRetargeting:
                 self.task_errors1[task] = []
         
         for frame_name, entry in self.ik_match_table2.items():
-            body_name, pos_weight, rot_weight, pos_offset, rot_offset = entry
+            body_name, pos_weight, rot_weight, pos_offset, rot_offset, frame_type = self._parse_ik_entry(entry)
             if pos_weight != 0 or rot_weight != 0:
+                self._validate_frame(frame_name, frame_type, "ik_match_table2")
                 task = mink.FrameTask(
                     frame_name=frame_name,
-                    frame_type="body",
+                    frame_type=frame_type,
                     position_cost=pos_weight,
                     orientation_cost=rot_weight,
                     lm_damping=1,

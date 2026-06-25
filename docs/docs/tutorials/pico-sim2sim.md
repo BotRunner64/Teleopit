@@ -47,15 +47,13 @@ Teleopit starts `pico_bridge.PicoBridge` in-process through
 `Pico4InputProvider`. The same Pico input path is used later for wired and
 onboard sim2real deployment.
 
-For Teleopit 0.3.0, keep the host receiver on pico-bridge 0.2.0. pico-bridge
-0.2.1 changes interface semantics and is not the supported receiver version for
-this Teleopit release.
+Teleopit targets pico-bridge 0.2.1 and its `pico_native` tracking semantics.
 
 ## 3. Download Assets
 
 ```bash
 pip install modelscope
-python scripts/setup/download_assets.py --only gmr ckpt bvh
+python scripts/setup/download_assets.py --only robots gmr ckpt bvh
 ```
 
 ## 4. Run Pico Sim2Sim
@@ -73,6 +71,7 @@ enter `MOCAP`.
 |----------|--------|
 | `Y` | Enter `MOCAP` |
 | `A` | Pause / resume live mocap |
+| `B` | Toggle `MOCAP` / `ARMS` |
 | `X` | Return to `STANDING` |
 | `Q` | Quit |
 
@@ -94,9 +93,12 @@ The default Pico pause button is `A`. Supported overrides include `B`, `X`, `Y`,
 `left_axis_click`, `right_axis_click`, `left_menu_button`, and
 `right_menu_button`.
 
+The default Pico arms-mode button is `B`. `ARMS` keeps body, waist, and legs at
+the standing pose while both arms follow the live retargeted result.
+
 ## Optional Headset Video Preview
 
-pico-bridge 0.2.0 can show a host-side camera stream in the headset. In
+pico-bridge 0.2.1 can show a host-side camera stream in the headset. In
 simulation, Teleopit can stream the MuJoCo `d435i_rgb` camera:
 
 ```bash
@@ -141,7 +143,7 @@ input.video.enabled=true
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|
 | `ImportError: pico_bridge` | Pico extra not installed | Run `pip install -e '.[pico4]'` |
-| Startup says pico-bridge is too old | Installed receiver does not support video args | Reinstall the Pico extra so pico-bridge 0.2.0 is used |
+| Startup says pico-bridge is too old | Installed receiver does not support the required API or tracking semantics | Reinstall the Pico extra so pico-bridge 0.2.1 is used |
 | `TimeoutError: No Pico4 body data` | Headset is not connected or body tracking is inactive | Check the headset app, network, and `input.pico4_timeout` |
 | Discovery cannot find the host | Wrong advertised IP or blocked UDP | Set `input.bridge_advertise_ip=<host-ip>` and confirm UDP port `63901` is reachable |
 | Sim robot does not follow | Loop is still in `STANDING` | Press `Y` after tracking is ready |

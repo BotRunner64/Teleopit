@@ -2,16 +2,13 @@ import os
 import pathlib
 import statistics
 import time
-from typing import cast
 
 import torch
 from rsl_rl.env.vec_env import VecEnv
-from torch import nn
 
 from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.rl.runner import MjlabOnPolicyRunner
 from rsl_rl.utils import check_nan
-from train_mimic.tasks.tracking.mdp import MotionCommand
 
 
 def _one_based_iteration_range(start_iteration: int, total_iterations: int) -> range:
@@ -34,41 +31,12 @@ def _resolve_total_iterations(start_iteration: int, num_learning_iterations: int
     return start_iteration + num_learning_iterations
 
 
-class _OnnxMotionModel(nn.Module):
-    """ONNX-exportable model that wraps the policy and bundles motion reference data."""
-
-    def __init__(self, actor, motion):
-        super().__init__()
-        self.policy = actor.as_onnx(verbose=False)
-        # torch.from_numpy shares memory with the underlying numpy array
-        # (zero-copy).  The arrays are already writable (loaded from .npz).
-        self.register_buffer("joint_pos", torch.from_numpy(motion._joint_pos))
-        self.register_buffer("joint_vel", torch.from_numpy(motion._joint_vel))
-        self.register_buffer("body_pos_w", torch.from_numpy(motion._body_pos_w))
-        self.register_buffer("body_quat_w", torch.from_numpy(motion._body_quat_w))
-        self.register_buffer("body_lin_vel_w", torch.from_numpy(motion._body_lin_vel_w))
-        self.register_buffer("body_ang_vel_w", torch.from_numpy(motion._body_ang_vel_w))
-        self.time_step_total: int = self.joint_pos.shape[0]  # type: ignore[index]
-
-    def forward(self, *args):
-        # Last arg is always time_step; preceding args are policy inputs.
-        *policy_args, time_step = args
-        time_step_clamped = torch.clamp(
-            time_step.long().squeeze(-1), max=self.time_step_total - 1
-        )
-        if len(policy_args) == 1:
-            policy_out = self.policy(policy_args[0])
-        else:
-            policy_out = self.policy(*policy_args)
-        return (
-            policy_out,
-            self.joint_pos[time_step_clamped],  # type: ignore[index]
-            self.joint_vel[time_step_clamped],  # type: ignore[index]
-            self.body_pos_w[time_step_clamped],  # type: ignore[index]
-            self.body_quat_w[time_step_clamped],  # type: ignore[index]
-            self.body_lin_vel_w[time_step_clamped],  # type: ignore[index]
-            self.body_ang_vel_w[time_step_clamped],  # type: ignore[index]
-        )
+def _format_duration(seconds: float) -> str:
+    """Format elapsed/remaining seconds without wrapping after 24 hours."""
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 class MotionTrackingOnPolicyRunner(MjlabOnPolicyRunner):
@@ -264,9 +232,9 @@ class MotionTrackingOnPolicyRunner(MjlabOnPolicyRunner):
 """
             f"""{'Iteration time:':>{pad}} {iteration_time:.2f}s
 """
-            f"""{'Time elapsed:':>{pad}} {time.strftime('%H:%M:%S', time.gmtime(logger.tot_time))}
+            f"""{'Time elapsed:':>{pad}} {_format_duration(logger.tot_time)}
 """
-            f"""{'ETA:':>{pad}} {time.strftime('%H:%M:%S', time.gmtime(eta))}
+            f"""{'ETA:':>{pad}} {_format_duration(eta)}
 """
         )
         print(log_string)
@@ -282,41 +250,9 @@ class MotionTrackingOnPolicyRunner(MjlabOnPolicyRunner):
         path: str,
         filename: str = "policy.onnx",
         verbose: bool = False,
-        *,
-        include_motion_labels: bool = False,
     ) -> None:
         os.makedirs(path, exist_ok=True)
         output_path = os.path.join(path, filename)
-        if include_motion_labels:
-            cmd = cast(MotionCommand, self.env.unwrapped.command_manager.get_term("motion"))
-            model = _OnnxMotionModel(self.alg.get_policy(), cmd.motion)
-            model.to("cpu")
-            model.eval()
-            dummy_inputs = model.policy.get_dummy_inputs()
-            time_step = torch.zeros(1, 1)
-            input_names = model.policy.input_names + ["time_step"]
-            torch.onnx.export(
-                model,
-                (*dummy_inputs, time_step),
-                output_path,
-                export_params=True,
-                opset_version=18,
-                verbose=verbose,
-                input_names=input_names,
-                output_names=[
-                    "actions",
-                    "joint_pos",
-                    "joint_vel",
-                    "body_pos_w",
-                    "body_quat_w",
-                    "body_lin_vel_w",
-                    "body_ang_vel_w",
-                ],
-                dynamic_axes={},
-                dynamo=False,
-            )
-            return
-
         model = self.alg.get_policy().as_onnx(verbose=False)
         model.to("cpu")
         model.eval()

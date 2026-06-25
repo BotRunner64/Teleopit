@@ -76,12 +76,6 @@ real_robot.network_interface=enp130s0
 # Pause at the final BVH frame
 playback.pause_on_end=true
 
-# Smooth transition from standing/current robot state into playback
-transition_duration=2.0
-
-# Resume blend for offline playback
-pause_resume_transition_duration=1.0
-
 # Control loop rate
 policy_hz=50
 ```

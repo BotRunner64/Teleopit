@@ -34,7 +34,7 @@ teleopit/           # 核心推理与部署包
 ├── retargeting/    # GMR 动作重定向
 ├── sim/            # SimulationLoop、参考运动工具
 ├── sim2real/       # 真机状态机
-├── recording/      # HDF5Recorder
+├── recording/      # Pico motion 录制辅助工具
 ├── runtime/        # 配置解析、工厂、外部资源管理
 ├── bus/            # InProcessBus 进程内通信
 └── configs/        # Hydra YAML 配置

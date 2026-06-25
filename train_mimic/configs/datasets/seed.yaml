@@ -1,16 +1,16 @@
-name: seed_v1
+name: seed
 target_fps: 30
-val_percent: 5
-hash_salt: ""
 preprocess:
-  normalize_root_xy: true
-  ground_align: clip_min_foot
   min_frames: 22
+  normalize_root_xy: true
+  ground_align: none
+  max_all_off_ground_s: 0.8
+  off_ground_height: 0.12
 sources:
   - name: seed_full
     type: seed_csv
     input: data/SEED/g1/csv
     metadata_csv: data/SEED/seed_metadata_v003.csv
-    weight: 1.0
+    seed_filter_preset: groot_strict
     filters:
       is_mirror: [false]

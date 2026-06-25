@@ -32,7 +32,7 @@ pip install -e .
 pip install -e '.[train]'
 ```
 
-额外安装 `rsl-rl-lib`、`mjlab`、`wandb` 等训练相关依赖。
+额外安装 `rsl-rl-lib`、`mjlab`、`wandb`、`swanlab` 等训练相关依赖。
 
 ### Sim2Real（硬件部署）
 
@@ -40,7 +40,7 @@ pip install -e '.[train]'
 pip install -e '.[sim2real]'
 ```
 
-额外安装 `opencv-python` 和 `g1_bridge_sdk`。此外还需要初始化子模块并编译 C++ 桥接库：
+额外安装 `opencv-python`。此外还需要初始化子模块并编译/安装 C++ `g1_bridge_sdk` 桥接库：
 
 ```bash
 git submodule update --init --recursive
@@ -56,11 +56,37 @@ pip install -e '.[pico4]'
 ```
 
 Teleopit 使用进程内的 `pico_bridge.PicoBridge` receiver 接收 Pico 追踪数据。
-Teleopit 0.3.0 请使用 pico-bridge 0.2.0，不要升级到 pico-bridge 0.2.1；
-0.2.1 修改了接口语义，Teleopit 0.3.0 未按该语义适配。
+Teleopit 面向 pico-bridge 0.2.1 及其 `pico_native` tracking 语义。
 receiver 可以运行在工作站 PC，也可以运行在机器人 onboard 计算机。
 完整设置流程详见 [Pico Sim2Sim](../tutorials/pico-sim2sim) 和
 [Pico Sim2Real](../tutorials/pico-sim2real)。
+
+Pico sim2real 可选的 LinkerHand 控制使用本地 third-party 包。初始化
+submodule 后，直接安装这些包：
+
+```bash
+git submodule update --init --recursive
+pip install -e third_party/linkerhand-python-sdk
+pip install -e third_party/somehand
+scripts/setup/download_somehand_l6_assets.sh
+```
+
+只有在 `hands.enabled=true` 时才需要安装这些包。
+
+### Sim2Real 录制
+
+```bash
+pip install -e '.[recording]'
+```
+
+该配置包含 Pico sim2real 栈，以及 `sim2real_record.yaml` 使用的视频依赖。
+RealSense Python 绑定与平台相关；使用 `input.video.source=realsense` 时，
+需要在当前环境中手动安装 `pyrealsense2`。在 Arm 机器上，请使用
+conda-forge，而不是 pip 包：
+
+```bash
+conda install -c conda-forge pyrealsense2
+```
 
 ## 验证安装
 

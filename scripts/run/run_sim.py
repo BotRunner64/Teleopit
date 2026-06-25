@@ -4,35 +4,48 @@ import hydra
 from omegaconf import DictConfig
 
 from teleopit.pipeline import TeleopPipeline
+from teleopit.runtime.common import cfg_get
+from teleopit.runtime.console import (
+    PlainConsole,
+    configure_runtime_logging,
+    sim_keyboard_controls,
+)
 from teleopit.runtime.cli import validate_policy_path
 
 
-def _print_sim_controls(cfg: DictConfig) -> None:
-    provider = str(cfg.input.get("provider", "bvh")).lower()
+def _sim_status(cfg: DictConfig) -> tuple[tuple[str, str], ...]:
+    input_cfg = cfg_get(cfg, "input", {}) or {}
+    provider = str(cfg_get(input_cfg, "provider", "bvh")).lower()
+    viewers = str(cfg_get(cfg, "viewers", "none"))
     if provider == "pico4":
-        print("Pico sim2sim controls:")
-        if bool(cfg.get("keyboard", {}).get("enabled", False)):
-            print("  Keyboard: starts in STANDING; Y mocap, A pause/resume, X standing, Q quit.")
-        else:
-            print("  Pico controller: A pause/resume.")
-        print("  State flow: STANDING -> MOCAP -> STANDING.")
-        return
-    if bool(cfg.get("playback", {}).get("keyboard", {}).get("enabled", False)):
-        print("Offline sim2sim controls:")
-        print("  Keyboard: Space/P pause/resume, R replay, Q stop.")
+        keyboard_cfg = cfg_get(cfg, "keyboard", {}) or {}
+        state = "STANDING" if bool(cfg_get(keyboard_cfg, "enabled", False)) else "MOCAP"
+        return (
+            ("State", state),
+            ("Input", "Pico4 live"),
+            ("Viewers", viewers),
+        )
+    return (
+        ("State", "MOCAP"),
+        ("Input", "BVH"),
+        ("Viewers", viewers),
+    )
 
 
 @hydra.main(version_base=None, config_path="../../teleopit/configs", config_name="default")
 def main(cfg: DictConfig) -> None:
+    configure_runtime_logging(cfg, force=True)
     validate_policy_path(cfg, "run_sim.py")
-    pipeline = TeleopPipeline(cfg)
+    console = PlainConsole(title="Teleopit sim2sim")
+    pipeline = TeleopPipeline(cfg, console=console)
     num_steps = int(cfg.get("num_steps", 0))
-    record = bool(cfg.get("record", False))
-    if cfg.input.get("provider") == "pico4":
-        print("Waiting for Pico4 body tracking data...")
-    _print_sim_controls(cfg)
-    result = pipeline.run(num_steps=num_steps, record=record)
-    print(result)
+    events = []
+    input_cfg = cfg_get(cfg, "input", {}) or {}
+    if cfg_get(input_cfg, "provider", None) == "pico4":
+        events.append("waiting for Pico4 body tracking data")
+    console.start(status=_sim_status(cfg), controls=sim_keyboard_controls(cfg), events=events)
+    result = pipeline.run(num_steps=num_steps)
+    console.event(str(result))
 
 
 if __name__ == "__main__":

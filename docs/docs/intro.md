@@ -22,7 +22,7 @@ slug: /
 ```text
 InputProvider (BVH / Pico4 VR)
     -> Retargeter (GMR)
-    -> ObservationBuilder (166D)
+    -> ObservationBuilder (167D)
     -> Controller (dual-input TemporalCNN ONNX)
     -> Robot (MuJoCo sim or Unitree G1)
 ```
@@ -32,8 +32,8 @@ InputProvider (BVH / Pico4 VR)
 | Spec | Value |
 |------|-------|
 | Policy frequency | 50 Hz |
-| PD control frequency | 1000 Hz |
-| Observation dimension | 166D |
+| PD control frequency | 200 Hz |
+| Observation dimension | 167D |
 | Action dimension | 29D (G1 joints) |
 | ONNX model | Dual-input TemporalCNN |
 | Retargeting | GMR (General Motion Retargeting) |

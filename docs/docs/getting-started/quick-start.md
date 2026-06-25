@@ -9,7 +9,7 @@ This guide walks you through running your first sim2sim playback in under 5 minu
 ## Prerequisites
 
 1. [Install Teleopit](installation) (inference profile)
-2. [Download assets](download-assets) (`--only gmr ckpt bvh`)
+2. [Download assets](download-assets) (`--only robots gmr ckpt bvh`)
 
 ## Run Offline Sim2Sim
 
@@ -55,7 +55,7 @@ python scripts/run/run_sim.py controller.policy_path=track.onnx 'viewers=[retarg
 
 ## What's Next
 
-- [Offline Sim2Sim Tutorial](../tutorials/offline-sim2sim) - Full guide with recording and rendering
+- [Offline Sim2Sim Tutorial](../tutorials/offline-sim2sim) - Full guide with rendering
 - [Pico Sim2Sim](../tutorials/pico-sim2sim) - Verify Pico tracking in MuJoCo
 - [Standalone Standing](../tutorials/standalone-standing) - Check G1 bridge, network, and policy standing
 - [Pico Sim2Real](../tutorials/pico-sim2real) - Deploy Pico teleoperation to Unitree G1

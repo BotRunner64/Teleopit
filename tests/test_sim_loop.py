@@ -56,6 +56,7 @@ class _DummyController:
 class _DummyObsBuilder:
     def __init__(self) -> None:
         self.mimic_obs_calls: list[np.ndarray] = []
+        self.motion_qpos_calls: list[np.ndarray] = []
         self._base = _DummyObsBuilderBase()
 
     def reset(self) -> None:
@@ -72,6 +73,7 @@ class _DummyObsBuilder:
     ) -> np.ndarray:
         del state, motion_joint_vel, last_action, motion_anchor_lin_vel_w, motion_anchor_ang_vel_w
         self.mimic_obs_calls.append(np.asarray(motion_qpos[:1], dtype=np.float32).copy())
+        self.motion_qpos_calls.append(np.asarray(motion_qpos, dtype=np.float32).copy())
         return np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32)
 
 
@@ -110,6 +112,9 @@ class _DummyInputProvider:
 
 
 class _DummyRetargeter:
+    def __init__(self) -> None:
+        self.reset_calls = 0
+
     def retarget(self, human_data: dict[str, tuple[np.ndarray, np.ndarray]]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         pelvis_x = float(human_data["Pelvis"][0][0])
         return (
@@ -119,19 +124,24 @@ class _DummyRetargeter:
         )
 
     def reset(self) -> None:
-        pass
+        self.reset_calls += 1
 
 
-class _DummyRecorder:
-    def __init__(self) -> None:
-        self.frames: list[dict[str, object]] = []
+def _quat_mul(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return np.array(
+        [
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        ],
+        dtype=np.float32,
+    )
 
-    def add_frame(self, data: dict[str, object]) -> None:
-        self.frames.append(data)
 
-
-@requires_mujoco
-def test_simulation_loop_runs_and_records_without_viewers() -> None:
+def test_standing_qpos_keeps_yaw_but_drops_roll() -> None:
     from teleopit.sim.loop import SimulationLoop
 
     bus = InProcessBus()
@@ -141,20 +151,94 @@ def test_simulation_loop_runs_and_records_without_viewers() -> None:
         controller=_DummyController(),
         obs_builder=_DummyObsBuilder(),
         bus=bus,
-        cfg={"policy_hz": 50.0, "pd_hz": 50.0, "realtime": False, "transition_duration": 0.0},
+        cfg={"policy_hz": 50.0, "pd_hz": 50.0, "realtime": False},
         viewers=set(),
     )
 
-    recorder = _DummyRecorder()
+    yaw = np.float32(np.pi / 2.0)
+    roll = np.float32(np.pi / 6.0)
+    yaw_quat = np.array([np.cos(yaw / 2.0), 0.0, 0.0, np.sin(yaw / 2.0)], dtype=np.float32)
+    roll_quat = np.array([np.cos(roll / 2.0), np.sin(roll / 2.0), 0.0, 0.0], dtype=np.float32)
+    tilted_quat = _quat_mul(yaw_quat, roll_quat)
+    state = RobotState(
+        qpos=np.array([0.2, -0.1], dtype=np.float32),
+        qvel=np.zeros(2, dtype=np.float32),
+        quat=tilted_quat,
+        ang_vel=np.zeros(3, dtype=np.float32),
+        timestamp=0.0,
+        base_pos=np.array([1.0, 2.0, 0.9], dtype=np.float32),
+        base_lin_vel=np.zeros(3, dtype=np.float32),
+    )
+
+    standing_qpos = loop._build_standing_qpos(state)
+
+    np.testing.assert_allclose(standing_qpos[0:3], state.base_pos, atol=1e-6)
+    np.testing.assert_allclose(standing_qpos[3:7], yaw_quat, atol=1e-6)
+    np.testing.assert_allclose(standing_qpos[7:9], robot.default_dof_pos, atol=1e-6)
+
+
+def test_standing_reference_is_fixed_after_initialization() -> None:
+    from teleopit.sim.loop import SimulationLoop
+
+    bus = InProcessBus()
+    robot = _DummyRobot()
+    loop = SimulationLoop(
+        robot=robot,
+        controller=_DummyController(),
+        obs_builder=_DummyObsBuilder(),
+        bus=bus,
+        cfg={"policy_hz": 50.0, "pd_hz": 50.0, "realtime": False},
+        viewers=set(),
+    )
+
+    first_state = RobotState(
+        qpos=np.zeros(2, dtype=np.float32),
+        qvel=np.zeros(2, dtype=np.float32),
+        quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        ang_vel=np.zeros(3, dtype=np.float32),
+        timestamp=0.0,
+        base_pos=np.array([1.0, 2.0, 0.9], dtype=np.float32),
+        base_lin_vel=np.zeros(3, dtype=np.float32),
+    )
+    first = loop._set_standing_reference(first_state)
+
+    drifted_state = RobotState(
+        qpos=np.zeros(2, dtype=np.float32),
+        qvel=np.zeros(2, dtype=np.float32),
+        quat=np.array([0.70710677, 0.0, 0.0, 0.70710677], dtype=np.float32),
+        ang_vel=np.zeros(3, dtype=np.float32),
+        timestamp=1.0,
+        base_pos=np.array([5.0, 6.0, 0.9], dtype=np.float32),
+        base_lin_vel=np.zeros(3, dtype=np.float32),
+    )
+    live = loop._build_standing_qpos(drifted_state)
+
+    np.testing.assert_allclose(loop._standing_qpos, first, atol=1e-6)
+    assert not np.allclose(live[0:7], first[0:7])
+
+
+@requires_mujoco
+def test_simulation_loop_runs_without_viewers() -> None:
+    from teleopit.sim.loop import SimulationLoop
+
+    bus = InProcessBus()
+    robot = _DummyRobot()
+    loop = SimulationLoop(
+        robot=robot,
+        controller=_DummyController(),
+        obs_builder=_DummyObsBuilder(),
+        bus=bus,
+        cfg={"policy_hz": 50.0, "pd_hz": 50.0, "realtime": False},
+        viewers=set(),
+    )
+
     result = loop.run(
         input_provider=_DummyInputProvider(),
         retargeter=_DummyRetargeter(),
         num_steps=2,
-        recorder=recorder,
     )
 
     assert result["steps"] == 2
-    assert len(recorder.frames) == 2
 
     latest_action = bus.get_latest(TOPIC_ACTION)
     latest_mimic = bus.get_latest(TOPIC_MIMIC_OBS)
@@ -165,9 +249,6 @@ def test_simulation_loop_runs_and_records_without_viewers() -> None:
     assert isinstance(latest_mimic, np.ndarray)
     assert latest_mimic.shape == (35,)
     assert latest_state is not None
-
-    target = np.asarray(recorder.frames[-1]["target_dof_pos"], dtype=np.float32)
-    np.testing.assert_allclose(target, np.array([0.6, -0.6], dtype=np.float32))
 
 
 @requires_mujoco
@@ -213,7 +294,7 @@ def test_simulation_loop_interpolates_realtime_input_with_one_frame_delay(monkey
         controller=_DummyController(),
         obs_builder=obs_builder,
         bus=bus,
-        cfg={"policy_hz": 50.0, "pd_hz": 50.0, "realtime": False, "transition_duration": 0.0},
+        cfg={"policy_hz": 50.0, "pd_hz": 50.0, "realtime": False},
         viewers=set(),
     )
 
@@ -243,7 +324,6 @@ def test_simulation_loop_rejects_nonzero_reference_steps_without_realtime_timeli
             "policy_hz": 50.0,
             "pd_hz": 50.0,
             "realtime": False,
-            "transition_duration": 0.0,
             "retarget_buffer_enabled": True,
             "reference_steps": [0, 1],
         },
@@ -307,7 +387,6 @@ def test_simulation_loop_waits_for_realtime_warmup_before_first_policy_step(monk
             'policy_hz': 50.0,
             'pd_hz': 50.0,
             'realtime': False,
-            'transition_duration': 0.0,
             'realtime_buffer_warmup_steps': 2,
         },
         viewers=set(),
@@ -326,7 +405,7 @@ def test_simulation_loop_waits_for_realtime_warmup_before_first_policy_step(monk
 
 
 @requires_mujoco
-def test_simulation_loop_allows_future_reference_steps_without_explicit_high_watermark() -> None:
+def test_simulation_loop_allows_future_reference_steps() -> None:
     from teleopit.sim.loop import SimulationLoop
 
     bus = InProcessBus()
@@ -340,17 +419,12 @@ def test_simulation_loop_allows_future_reference_steps_without_explicit_high_wat
             "policy_hz": 50.0,
             "pd_hz": 50.0,
             "realtime": False,
-            "transition_duration": 0.0,
             "reference_steps": [0, 1, 2, 3, 4],
             "retarget_buffer_delay_s": 0.08,
             "retarget_buffer_window_s": 0.5,
-            "realtime_buffer_low_watermark_steps": 0,
         },
         viewers=set(),
     )
-
-    assert loop._ref_cfg.realtime_buffer_low_watermark_steps == 0
-    assert loop._ref_cfg.realtime_buffer_high_watermark_steps is None
 
     class _RealtimeInputProvider:
         fps = 50
@@ -464,11 +538,8 @@ def test_simulation_loop_pause_resume_freezes_then_reanchors_live_retarget(monke
             "policy_hz": 50.0,
             "pd_hz": 50.0,
             "realtime": False,
-            "transition_duration": 0.0,
             "retarget_buffer_enabled": False,
             "realtime_input_delay_s": 0.0,
-            "pause_resume_transition_duration": 1.0,
-            "pause_resume_warmup_steps": 0,
         },
         viewers=set(),
     )
@@ -484,8 +555,10 @@ def test_simulation_loop_pause_resume_freezes_then_reanchors_live_retarget(monke
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[1], np.array([0.2], dtype=np.float32), atol=1e-6)
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[2], np.array([0.0], dtype=np.float32), atol=1e-6)
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[3], np.array([0.0], dtype=np.float32), atol=1e-6)
+    assert loop._step_runner.last_retarget_qpos is not None
 
 
+@requires_mujoco
 @requires_mujoco
 def test_simulation_loop_realtime_keyboard_mode_transitions(monkeypatch) -> None:
     from teleopit.sim.loop import SimulationLoop
@@ -562,7 +635,6 @@ def test_simulation_loop_realtime_keyboard_mode_transitions(monkeypatch) -> None
             "policy_hz": 50.0,
             "pd_hz": 50.0,
             "realtime": False,
-            "transition_duration": 0.0,
             "retarget_buffer_enabled": False,
             "realtime_input_delay_s": 0.0,
             "keyboard": {"enabled": True},
@@ -580,6 +652,138 @@ def test_simulation_loop_realtime_keyboard_mode_transitions(monkeypatch) -> None
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[0], np.array([0.0], dtype=np.float32), atol=1e-6)
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[1], np.array([0.3], dtype=np.float32), atol=1e-6)
     np.testing.assert_allclose(obs_builder.mimic_obs_calls[2], np.array([0.0], dtype=np.float32), atol=1e-6)
+
+
+@requires_mujoco
+def test_simulation_loop_pico_arms_mode_composes_standing_body_with_live_arm(monkeypatch) -> None:
+    from teleopit.sim.loop import SimulationLoop
+
+    class _RealtimeInputProvider:
+        fps = 1
+
+        def __init__(self) -> None:
+            self._packets = [
+                RealtimeInputPacket(
+                    frame={
+                        "Pelvis": (
+                            np.array([0.3, 0.0, 0.0], dtype=np.float32),
+                            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                        )
+                    },
+                    timestamp_s=0.0,
+                    seq=0,
+                    control_events=(),
+                ),
+                RealtimeInputPacket(
+                    frame={
+                        "Pelvis": (
+                            np.array([0.9, 0.0, 0.0], dtype=np.float32),
+                            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                        )
+                    },
+                    timestamp_s=1.0,
+                    seq=1,
+                    control_events=(),
+                ),
+                RealtimeInputPacket(
+                    frame={
+                        "Pelvis": (
+                            np.array([0.9, 0.0, 0.0], dtype=np.float32),
+                            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                        )
+                    },
+                    timestamp_s=2.0,
+                    seq=2,
+                    control_events=(ControlEvent(event_type=ControlEventType.TOGGLE_ARMS, source="pico4:test"),),
+                ),
+                RealtimeInputPacket(
+                    frame={
+                        "Pelvis": (
+                            np.array([1.2, 0.0, 0.0], dtype=np.float32),
+                            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+                        )
+                    },
+                    timestamp_s=3.0,
+                    seq=3,
+                    control_events=(ControlEvent(event_type=ControlEventType.TOGGLE_ARMS, source="pico4:test"),),
+                ),
+            ]
+            self._idx = 0
+
+        def get_realtime_input_packet(self):
+            packet = self._packets[min(self._idx, len(self._packets) - 1)]
+            self._idx += 1
+            return packet
+
+    class _Retargeter:
+        def retarget(self, frame: object) -> np.ndarray:
+            pelvis = np.asarray(frame["Pelvis"][0], dtype=np.float64)
+            qpos = np.zeros(36, dtype=np.float64)
+            qpos[0] = pelvis[0]
+            qpos[3] = 1.0
+            qpos[7] = pelvis[0]
+            qpos[8] = pelvis[0] + 10.0
+            return qpos
+
+    class _KeyboardReader:
+        def __init__(self) -> None:
+            self._polls = [
+                (TerminalKeyEvent("y"),),
+                (),
+                (),
+                (),
+            ]
+            self._idx = 0
+
+        @property
+        def active(self) -> bool:
+            return True
+
+        def poll(self) -> tuple[TerminalKeyEvent, ...]:
+            if self._idx >= len(self._polls):
+                return ()
+            events = self._polls[self._idx]
+            self._idx += 1
+            return events
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("teleopit.sim.session.TerminalKeyboardReader", _KeyboardReader)
+
+    robot = _DummyRobot()
+    obs_builder = _DummyObsBuilder()
+    loop = SimulationLoop(
+        robot=robot,
+        controller=_DummyController(),
+        obs_builder=obs_builder,
+        bus=InProcessBus(),
+        cfg={
+            "policy_hz": 50.0,
+            "pd_hz": 50.0,
+            "realtime": False,
+            "retarget_buffer_enabled": False,
+            "realtime_input_delay_s": 0.0,
+            "keyboard": {"enabled": True},
+            "arm_mocap": {"controlled_joint_indices": [1]},
+        },
+        viewers=set(),
+    )
+
+    result = loop.run(
+        input_provider=_RealtimeInputProvider(),
+        retargeter=_Retargeter(),
+        num_steps=4,
+    )
+
+    assert result["steps"] == 4
+    # Step 2 is ARMS: root/non-arm stays at standing while arm index 1 follows retarget.
+    np.testing.assert_allclose(obs_builder.motion_qpos_calls[2][0], 0.0, atol=1e-6)
+    np.testing.assert_allclose(obs_builder.motion_qpos_calls[2][7], 0.5, atol=1e-6)
+    np.testing.assert_allclose(obs_builder.motion_qpos_calls[2][8], 10.9, atol=1e-6)
+    # Step 3 toggles back to full-body MOCAP; root XY is reanchored, while non-arm joints follow retarget again.
+    np.testing.assert_allclose(obs_builder.motion_qpos_calls[3][0], 0.0, atol=1e-6)
+    np.testing.assert_allclose(obs_builder.motion_qpos_calls[3][7], 1.2, atol=1e-6)
 
 
 @requires_mujoco
@@ -663,7 +867,6 @@ def test_simulation_loop_realtime_keyboard_mode_drains_stale_pause_events(monkey
             "policy_hz": 50.0,
             "pd_hz": 50.0,
             "realtime": False,
-            "transition_duration": 0.0,
             "retarget_buffer_enabled": False,
             "realtime_input_delay_s": 0.0,
             "keyboard": {"enabled": True},
@@ -731,7 +934,6 @@ def test_simulation_loop_realtime_keyboard_mode_keeps_standing_when_input_not_re
             "policy_hz": 50.0,
             "pd_hz": 50.0,
             "realtime": False,
-            "transition_duration": 0.0,
             "retarget_buffer_enabled": False,
             "realtime_input_delay_s": 0.0,
             "keyboard": {"enabled": True},

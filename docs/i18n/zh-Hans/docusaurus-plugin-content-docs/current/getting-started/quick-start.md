@@ -9,7 +9,7 @@ sidebar_position: 3
 ## 前置条件
 
 1. [安装 Teleopit](installation)（推理配置）
-2. [下载资源](download-assets)（`--only gmr ckpt bvh`）
+2. [下载资源](download-assets)（`--only robots gmr ckpt bvh`）
 
 ## 运行离线 Sim2Sim
 
@@ -55,7 +55,7 @@ python scripts/run/run_sim.py controller.policy_path=track.onnx 'viewers=[retarg
 
 ## 下一步
 
-- [离线 Sim2Sim 教程](../tutorials/offline-sim2sim) - 包含录制和渲染的完整指南
+- [离线 Sim2Sim 教程](../tutorials/offline-sim2sim) - 包含渲染的完整指南
 - [Pico Sim2Sim](../tutorials/pico-sim2sim) - 在 MuJoCo 中验证 Pico 追踪
 - [独立站立测试](../tutorials/standalone-standing) - 检查 G1 bridge、网络和 policy 站立
 - [Pico Sim2Real](../tutorials/pico-sim2real) - 将 Pico 遥操作部署到 Unitree G1

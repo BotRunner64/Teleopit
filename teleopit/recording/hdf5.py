@@ -1,0 +1,508 @@
+"""HDF5 recorder and schema helpers for Teleopit sim2real recording."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import json
+import logging
+from pathlib import Path
+import re
+import time
+from typing import Any
+
+import h5py
+import numpy as np
+
+from teleopit.constants import FULL_QPOS_DIM, NUM_JOINTS
+from teleopit.controllers.observation import _quat_rotate_np
+from teleopit.math_utils import quat_inv_np
+from teleopit.runtime.common import cfg_get
+
+
+logger = logging.getLogger(__name__)
+
+IMAGE_KEY = "observation.images.d435i_rgb"
+STATE_KEY = "observation.state"
+MODE_KEY = "observation.mode"
+ACTION_KEY = "action"
+HAND_ACTION_KEY = "action.hand"
+FRAME_INDEX_KEY = "frame_index"
+TIMESTAMP_KEY = "timestamp"
+STATE_DIM = 68
+MODE_DIM = 1
+ACTION_DIM = FULL_QPOS_DIM
+HAND_ACTION_DIM = 12
+DEFAULT_IMAGE_SHAPE = (480, 640, 3)
+HDF5_RECORDING_FORMAT = "teleopit_sim2real_recording_hdf5"
+HDF5_RECORDING_VERSION = 1
+MODE_CODES = {
+    "standing": 0,
+    "mocap": 1,
+    "arms": 2,
+    "pause": 3,
+}
+
+
+@dataclass(frozen=True)
+class RecordingSchema:
+    image_key: str
+    image_shape: tuple[int, int, int]
+    state_key: str = STATE_KEY
+    state_dim: int = STATE_DIM
+    mode_key: str = MODE_KEY
+    mode_dim: int = MODE_DIM
+    action_key: str = ACTION_KEY
+    action_dim: int = ACTION_DIM
+    hand_action_key: str = HAND_ACTION_KEY
+    hand_action_dim: int = HAND_ACTION_DIM
+
+
+@dataclass(frozen=True)
+class MP4VideoConfig:
+    codec: str = "libx264"
+    quality: int = 8
+    pixelformat: str = "yuv420p"
+
+
+def build_recording_schema(camera_cfg: Any) -> RecordingSchema:
+    key = str(cfg_get(camera_cfg, "key", IMAGE_KEY))
+    width = int(cfg_get(camera_cfg, "width", DEFAULT_IMAGE_SHAPE[1]))
+    height = int(cfg_get(camera_cfg, "height", DEFAULT_IMAGE_SHAPE[0]))
+    if width <= 0 or height <= 0:
+        raise ValueError("recording.camera.width and recording.camera.height must be positive")
+    return RecordingSchema(image_key=key, image_shape=(height, width, 3))
+
+
+def build_mp4_video_config(video_cfg: Any) -> MP4VideoConfig:
+    quality = int(cfg_get(video_cfg, "quality", 8))
+    if quality < 0 or quality > 10:
+        raise ValueError("recording.video.quality must be in [0, 10]")
+    return MP4VideoConfig(
+        codec=str(cfg_get(video_cfg, "codec", "libx264")),
+        quality=quality,
+        pixelformat=str(cfg_get(video_cfg, "pixelformat", "yuv420p")),
+    )
+
+
+def hdf5_schema(
+    schema: RecordingSchema,
+    *,
+    video_config: MP4VideoConfig | None = None,
+) -> dict[str, object]:
+    video_cfg = video_config or MP4VideoConfig()
+    return {
+        "format": HDF5_RECORDING_FORMAT,
+        "version": HDF5_RECORDING_VERSION,
+        "features": {
+            schema.image_key: {
+                "type": "video",
+                "format": "mp4",
+                "codec": video_cfg.codec,
+                "shape": list(schema.image_shape),
+                "dtype": "uint8",
+                "sync": {
+                    "frame_index": FRAME_INDEX_KEY,
+                    "timestamp": TIMESTAMP_KEY,
+                },
+            },
+            FRAME_INDEX_KEY: {
+                "type": "index",
+                "shape": [],
+                "dtype": "int64",
+            },
+            TIMESTAMP_KEY: {
+                "type": "timestamp",
+                "shape": [],
+                "dtype": "float64",
+                "units": "seconds",
+            },
+            schema.state_key: {
+                "type": "low_dim",
+                "shape": [schema.state_dim],
+                "dtype": "float32",
+                "slices": {
+                    "joint_pos": [0, 29],
+                    "joint_vel": [29, 58],
+                    "base_quat_wxyz": [58, 62],
+                    "base_ang_vel": [62, 65],
+                    "projected_gravity": [65, 68],
+                },
+            },
+            schema.mode_key: {
+                "type": "categorical",
+                "shape": [schema.mode_dim],
+                "dtype": "float32",
+                "codes": MODE_CODES,
+            },
+            schema.action_key: {
+                "type": "low_dim",
+                "shape": [schema.action_dim],
+                "dtype": "float32",
+                "slices": {
+                    "root_pos": [0, 3],
+                    "root_quat_wxyz": [3, 7],
+                    "joint_pos": [7, 36],
+                },
+            },
+            schema.hand_action_key: {
+                "type": "low_dim",
+                "shape": [schema.hand_action_dim],
+                "dtype": "float32",
+                "units": "linkerhand_uint8_pose",
+                "slices": {
+                    "left_pose": [0, 6],
+                    "right_pose": [6, 12],
+                },
+            },
+        },
+    }
+
+
+def build_observation_state(robot_state: object) -> np.ndarray:
+    joint_pos = np.asarray(getattr(robot_state, "qpos"), dtype=np.float32).reshape(-1)[:NUM_JOINTS]
+    joint_vel = np.asarray(getattr(robot_state, "qvel"), dtype=np.float32).reshape(-1)[:NUM_JOINTS]
+    base_quat = np.asarray(getattr(robot_state, "quat"), dtype=np.float32).reshape(-1)[:4]
+    base_ang_vel = np.asarray(getattr(robot_state, "ang_vel"), dtype=np.float32).reshape(-1)[:3]
+    if joint_pos.shape[0] != NUM_JOINTS:
+        raise ValueError(f"robot_state.qpos must contain {NUM_JOINTS} joints, got {joint_pos.shape[0]}")
+    if joint_vel.shape[0] != NUM_JOINTS:
+        raise ValueError(f"robot_state.qvel must contain {NUM_JOINTS} joints, got {joint_vel.shape[0]}")
+    if base_quat.shape[0] != 4:
+        raise ValueError(f"robot_state.quat must be 4D (wxyz), got {base_quat.shape[0]}")
+    if base_ang_vel.shape[0] != 3:
+        raise ValueError(f"robot_state.ang_vel must be 3D, got {base_ang_vel.shape[0]}")
+    gravity_w = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+    projected_gravity = _quat_rotate_np(quat_inv_np(base_quat), gravity_w)
+    state = np.concatenate(
+        [joint_pos, joint_vel, base_quat, base_ang_vel, projected_gravity],
+        dtype=np.float32,
+    )
+    if state.shape[0] != STATE_DIM:
+        raise ValueError(f"recording observation.state must be {STATE_DIM}D, got {state.shape[0]}")
+    return state
+
+
+def normalize_action_reference_qpos(reference_qpos: object) -> np.ndarray:
+    action = np.asarray(reference_qpos, dtype=np.float32).reshape(-1)[:ACTION_DIM]
+    if action.shape[0] != ACTION_DIM:
+        raise ValueError(f"recording action reference qpos must be {ACTION_DIM}D, got {action.shape[0]}")
+    return action
+
+
+def normalize_hand_action(left_pose: object, right_pose: object) -> np.ndarray:
+    left = np.asarray(left_pose, dtype=np.float32).reshape(-1)
+    right = np.asarray(right_pose, dtype=np.float32).reshape(-1)
+    if left.shape[0] != 6:
+        raise ValueError(f"recording left hand pose must be 6D, got {left.shape[0]}")
+    if right.shape[0] != 6:
+        raise ValueError(f"recording right hand pose must be 6D, got {right.shape[0]}")
+    action = np.concatenate([left, right], dtype=np.float32)
+    if action.shape[0] != HAND_ACTION_DIM:
+        raise ValueError(f"recording action.hand must be {HAND_ACTION_DIM}D, got {action.shape[0]}")
+    return action
+
+
+def build_mode_observation(mode: str) -> np.ndarray:
+    normalized = str(mode).strip().lower()
+    if normalized not in MODE_CODES:
+        raise ValueError(f"Unsupported recording mode {mode!r}; expected one of {sorted(MODE_CODES)}")
+    return np.array([MODE_CODES[normalized]], dtype=np.float32)
+
+
+class TeleopitHDF5Recorder:
+    """Writes one HDF5 file per saved sim2real recording episode."""
+
+    def __init__(
+        self,
+        *,
+        output_dir: Path,
+        task: str,
+        fps: int,
+        schema: RecordingSchema,
+        video_config: MP4VideoConfig | None = None,
+    ) -> None:
+        self._output_dir = output_dir
+        self._task = str(task)
+        self._fps = int(fps)
+        self._schema = schema
+        self._video_config = video_config or MP4VideoConfig()
+        self._active = False
+        self._frames_in_episode = 0
+        self._episode_index = 0
+        self._h5: h5py.File | None = None
+        self._tmp_path: Path | None = None
+        self._episode_path: Path | None = None
+        self._tmp_video_path: Path | None = None
+        self._episode_video_path: Path | None = None
+        self._video_rel_path: str | None = None
+        self._video_writer: Any | None = None
+        self._datasets: dict[str, h5py.Dataset] = {}
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        output_dir: str | Path,
+        task: str,
+        fps: int,
+        schema: RecordingSchema,
+        video_config: MP4VideoConfig | None = None,
+    ) -> "TeleopitHDF5Recorder":
+        root = Path(output_dir)
+        root.mkdir(parents=True, exist_ok=True)
+        recorder = cls(
+            output_dir=root,
+            task=task,
+            fps=fps,
+            schema=schema,
+            video_config=video_config,
+        )
+        recorder._write_schema_sidecar()
+        return recorder
+
+    def start_episode(self) -> None:
+        if self._active:
+            raise RuntimeError("Cannot start a new recording episode while one is active")
+        self._episode_index += 1
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        stem = f"episode_{timestamp}_{time.time_ns()}_{self._episode_index:06d}"
+        tmp_dir = self._output_dir / ".tmp"
+        episodes_dir = self._output_dir / "episodes"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        episodes_dir.mkdir(parents=True, exist_ok=True)
+        self._tmp_path = tmp_dir / f"{stem}.h5"
+        self._episode_path = episodes_dir / f"{stem}.h5"
+        self._h5 = h5py.File(self._tmp_path, "w")
+        video_dir = self._output_dir / "videos" / _safe_path_component(self._schema.image_key)
+        tmp_video_dir = tmp_dir / "videos" / _safe_path_component(self._schema.image_key)
+        video_dir.mkdir(parents=True, exist_ok=True)
+        tmp_video_dir.mkdir(parents=True, exist_ok=True)
+        self._tmp_video_path = tmp_video_dir / f"{stem}.mp4"
+        self._episode_video_path = video_dir / f"{stem}.mp4"
+        self._video_rel_path = self._episode_video_path.relative_to(self._output_dir).as_posix()
+        try:
+            self._video_writer = self._create_video_writer(self._tmp_video_path)
+            self._write_episode_header(self._h5)
+            self._datasets = self._create_datasets(self._h5)
+            self._active = True
+            self._frames_in_episode = 0
+        except Exception:
+            self._cleanup_partial_episode()
+            raise
+
+    def add_frame(
+        self,
+        *,
+        image: np.ndarray,
+        state: np.ndarray,
+        mode: np.ndarray,
+        action: np.ndarray,
+        hand_action: np.ndarray,
+        task: str,
+    ) -> None:
+        if not self._active or self._h5 is None:
+            raise RuntimeError("Cannot add a recording frame without an active episode")
+        image_arr = np.asarray(image, dtype=np.uint8)
+        if tuple(image_arr.shape) != self._schema.image_shape:
+            raise ValueError(f"{self._schema.image_key} frame shape {image_arr.shape} != {self._schema.image_shape}")
+        state_arr = self._validate_vector(state, self._schema.state_key, self._schema.state_dim)
+        mode_arr = self._validate_vector(mode, self._schema.mode_key, self._schema.mode_dim)
+        action_arr = self._validate_vector(action, self._schema.action_key, self._schema.action_dim)
+        hand_action_arr = self._validate_vector(hand_action, self._schema.hand_action_key, self._schema.hand_action_dim)
+
+        row = self._frames_in_episode
+        for dataset in self._datasets.values():
+            dataset.resize((row + 1, *dataset.shape[1:]))
+        if self._video_writer is None:
+            raise RuntimeError("MP4 recording writer is not open")
+        self._video_writer.append_data(image_arr)
+        self._datasets[FRAME_INDEX_KEY][row] = row
+        self._datasets[TIMESTAMP_KEY][row] = float(row) / float(self._fps)
+        self._datasets[self._schema.state_key][row] = state_arr
+        self._datasets[self._schema.mode_key][row] = mode_arr
+        self._datasets[self._schema.action_key][row] = action_arr
+        self._datasets[self._schema.hand_action_key][row] = hand_action_arr
+        self._frames_in_episode += 1
+        self._h5.attrs["frames"] = self._frames_in_episode
+        self._h5.attrs["task"] = str(task)
+
+    def save_episode(self) -> None:
+        if not self._active:
+            return
+        tmp_path = self._require_tmp_path()
+        episode_path = self._require_episode_path()
+        tmp_video_path = self._tmp_video_path
+        episode_video_path = self._episode_video_path
+        self._close_active_outputs()
+        if tmp_video_path is None or episode_video_path is None:
+            raise RuntimeError("recording episode has no video output path")
+        tmp_video_path.replace(episode_video_path)
+        tmp_path.replace(episode_path)
+        self._reset_episode()
+
+    def discard_episode(self) -> None:
+        if not self._active:
+            return
+        tmp_path = self._tmp_path
+        tmp_video_path = self._tmp_video_path
+        self._close_active_outputs()
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink()
+        if tmp_video_path is not None and tmp_video_path.exists():
+            tmp_video_path.unlink()
+        self._reset_episode()
+
+    def finalize(self) -> None:
+        if self._active:
+            self.discard_episode()
+
+    def _write_schema_sidecar(self) -> None:
+        path = self._output_dir / "schema.json"
+        path.write_text(json.dumps(self._schema_dict(), indent=2) + "\n", encoding="utf-8")
+
+    def _write_episode_header(self, h5: h5py.File) -> None:
+        h5.attrs["format"] = HDF5_RECORDING_FORMAT
+        h5.attrs["version"] = HDF5_RECORDING_VERSION
+        h5.attrs["task"] = self._task
+        h5.attrs["fps"] = self._fps
+        h5.attrs["frames"] = 0
+        h5.attrs["schema_json"] = json.dumps(self._schema_dict(), sort_keys=True)
+        h5.attrs["video_key"] = self._schema.image_key
+        h5.attrs["video_path"] = self._video_rel_path or ""
+        h5.attrs["video_format"] = "mp4"
+        h5.attrs["video_codec"] = self._video_config.codec
+        h5.attrs["video_pixelformat"] = self._video_config.pixelformat
+        h5.attrs["video_fps"] = self._fps
+        h5.attrs["video_frames"] = 0
+        h5.attrs["video_from_timestamp_s"] = 0.0
+        h5.attrs["video_to_timestamp_s"] = 0.0
+
+    def _create_datasets(self, h5: h5py.File) -> dict[str, h5py.Dataset]:
+        return {
+            FRAME_INDEX_KEY: h5.create_dataset(
+                FRAME_INDEX_KEY,
+                shape=(0,),
+                maxshape=(None,),
+                chunks=(1024,),
+                dtype=np.int64,
+            ),
+            TIMESTAMP_KEY: h5.create_dataset(
+                TIMESTAMP_KEY,
+                shape=(0,),
+                maxshape=(None,),
+                chunks=(1024,),
+                dtype=np.float64,
+            ),
+            self._schema.state_key: self._create_vector_dataset(h5, self._schema.state_key, self._schema.state_dim),
+            self._schema.mode_key: self._create_vector_dataset(h5, self._schema.mode_key, self._schema.mode_dim),
+            self._schema.action_key: self._create_vector_dataset(h5, self._schema.action_key, self._schema.action_dim),
+            self._schema.hand_action_key: self._create_vector_dataset(
+                h5, self._schema.hand_action_key, self._schema.hand_action_dim
+            ),
+        }
+
+    @staticmethod
+    def _create_vector_dataset(h5: h5py.File, key: str, dim: int) -> h5py.Dataset:
+        return h5.create_dataset(
+            key,
+            shape=(0, dim),
+            maxshape=(None, dim),
+            chunks=(1024, dim),
+            dtype=np.float32,
+        )
+
+    @staticmethod
+    def _validate_vector(value: object, key: str, dim: int) -> np.ndarray:
+        arr = np.asarray(value, dtype=np.float32).reshape(-1)
+        if arr.shape[0] != dim:
+            raise ValueError(f"{key} must be {dim}D")
+        return arr
+
+    def _schema_dict(self) -> dict[str, object]:
+        return hdf5_schema(
+            self._schema,
+            video_config=self._video_config,
+        )
+
+    def _create_video_writer(self, path: Path) -> Any:
+        try:
+            import imageio.v2 as imageio
+        except Exception as exc:
+            raise RuntimeError("MP4 recording requires imageio[ffmpeg]") from exc
+        return imageio.get_writer(
+            str(path),
+            fps=self._fps,
+            codec=self._video_config.codec,
+            quality=self._video_config.quality,
+            macro_block_size=1,
+            pixelformat=self._video_config.pixelformat,
+        )
+
+    def _close_active_outputs(self) -> None:
+        if self._video_writer is not None:
+            self._video_writer.close()
+            self._video_writer = None
+        if self._h5 is not None:
+            self._h5.attrs["video_frames"] = self._frames_in_episode
+            self._h5.attrs["video_to_timestamp_s"] = (
+                float(max(self._frames_in_episode - 1, 0)) / float(self._fps)
+                if self._frames_in_episode > 0
+                else 0.0
+            )
+            self._h5.attrs["video_path"] = self._video_rel_path or ""
+            self._h5.close()
+        self._h5 = None
+        self._datasets = {}
+
+    def _reset_episode(self) -> None:
+        self._active = False
+        self._frames_in_episode = 0
+        self._tmp_path = None
+        self._episode_path = None
+        self._tmp_video_path = None
+        self._episode_video_path = None
+        self._video_rel_path = None
+        self._video_writer = None
+
+    def _cleanup_partial_episode(self) -> None:
+        if self._video_writer is not None:
+            try:
+                self._video_writer.close()
+            except Exception:
+                logger.exception("Failed to close partial MP4 recording writer")
+            self._video_writer = None
+        if self._h5 is not None:
+            try:
+                self._h5.close()
+            except Exception:
+                logger.exception("Failed to close partial HDF5 recording file")
+            self._h5 = None
+        tmp_path = self._tmp_path
+        tmp_video_path = self._tmp_video_path
+        if tmp_path is not None and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                logger.exception("Failed to remove partial HDF5 recording file: %s", tmp_path)
+        if tmp_video_path is not None and tmp_video_path.exists():
+            try:
+                tmp_video_path.unlink()
+            except Exception:
+                logger.exception("Failed to remove partial MP4 recording file: %s", tmp_video_path)
+        self._datasets = {}
+        self._reset_episode()
+
+    def _require_tmp_path(self) -> Path:
+        if self._tmp_path is None:
+            raise RuntimeError("recording episode has no temporary path")
+        return self._tmp_path
+
+    def _require_episode_path(self) -> Path:
+        if self._episode_path is None:
+            raise RuntimeError("recording episode has no output path")
+        return self._episode_path
+
+
+def _safe_path_component(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._")
+    return safe or "camera"
