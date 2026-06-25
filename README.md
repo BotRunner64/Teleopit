@@ -114,7 +114,7 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 
 ## Changelog
 
-### Unreleased
+### v0.4.0 (2026-06-25)
 
 - Improved Pico realtime control with pico-bridge 0.2.1, `ARMS` mode, and retargeter-preserving mode/pause resets.
 - Added optional LinkerHand L6/O6 sim2real control, including Pico gripper input and low-latency L6 `vr_hand_pose`.

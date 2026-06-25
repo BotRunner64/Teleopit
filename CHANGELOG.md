@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.0] - 2026-06-25
 
 - 改进 Pico 实时控制：支持 pico-bridge 0.2.1、`ARMS` 模式，以及保留 retargeter warm-start 的模式切换/暂停恢复。
 - 新增可选 LinkerHand L6/O6 sim2real 控制，支持 Pico gripper 输入和低延迟 L6 `vr_hand_pose`。
