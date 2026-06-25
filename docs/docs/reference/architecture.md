@@ -76,4 +76,4 @@ train_mimic/scripts/data
 
 **Stable training entry points:** `train.py`, `play.py`, `benchmark.py`, `save_onnx.py`
 
-**Stable data entry points:** `build_dataset.py`
+**Stable data entry points:** `build_dataset.py`, `precompute_dataset.py`

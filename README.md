@@ -116,21 +116,10 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 
 ### Unreleased
 
-- Added Pico sim2real `ARMS` mode: Pico/controller `B` toggles between whole-body `MOCAP` and stand-pose body/legs with live retargeted arms.
-- Bumped Pico input support to pico-bridge 0.2.1 and its corrected tracking pose semantics.
-- Added optional LinkerHand L6 sim2real modes under `hands.*`: `gripper` from Pico grip/trigger and `vr_hand_pose` from Pico hand pose through somehand 0.2.0 public API.
-- Added manual Pico sim2real HDF5 recording with RealSense D435i RGB video, 68D robot state, mode labels, 36D reference-qpos action labels, and 12D LinkerHand pose action labels.
-- Added LinkerHand O6 support for Pico `gripper` mode with an O6-specific grasp pose.
-- Set LinkerHand L6 `vr_hand_pose` control to maximum speed while keeping `gripper` at the configured default speed.
-- Switched default `vr_hand_pose` to a low-latency somehand path with 60 Hz hand retargeting and reduced smoothing.
-- LinkerHand sim2real control remains active across all sim2real modes after the runtime mode state is initialized.
-- Realtime mode switches and pause/resume now preserve GMR IK warm-starts instead of cold-starting the retargeter on each transition.
-- Added an interactive Pico motion recorder that saves retargeted G1 motion clips as training-ready NPZ files.
-- Switched dataset build outputs to recursive minimal HDF5 shards with no train/val split or manifest; `precompute_dataset.py` turns them into separate precomputed training datasets before training.
-- General-Tracking-G1 training defaults to `rewind` motion sampling and also supports `uniform`; playback/benchmark use `start`.
-- Added optional `sampling_mode=rewind` for training, which restarts failed episodes from the same clip after rewinding a configurable number of policy steps.
-- Added root velocity, joint tracking, and survival rewards to the General-Tracking-G1 training objective.
-- Renamed General-Tracking-G1 observation terms to explicit `ref_*`, `robot_*`, and `prev_action` keys.
+- Improved Pico realtime control with pico-bridge 0.2.1, `ARMS` mode, and retargeter-preserving mode/pause resets.
+- Added optional LinkerHand L6/O6 sim2real control, including Pico gripper input and low-latency L6 `vr_hand_pose`.
+- Added manual Pico sim2real HDF5 recording and an interactive Pico motion recorder for training NPZ clips.
+- Refined the training data path with minimal HDF5 shards, explicit precompute, rewind sampling, and updated tracking rewards.
 
 ### v0.3.0 (2026-05-12)
 
@@ -145,12 +134,12 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 - Added offline playback keyboard controls, Pico sim2sim mode control, and a standalone standing controller.
 - Improved realtime mocap buffering/catch-up and upgraded the released model to the 30k checkpoint.
 
-### v0.1.1 (2025-03-28)
+### v0.1.1 (2026-03-28)
 
 - Dataset shard-only refactor
 - External asset management (ModelScope), repository slimming
 
-### v0.1.0 (2025-03-25)
+### v0.1.0 (2026-03-25)
 
 - Initial public release: General-Tracking-G1 training, ONNX sim2sim inference, Pico 4 VR teleoperation, Unitree G1 hardware deployment
 

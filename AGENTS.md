@@ -53,7 +53,7 @@ teleopit/                 # Core inference package
 ├── robots/
 │   └── mujoco_robot.py   # MuJoCoRobot — MuJoCo sim wrapper
 ├── sim/
-│   └── loop.py           # SimulationLoop — PD control at 1000Hz, policy at 50Hz
+│   └── loop.py           # SimulationLoop — PD control at 200Hz, policy at 50Hz
 ├── sim2real/
 │   ├── mp/               # Process-isolated sim2real runtime and IPC
 │   └── hands/            # Optional LinkerHand driver/mapper plugins
@@ -62,8 +62,8 @@ scripts/
 ├── run/run_sim.py        # Offline sim2sim pipeline
 ├── run/run_sim2real.py   # G1 sim2real control; supports offline BVH playback and Pico4
 ├── run/record_pico_motion.py # Interactive Pico recording → G1 motion NPZ clips
-├── render_sim.py         # Render single BVH → 3 MuJoCo videos (mocap input, retarget, sim2sim)
-└── compute_ik_offsets.py # Compute IK quaternion offsets for new BVH formats
+├── render/render_sim.py  # Render single BVH → 3 MuJoCo videos (mocap input, retarget, sim2sim)
+└── dev/compute_ik_offsets.py # Compute IK quaternion offsets for new BVH formats
 train_mimic/              # Training package
 ├── app.py                # Shared app helpers for train/play/benchmark
 ├── tasks/tracking/config/
@@ -85,7 +85,7 @@ train_mimic/              # Training package
 ## Key Technical Details
 
 ### Sim2Sim Pipeline
-- Policy runs at 50Hz, PD control at 1000Hz (`decimation=20`, `sim_dt=0.001`)
+- Policy runs at 50Hz, PD control at 200Hz (`decimation=4`, `sim_dt=0.005`)
 - Action flow: `compute_action()` returns raw action → `get_target_dof_pos()` applies clip `[-10, 10]`, scale, and `default_dof_pos`
 - Must use `assets/robots/unitree_g1/g1_29dof.xml` for training, sim2sim, dataset FK, and retargeting; it is the canonical G1 XML entry point
 
@@ -242,7 +242,7 @@ python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_general_trac
 - `teleopit/retargeting/gmr/assets/` is gitignored; downloaded at runtime
 - `train_mimic/assets/` is no longer tracked; FK tooling reuses `assets/robots/unitree_g1/g1_29dof.xml`
 - `third_party/linkerhand-python-sdk` and `third_party/somehand` support optional LinkerHand sim2real control
-- Run `python scripts/check_large_tracked_files.py` before pushing
+- Run `python scripts/dev/check_large_tracked_files.py` before pushing
 
 Assets are split across two ModelScope repos by type:
 
@@ -284,7 +284,7 @@ R_offset = R_human_tpose^{-1} * R_robot_tpose
 
 Critical note: align robot root orientation to the BVH human forward direction before computing `R_robot_tpose`. For `hc_mocap`, G1 default faces `+X` while the BVH human faces `-Y` (`Z-up`), so the robot root must receive a `-90°` Z rotation first.
 
-`scripts/compute_ik_offsets.py` can print or write calibrated offsets.
+`scripts/dev/compute_ik_offsets.py` can print or write calibrated offsets.
 
 ## Development
 

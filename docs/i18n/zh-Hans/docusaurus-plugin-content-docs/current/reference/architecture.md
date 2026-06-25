@@ -76,4 +76,4 @@ train_mimic/scripts/data
 
 **稳定训练入口：** `train.py`、`play.py`、`benchmark.py`、`save_onnx.py`
 
-**稳定数据入口：** `build_dataset.py`
+**稳定数据入口：** `build_dataset.py`、`precompute_dataset.py`

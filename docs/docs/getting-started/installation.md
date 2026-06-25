@@ -40,7 +40,7 @@ Adds `rsl-rl-lib`, `mjlab`, `wandb`, `swanlab`, and training dependencies.
 pip install -e '.[sim2real]'
 ```
 
-Adds `opencv-python` and `g1_bridge_sdk`. You also need to initialize submodules and build the C++ bridge:
+Adds `opencv-python`. You also need to initialize submodules and build/install the C++ `g1_bridge_sdk` bridge:
 
 ```bash
 git submodule update --init --recursive

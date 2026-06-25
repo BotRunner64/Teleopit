@@ -32,7 +32,7 @@ InputProvider (BVH / Pico4 VR)
 | Spec | Value |
 |------|-------|
 | Policy frequency | 50 Hz |
-| PD control frequency | 1000 Hz |
+| PD control frequency | 200 Hz |
 | Observation dimension | 167D |
 | Action dimension | 29D (G1 joints) |
 | ONNX model | Dual-input TemporalCNN |

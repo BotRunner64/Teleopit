@@ -30,7 +30,7 @@ InputProvider (BVH / Pico4 VR)
 | 项目 | 参数 |
 |------|------|
 | 策略频率 | 50 Hz |
-| PD 控制频率 | 1000 Hz |
+| PD 控制频率 | 200 Hz |
 | 观测维度 | 167D |
 | 动作维度 | 29D（G1 关节） |
 | ONNX 模型 | 双输入 TemporalCNN |
