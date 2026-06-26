@@ -166,7 +166,7 @@ class DatasetViewerApp:
         self._session = DatasetSession(discover_dataset_clips(dataset_path), sort_mode)
 
         self._server = viser.ViserServer(port=port, label="Dataset Viewer")
-        self._scene = ViserMujocoScene.create(
+        self._scene = ViserMujocoScene(
             server=self._server,
             mj_model=self._model,
             num_envs=1,
@@ -266,7 +266,7 @@ class DatasetViewerApp:
                 if action:
                     self._pending_actions.append(action)
 
-        self._scene.create_visualization_gui(show_debug_viz_control=False)
+        self._scene.create_visualization_gui()
 
     def _load_current_clip(self) -> None:
         clip = self._session.current_clip()

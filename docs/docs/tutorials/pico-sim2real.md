@@ -151,8 +151,11 @@ When entering `STANDING`, Teleopit releases active Unitree modes, enters
 debug/low-level control, locks the current joints briefly, resets policy state,
 and ramps Kp without changing policy targets.
 
-When entering `MOCAP`, Teleopit resets policy/reference state and starts tracking
-the live mocap command through the realtime reference timeline.
+When entering `MOCAP`, Teleopit rearms the process-isolated reference worker,
+resets its GMR state and realtime reference buffer, then waits for fresh
+validated references before tracking the live mocap command. `STANDING` and
+`DAMPING` keep the reference worker disarmed so cold startup frames cannot
+warm-start retargeting before mocap entry.
 
 `ARMS` keeps the same live retargeting timeline running, but sends the motion
 tracker a composed reference: body, waist, and legs stay at the standing pose
