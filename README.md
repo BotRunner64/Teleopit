@@ -116,7 +116,7 @@ Full docs at **[BotRunner64.github.io/Teleopit](https://BotRunner64.github.io/Te
 
 ### v0.4.0 (2026-06-25)
 
-- Improved Pico realtime control with pico-bridge 0.2.1, `ARMS` mode, and retargeter-preserving mode/pause resets.
+- Improved Pico realtime control with pico-bridge 0.2.1, `ARMS` mode, armed sim2real mocap entry, and retargeter-preserving pause/arms resets.
 - Added optional LinkerHand L6/O6 sim2real control, including Pico gripper input and low-latency L6 `vr_hand_pose`.
 - Added manual Pico sim2real HDF5 recording and an interactive Pico motion recorder for training NPZ clips.
 - Refined the training data path with minimal HDF5 shards, explicit precompute, rewind sampling, and updated tracking rewards.

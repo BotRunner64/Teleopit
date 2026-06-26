@@ -30,6 +30,8 @@ from teleopit.sim2real.mp.ipc import HEALTH_TOPIC, LatestSubscriber, ZmqPublishe
 from teleopit.sim2real.mp.messages import HandCommandPacket, ModeStatePacket, RecordStepPacket, ReferencePacket, SharedFrameDescriptor
 from teleopit.sim.reference_timeline import ReferenceSample, ReferenceWindow
 from teleopit.sim2real.mp.runtime import (
+    ARM_MOCAP_REFERENCE_COMMAND,
+    DISARM_MOCAP_REFERENCE_COMMAND,
     map_recording_key_to_command,
     RobotMode,
     Sim2RealRuntime,
@@ -511,6 +513,7 @@ def test_robot_worker_requires_consecutive_valid_references(monkeypatch) -> None
     worker._consecutive_valid_references = 0
     worker._check_frames = 2
     worker._max_reference_age_s = 0.25
+    worker._mocap_reference_armed = True
     worker.provider_kind = "pico4"
     worker._reference_age_s = lambda: 0.0
     worker._mocap_session = SimpleNamespace(state=MocapSessionState.ACTIVE)
@@ -563,6 +566,160 @@ def test_robot_worker_requires_consecutive_valid_references(monkeypatch) -> None
     )
     worker._note_reference_packet(fresh_packet)
     assert worker._latest_reference == fresh_packet
+    assert worker._consecutive_valid_references == 1
+
+
+def test_robot_worker_arms_pico_reference_before_mocap_entry() -> None:
+    worker = object.__new__(_RobotControlWorker)
+    commands: list[str] = []
+    worker.provider_kind = "pico4"
+    worker.mode = RobotMode.STANDING
+    worker._mocap_reference_armed = False
+    worker._latest_reference = ReferencePacket(
+        qpos=np.zeros(36, dtype=np.float64),
+        timestamp_s=1.0,
+        seq=1,
+        source_timestamp_s=1.0,
+        source_seq=1,
+        frame_valid=True,
+    )
+    worker._last_reference_seq = 1
+    worker._consecutive_valid_references = 10
+    worker._send_reference_command = commands.append
+
+    worker._arm_mocap_reference_if_needed()
+
+    assert commands == [ARM_MOCAP_REFERENCE_COMMAND]
+    assert worker._mocap_reference_armed is True
+    assert worker._latest_reference is None
+    assert worker._last_reference_seq == -1
+    assert worker._consecutive_valid_references == 0
+
+
+def test_robot_worker_retries_pico_reference_arm_without_clearing_gate(monkeypatch) -> None:
+    worker = object.__new__(_RobotControlWorker)
+    commands: list[str] = []
+    now_s = [100.0]
+    monkeypatch.setattr("teleopit.sim2real.mp.runtime.time.monotonic", lambda: now_s[0])
+    worker.provider_kind = "pico4"
+    worker._mocap_reference_armed = False
+    worker._mocap_reference_arm_retry_s = 0.5
+    worker._latest_reference = None
+    worker._last_reference_seq = 1
+    worker._consecutive_valid_references = 2
+    worker._send_reference_command = commands.append
+
+    worker._arm_mocap_reference_if_needed()
+
+    assert commands == [ARM_MOCAP_REFERENCE_COMMAND]
+    assert worker._mocap_reference_armed is True
+    assert worker._last_reference_seq == -1
+    assert worker._consecutive_valid_references == 0
+    assert worker._mocap_reference_arm_time_s == 100.0
+
+    worker._last_reference_seq = 5
+    worker._consecutive_valid_references = 6
+    now_s[0] = 100.49
+    worker._arm_mocap_reference_if_needed()
+    assert commands == [ARM_MOCAP_REFERENCE_COMMAND]
+
+    now_s[0] = 100.50
+    worker._arm_mocap_reference_if_needed()
+    assert commands == [ARM_MOCAP_REFERENCE_COMMAND, ARM_MOCAP_REFERENCE_COMMAND]
+    assert worker._last_reference_seq == 5
+    assert worker._consecutive_valid_references == 6
+    assert worker._mocap_reference_arm_time_s == 100.0
+
+    worker._latest_reference = ReferencePacket(
+        qpos=np.zeros(36, dtype=np.float64),
+        timestamp_s=100.6,
+        seq=6,
+        source_timestamp_s=100.6,
+        source_seq=6,
+        frame_valid=True,
+    )
+    now_s[0] = 101.0
+    worker._arm_mocap_reference_if_needed()
+    assert commands == [ARM_MOCAP_REFERENCE_COMMAND, ARM_MOCAP_REFERENCE_COMMAND]
+
+
+def test_robot_worker_checks_pico_reference_arm_while_entry_is_pending() -> None:
+    worker = object.__new__(_RobotControlWorker)
+    arm_checks: list[str] = []
+    worker.mode = RobotMode.STANDING
+    worker._mocap_entry_requested = True
+    worker._mocap_reentry_armed = False
+    worker.remote = SimpleNamespace(Y=SimpleNamespace(on_pressed=False, pressed=False))
+    worker._arm_mocap_reference_if_needed = lambda: arm_checks.append("arm")
+    worker._can_switch_to_mocap = lambda: False
+
+    worker._handle_transitions()
+
+    assert arm_checks == ["arm"]
+
+
+def test_robot_worker_disarms_pico_reference_and_clears_gate() -> None:
+    worker = object.__new__(_RobotControlWorker)
+    commands: list[str] = []
+    worker.provider_kind = "pico4"
+    worker._mocap_reference_armed = True
+    worker._latest_reference = ReferencePacket(
+        qpos=np.zeros(36, dtype=np.float64),
+        timestamp_s=1.0,
+        seq=1,
+        source_timestamp_s=1.0,
+        source_seq=1,
+        frame_valid=True,
+    )
+    worker._last_reference_seq = 1
+    worker._consecutive_valid_references = 10
+    worker._send_reference_command = commands.append
+
+    worker._disarm_mocap_reference_if_needed()
+    worker._clear_reference_gate()
+
+    assert commands == [DISARM_MOCAP_REFERENCE_COMMAND]
+    assert worker._mocap_reference_armed is False
+    assert worker._latest_reference is None
+    assert worker._last_reference_seq == -1
+    assert worker._consecutive_valid_references == 0
+
+
+def test_robot_worker_ignores_pico_reference_older_than_arm_time() -> None:
+    worker = object.__new__(_RobotControlWorker)
+    worker.provider_kind = "pico4"
+    worker._mocap_reference_armed = True
+    worker._mocap_reference_arm_time_s = 10.0
+    worker._last_reference_seq = -1
+    worker._latest_reference = None
+    worker._consecutive_valid_references = 0
+
+    old_packet = ReferencePacket(
+        qpos=np.zeros(36, dtype=np.float64),
+        timestamp_s=9.9,
+        seq=1,
+        source_timestamp_s=1.0,
+        source_seq=1,
+        frame_valid=True,
+    )
+    worker._note_reference_packet(old_packet)
+
+    assert worker._latest_reference is None
+    assert worker._last_reference_seq == -1
+    assert worker._consecutive_valid_references == 0
+
+    fresh_packet = ReferencePacket(
+        qpos=np.zeros(36, dtype=np.float64),
+        timestamp_s=10.1,
+        seq=2,
+        source_timestamp_s=1.1,
+        source_seq=2,
+        frame_valid=True,
+    )
+    worker._note_reference_packet(fresh_packet)
+
+    assert worker._latest_reference is fresh_packet
+    assert worker._last_reference_seq == 2
     assert worker._consecutive_valid_references == 1
 
 

@@ -144,8 +144,10 @@ Pico body frames -> retarget -> reference buffer -> observation -> policy -> G1 
 进入 `STANDING` 时，Teleopit 会释放当前 Unitree 模式，进入 debug/low-level 控制，
 短暂锁住当前关节，重置 policy 状态，并在不改变 policy target 的情况下执行 Kp ramp。
 
-进入 `MOCAP` 时，Teleopit 会重置 policy/reference 状态，并通过实时参考时间线开始跟踪
-实时 mocap 命令。
+进入 `MOCAP` 时，Teleopit 会重新 arm 进程隔离的 reference worker，重置其中的 GMR 状态
+和实时 reference buffer，然后等待新的已验证 reference，再开始跟踪实时 mocap 命令。
+`STANDING` 和 `DAMPING` 会让 reference worker 保持 disarmed，避免冷启动帧在进入 mocap
+之前 warm-start retargeting。
 
 `ARMS` 会保持同一条实时 retargeting 时间线继续运行，但发送给 motion tracker 的参考会被组合：
 身体、腰部和腿部保持站立姿态，双臂跟随实时 retarget 结果。进入或离开 `ARMS` 时会重置

@@ -109,6 +109,8 @@ operator_logger = logging.getLogger(OPERATOR_LOGGER_NAME)
 Float32Array = NDArray[np.float32]
 Float64Array = NDArray[np.float64]
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+ARM_MOCAP_REFERENCE_COMMAND = "arm_mocap_reference"
+DISARM_MOCAP_REFERENCE_COMMAND = "disarm_mocap_reference"
 
 
 class RobotMode(Enum):
@@ -735,8 +737,10 @@ def _run_pico_reference_worker(
         body_sub = LatestSubscriber(endpoints.body_pub, BODY_TOPIC)
         health_sub = LatestSubscriber(endpoints.health_pub, HEALTH_TOPIC)
         command_sub = LatestSubscriber(endpoints.command_pub, COMMAND_TOPIC)
+        reference_command_sub = LatestSubscriber(endpoints.reference_command_pub, COMMAND_TOPIC)
         ref_pub = ZmqPublisher(endpoints.reference_pub)
         idle_sleep_s = float(cfg_get(_mp_cfg(cfg), "retarget_idle_sleep_s", 0.001))
+        mocap_armed = False
         last_body_seq = -1
         last_body_timestamp_s: float | None = None
         body_dt_s_ema: float | None = None
@@ -746,6 +750,48 @@ def _run_pico_reference_worker(
         )
         runtime_support_validated = ref_cfg.reference_delay_s is not None or not reference_window_builder.requires_timeline
         last_valid_qpos: Float64Array | None = None
+
+        def _reset_realtime_reference_state(*, reset_retargeter: bool) -> None:
+            nonlocal last_body_timestamp_s
+            nonlocal body_dt_s_ema
+            nonlocal resolved_reference_delay_s
+            nonlocal runtime_support_validated
+            nonlocal last_valid_qpos
+            if timeline is not None:
+                timeline.clear()
+            if reference_manager is not None:
+                reference_manager.reset()
+            last_body_timestamp_s = None
+            body_dt_s_ema = None
+            resolved_reference_delay_s = (
+                float(ref_cfg.reference_delay_s) if ref_cfg.reference_delay_s is not None else None
+            )
+            runtime_support_validated = (
+                ref_cfg.reference_delay_s is not None or not reference_window_builder.requires_timeline
+            )
+            last_valid_qpos = None
+            if reset_retargeter:
+                retargeter.reset()
+
+        def _handle_reference_command(command: CommandPacket | None) -> None:
+            nonlocal mocap_armed
+            if not isinstance(command, CommandPacket):
+                return
+            if command.command == "shutdown":
+                stop_event.set()
+                return
+            if command.command == ARM_MOCAP_REFERENCE_COMMAND:
+                if mocap_armed:
+                    return
+                logger.info("reference worker armed for Pico MOCAP")
+                mocap_armed = True
+                _reset_realtime_reference_state(reset_retargeter=True)
+                return
+            if command.command == DISARM_MOCAP_REFERENCE_COMMAND:
+                if mocap_armed:
+                    logger.info("reference worker disarmed for Pico STANDING")
+                mocap_armed = False
+                _reset_realtime_reference_state(reset_retargeter=True)
 
         def _publish_invalid_reference(packet: BodyFramePacket, *, elapsed_s: float) -> None:
             qpos = np.zeros(FULL_QPOS_DIM, dtype=np.float64)
@@ -767,9 +813,9 @@ def _run_pico_reference_worker(
 
         try:
             while not stop_event.is_set():
-                command = command_sub.recv_latest()
-                if isinstance(command, CommandPacket) and command.command == "shutdown":
-                    stop_event.set()
+                _handle_reference_command(command_sub.recv_latest())
+                _handle_reference_command(reference_command_sub.recv_latest())
+                if stop_event.is_set():
                     break
 
                 health_packet = health_sub.recv_latest()
@@ -783,6 +829,9 @@ def _run_pico_reference_worker(
                     time.sleep(idle_sleep_s)
                     continue
                 if not isinstance(packet, BodyFramePacket) or int(packet.seq) == last_body_seq:
+                    continue
+                if not mocap_armed:
+                    last_body_seq = int(packet.seq)
                     continue
                 start_s = time.monotonic()
                 frame_valid = _human_frame_is_valid(packet.frame)
@@ -854,6 +903,7 @@ def _run_pico_reference_worker(
             body_sub.close()
             health_sub.close()
             command_sub.close()
+            reference_command_sub.close()
             ref_pub.close()
 
     _worker_loop("reference", cfg, _main)
@@ -1046,6 +1096,10 @@ class _RobotControlWorker:
         self._last_commanded_motion_qpos: Float64Array | None = None
         self._last_mocap_hold_reason: str | None = None
         self._mocap_reentry_armed = False
+        self._mocap_entry_requested = False
+        self._mocap_reference_armed = False
+        self._mocap_reference_arm_time_s: float | None = None
+        self._mocap_reference_arm_retry_s = float(cfg_get(_mp_cfg(cfg), "mocap_reference_arm_retry_s", 0.1))
         self._mocap_session = MocapSessionManager()
 
         self._latest_reference: ReferencePacket | None = None
@@ -1165,10 +1219,13 @@ class _RobotControlWorker:
         elif self.mode == RobotMode.STANDING:
             reentry_request = self._mocap_reentry_armed and self.remote.Y.pressed
             if self.remote.Y.on_pressed or reentry_request:
+                self._mocap_entry_requested = True
+            if self._mocap_entry_requested:
+                self._arm_mocap_reference_if_needed()
                 if self._can_switch_to_mocap():
                     operator_logger.info("Y -> MOCAP")
                     self._transition_to_mocap()
-                else:
+                elif self.remote.Y.on_pressed or reentry_request:
                     operator_logger.warning("Y -> waiting for fresh retarget reference")
         elif self.mode in (RobotMode.MOCAP, RobotMode.ARMS):
             if self.provider_kind == "bvh" and self.remote.B.on_pressed:
@@ -1315,6 +1372,9 @@ class _RobotControlWorker:
 
     def _enter_standing(self) -> None:
         prev_mode = self.mode
+        self._disarm_mocap_reference_if_needed()
+        self._clear_reference_gate()
+        self._mocap_entry_requested = False
         already_in_debug = self.mode in (RobotMode.STANDING, RobotMode.MOCAP, RobotMode.ARMS)
         if not already_in_debug:
             logger.info("Entering debug mode...")
@@ -1349,6 +1409,8 @@ class _RobotControlWorker:
         operator_logger.info("mode -> STANDING")
 
     def _can_switch_to_mocap(self) -> bool:
+        if self.provider_kind == "pico4" and not self._mocap_reference_armed:
+            return False
         age_s = self._reference_age_s()
         if self._latest_reference is None or age_s is None:
             return False
@@ -1380,6 +1442,7 @@ class _RobotControlWorker:
         if self.provider_kind == "bvh":
             self._send_reference_command("replay_mocap")
         self.mode = RobotMode.MOCAP
+        self._mocap_entry_requested = False
         operator_logger.info("mode -> MOCAP")
 
     def _toggle_arms_mode(self) -> None:
@@ -1410,6 +1473,9 @@ class _RobotControlWorker:
             self._resume_paused_mocap()
 
     def _enter_damping(self) -> None:
+        self._disarm_mocap_reference_if_needed()
+        self._clear_reference_gate()
+        self._mocap_entry_requested = False
         if self.mode in (RobotMode.STANDING, RobotMode.MOCAP, RobotMode.ARMS):
             logger.info("DAMPING: sending LowCmd damping...")
             self.robot.set_damping()
@@ -1525,6 +1591,35 @@ class _RobotControlWorker:
             COMMAND_TOPIC,
             CommandPacket(command=command, timestamp_s=time.monotonic()),
         )
+
+    def _arm_mocap_reference_if_needed(self) -> None:
+        if getattr(self, "provider_kind", None) != "pico4":
+            return
+        now_s = time.monotonic()
+        if not bool(getattr(self, "_mocap_reference_armed", False)):
+            self._clear_reference_gate()
+            self._mocap_reference_armed = True
+            self._mocap_reference_arm_time_s = now_s
+        elif getattr(self, "_latest_reference", None) is not None:
+            return
+        else:
+            last_arm_s = getattr(self, "_mocap_reference_arm_time_s", None)
+            retry_s = float(getattr(self, "_mocap_reference_arm_retry_s", 0.1))
+            if last_arm_s is not None and now_s - float(last_arm_s) < retry_s:
+                return
+        self._send_reference_command(ARM_MOCAP_REFERENCE_COMMAND)
+
+    def _disarm_mocap_reference_if_needed(self) -> None:
+        if getattr(self, "provider_kind", None) != "pico4" or not bool(getattr(self, "_mocap_reference_armed", False)):
+            return
+        self._send_reference_command(DISARM_MOCAP_REFERENCE_COMMAND)
+        self._mocap_reference_armed = False
+        self._mocap_reference_arm_time_s = None
+
+    def _clear_reference_gate(self) -> None:
+        self._latest_reference = None
+        self._last_reference_seq = -1
+        self._consecutive_valid_references = 0
 
     def _resolve_mocap_hold_qpos(self) -> Float64Array:
         if self._last_commanded_motion_qpos is not None:
@@ -1662,6 +1757,14 @@ class _RobotControlWorker:
 
     def _note_reference_packet(self, reference: ReferencePacket) -> None:
         if int(reference.seq) <= self._last_reference_seq:
+            return
+        arm_time_s = getattr(self, "_mocap_reference_arm_time_s", None)
+        if (
+            self.provider_kind == "pico4"
+            and bool(getattr(self, "_mocap_reference_armed", False))
+            and arm_time_s is not None
+            and float(reference.timestamp_s) < float(arm_time_s)
+        ):
             return
         self._last_reference_seq = int(reference.seq)
         self._latest_reference = reference
