@@ -37,7 +37,7 @@ sidebar_position: 2
 | `robots` | Teleopit-models | `archives/robot_assets.tar.gz` |
 | `gmr` | Teleopit-models | `archives/gmr_assets.tar.gz` |
 | `bvh` | Teleopit-models | `archives/sample_bvh.tar.gz` |
-| `data` | Teleopit-datasets | `data/` |
+| `data` | Teleopit-datasets | `data/datasets/*/*.h5`（`lafan1`、`pico_record`、`seed`、`twist2`） |
 
 ## 下载
 
@@ -66,7 +66,7 @@ python scripts/setup/download_assets.py --source huggingface
 | `archives/robot_assets.tar.gz` | `assets/robots/`（自动解压） |
 | `archives/gmr_assets.tar.gz` | `teleopit/retargeting/gmr/assets/`（自动解压） |
 | `archives/sample_bvh.tar.gz` | `data/sample_bvh/`（自动解压） |
-| `data/` | `data/datasets/seed/` |
+| `data/datasets/*/*.h5` | `data/datasets/` |
 
 ## 上传到 ModelScope
 

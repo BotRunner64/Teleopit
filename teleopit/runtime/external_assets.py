@@ -16,6 +16,7 @@ class AssetEntry:
     local_path: str
     repo: str = "model"   # "model" or "dataset"
     mode: str = "copy"
+    allow_patterns: tuple[str, ...] = field(default_factory=tuple)
 
 
 ASSET_GROUPS: dict[str, list[AssetEntry]] = {
@@ -48,6 +49,11 @@ ASSET_GROUPS: dict[str, list[AssetEntry]] = {
         ),
     ],
     "data": [
-        AssetEntry("data", "data/datasets/seed", repo="dataset"),
+        AssetEntry(
+            "data/datasets",
+            "data/datasets",
+            repo="dataset",
+            allow_patterns=("data/datasets/*/*.h5",),
+        ),
     ],
 }

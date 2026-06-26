@@ -10,7 +10,7 @@ Usage:
     # Benchmark only (no video)
     python train_mimic/scripts/benchmark.py \
         --checkpoint logs/rsl_rl/g1_tracking/.../model_30000.pt \
-        --motion_file data/datasets/seed_precomputed \
+        --motion_file data/datasets_precomputed \
         --num_envs 1
 
     # Single video (one continuous clip)

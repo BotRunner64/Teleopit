@@ -35,7 +35,7 @@ def _args(**overrides: object) -> argparse.Namespace:
         "seed": 42,
         "logger": "tensorboard",
         "experiment_name": None,
-        "motion_file": "data/datasets/seed_precomputed",
+        "motion_file": "data/datasets_precomputed",
         "robot_xml": None,
         "resume": None,
         "sampling_mode": None,

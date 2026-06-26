@@ -10,12 +10,13 @@ sidebar_position: 3
 python scripts/setup/download_assets.py --only robots data
 ```
 
-Then precompute the training shard and train with the precomputed dataset root:
+Then precompute all downloaded datasets and train with the combined precomputed
+dataset root:
 
 ```bash
 python train_mimic/scripts/data/precompute_dataset.py \
-    data/datasets/seed --outdir data/datasets/seed_precomputed --jobs 8
-python train_mimic/scripts/train.py --motion_file data/datasets/seed_precomputed
+    data/datasets --outdir data/datasets_precomputed --jobs 8
+python train_mimic/scripts/train.py --motion_file data/datasets_precomputed
 ```
 
 For custom dataset construction, read on.
@@ -63,7 +64,7 @@ python train_mimic/scripts/data/build_dataset.py \
 data/datasets/<dataset>/
 └── shard_*.h5
 
-data/datasets/<dataset>_precomputed/
+data/datasets_precomputed/<dataset>/
 └── shard_*.h5
 ```
 
@@ -71,7 +72,7 @@ data/datasets/<dataset>_precomputed/
 - If the spec is all `pkl` or `seed_csv` sources, the builder takes a batch path producing shards directly
 - `build_dataset.py` only writes the minimal distributable dataset. It does not run FK precompute.
 - `precompute_dataset.py` writes a separate training dataset containing the minimal motion plus precomputed joint velocities and body FK/velocities.
-- Training accepts only the precomputed dataset directory. It recursively discovers precomputed `*.h5` shards below the specified root, so precomputed datasets can be merged by placing multiple shard directories under one parent.
+- Training accepts only the precomputed dataset directory. It recursively discovers precomputed `*.h5` shards below the specified root, so use `data/datasets_precomputed` to train on all downloaded datasets together.
 - Training loads all discovered precomputed motion windows into memory at startup. Joint velocities and body FK/velocities are not computed during training.
 
 ## YAML Spec Format
@@ -143,9 +144,9 @@ python train_mimic/scripts/data/build_dataset.py \
 python train_mimic/scripts/data/build_dataset.py \
     --spec train_mimic/configs/datasets/twist2.yaml --json
 
-# Generate a precomputed training dataset from an existing minimal dataset
+# Generate one combined precomputed training dataset from all downloaded minimal datasets
 python train_mimic/scripts/data/precompute_dataset.py \
-    data/datasets/twist2 --outdir data/datasets/twist2_precomputed --jobs 8 --force
+    data/datasets --outdir data/datasets_precomputed --jobs 8 --force
 
 # Inspect a dataset root
 python train_mimic/scripts/data/inspect_dataset.py data/datasets/twist2

@@ -23,12 +23,12 @@ pip install -e '.[train]'
 python -c "import train_mimic.tasks; print('training OK')"
 ```
 
-下载最小 seed 数据集，并生成预计算训练 shard：
+下载分发的最小数据集，并生成合并后的预计算训练数据集：
 
 ```bash
 python scripts/setup/download_assets.py --only robots data
 python train_mimic/scripts/data/precompute_dataset.py \
-    data/datasets/seed --outdir data/datasets/seed_precomputed --jobs 8
+    data/datasets --outdir data/datasets_precomputed --jobs 8
 ```
 
 ## 训练
@@ -39,7 +39,7 @@ python train_mimic/scripts/data/precompute_dataset.py \
 python train_mimic/scripts/train.py \
     --num_envs 64 \
     --max_iterations 100 \
-    --motion_file data/datasets/seed_precomputed
+    --motion_file data/datasets_precomputed
 ```
 
 ### 完整训练
@@ -48,7 +48,7 @@ python train_mimic/scripts/train.py \
 python train_mimic/scripts/train.py \
     --num_envs 4096 \
     --max_iterations 30000 \
-    --motion_file data/datasets/seed_precomputed
+    --motion_file data/datasets_precomputed
 ```
 
 ### 多卡训练
@@ -58,7 +58,7 @@ python train_mimic/scripts/train.py \
     --gpu_ids 0 1 2 3 \
     --num_envs 1024 \
     --max_iterations 30000 \
-    --motion_file data/datasets/seed_precomputed
+    --motion_file data/datasets_precomputed
 ```
 
 ### 多机多卡训练
@@ -75,7 +75,7 @@ torchrun \
     train_mimic/scripts/train.py \
     --num_envs 1024 \
     --max_iterations 1000 \
-    --motion_file data/datasets/seed_precomputed
+    --motion_file data/datasets_precomputed
 ```
 
 **注意事项：**
@@ -105,7 +105,7 @@ python train_mimic/scripts/save_onnx.py \
 ```bash
 python train_mimic/scripts/play.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/seed_precomputed
+    --motion_file data/datasets_precomputed
 ```
 
 ### 定量评估
@@ -113,7 +113,7 @@ python train_mimic/scripts/play.py \
 ```bash
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/seed_precomputed \
+    --motion_file data/datasets_precomputed \
     --num_envs 1
 ```
 
@@ -122,7 +122,7 @@ python train_mimic/scripts/benchmark.py \
 ```bash
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/seed_precomputed \
+    --motion_file data/datasets_precomputed \
     --num_envs 1 \
     --video \
     --video_length 600

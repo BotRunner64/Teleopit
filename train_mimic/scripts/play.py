@@ -9,18 +9,18 @@ Usage:
     # Native window
     python train_mimic/scripts/play.py \
         --checkpoint logs/rsl_rl/g1_tracking/2026-.../model_30000.pt \
-        --motion_file data/datasets/seed_precomputed
+        --motion_file data/datasets_precomputed
 
     # Browser viewer (no display required)
     python train_mimic/scripts/play.py \
         --checkpoint logs/rsl_rl/g1_tracking/2026-.../model_30000.pt \
-        --motion_file data/datasets/seed_precomputed \
+        --motion_file data/datasets_precomputed \
         --viewer viser
 
     # Record video instead of interactive viewer
     python train_mimic/scripts/play.py \
         --checkpoint logs/rsl_rl/g1_tracking/2026-.../model_30000.pt \
-        --motion_file data/datasets/seed_precomputed \
+        --motion_file data/datasets_precomputed \
         --video
 """
 

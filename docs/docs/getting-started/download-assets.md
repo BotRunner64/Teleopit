@@ -31,7 +31,7 @@ Downloaded file sizes change as checkpoints, datasets, and asset bundles are upd
 |------------|---------|
 | `track.onnx` | ONNX inference model |
 | `track.pt` | PyTorch checkpoint for resume training |
-| `data/datasets/seed/shard_*.h5` | Minimal motion dataset; run precompute before training |
+| `data/datasets/<dataset>/shard_*.h5` | Minimal motion datasets; run precompute before training |
 | `data/sample_bvh/*.bvh` | Sample motion files |
 | `assets/robots/unitree_g1/` | Canonical G1 XML and meshes used by training, sim2sim, retargeting, and FK validation |
 | `teleopit/retargeting/gmr/assets/` | GMR retargeting assets, IK configs, and non-canonical robot descriptions |
@@ -44,6 +44,6 @@ Downloaded file sizes change as checkpoints, datasets, and asset bundles are upd
 | `robots` | `BingqianWu/Teleopit-models` | Canonical robot XML/meshes |
 | `gmr` | `BingqianWu/Teleopit-models` | GMR retargeting assets |
 | `bvh` | `BingqianWu/Teleopit-models` | Sample BVH motion files |
-| `data` | `BingqianWu/Teleopit-datasets` | Training/validation shards |
+| `data` | `BingqianWu/Teleopit-datasets` | Minimal shards for `lafan1`, `pico_record`, `seed`, and `twist2` |
 
 For asset management details (uploading, versioning), see [Asset Management](../reference/assets).
