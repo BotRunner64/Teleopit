@@ -23,12 +23,13 @@ Verify:
 python -c "import train_mimic.tasks; print('training OK')"
 ```
 
-Download the minimal seed dataset and generate the precomputed training shard:
+Download the distributed minimal datasets and generate the combined precomputed
+training dataset:
 
 ```bash
 python scripts/setup/download_assets.py --only robots data
 python train_mimic/scripts/data/precompute_dataset.py \
-    data/datasets/seed --outdir data/datasets/seed_precomputed --jobs 8
+    data/datasets --outdir data/datasets_precomputed --jobs 8
 ```
 
 ## Training
@@ -39,7 +40,7 @@ python train_mimic/scripts/data/precompute_dataset.py \
 python train_mimic/scripts/train.py \
     --num_envs 64 \
     --max_iterations 100 \
-    --motion_file data/datasets/seed_precomputed
+    --motion_file data/datasets_precomputed
 ```
 
 ### Full Training
@@ -48,7 +49,7 @@ python train_mimic/scripts/train.py \
 python train_mimic/scripts/train.py \
     --num_envs 4096 \
     --max_iterations 30000 \
-    --motion_file data/datasets/seed_precomputed
+    --motion_file data/datasets_precomputed
 ```
 
 ### Multi-GPU
@@ -58,7 +59,7 @@ python train_mimic/scripts/train.py \
     --gpu_ids 0 1 2 3 \
     --num_envs 1024 \
     --max_iterations 30000 \
-    --motion_file data/datasets/seed_precomputed
+    --motion_file data/datasets_precomputed
 ```
 
 ### Multi-Node Multi-GPU
@@ -75,7 +76,7 @@ torchrun \
     train_mimic/scripts/train.py \
     --num_envs 1024 \
     --max_iterations 1000 \
-    --motion_file data/datasets/seed_precomputed
+    --motion_file data/datasets_precomputed
 ```
 
 **Notes:**
@@ -105,7 +106,7 @@ The exported model is a dual-input ONNX (`obs` + `obs_history`). The inference s
 ```bash
 python train_mimic/scripts/play.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/seed_precomputed
+    --motion_file data/datasets_precomputed
 ```
 
 ### Benchmark
@@ -113,7 +114,7 @@ python train_mimic/scripts/play.py \
 ```bash
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/seed_precomputed \
+    --motion_file data/datasets_precomputed \
     --num_envs 1
 ```
 
@@ -122,7 +123,7 @@ python train_mimic/scripts/benchmark.py \
 ```bash
 python train_mimic/scripts/benchmark.py \
     --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt \
-    --motion_file data/datasets/seed_precomputed \
+    --motion_file data/datasets_precomputed \
     --num_envs 1 \
     --video \
     --video_length 600

@@ -10,12 +10,12 @@ sidebar_position: 3
 python scripts/setup/download_assets.py --only robots data
 ```
 
-下载后先生成预计算训练 shard，再把预计算数据集根目录用于训练：
+下载后先预计算所有已下载数据集，再把合并后的预计算数据集根目录用于训练：
 
 ```bash
 python train_mimic/scripts/data/precompute_dataset.py \
-    data/datasets/seed --outdir data/datasets/seed_precomputed --jobs 8
-python train_mimic/scripts/train.py --motion_file data/datasets/seed_precomputed
+    data/datasets --outdir data/datasets_precomputed --jobs 8
+python train_mimic/scripts/train.py --motion_file data/datasets_precomputed
 ```
 
 如需自定义构建，继续阅读下文。
@@ -61,7 +61,7 @@ python train_mimic/scripts/data/build_dataset.py \
 data/datasets/<dataset>/
 └── shard_*.h5
 
-data/datasets/<dataset>_precomputed/
+data/datasets_precomputed/<dataset>/
 └── shard_*.h5
 ```
 
@@ -69,7 +69,7 @@ data/datasets/<dataset>_precomputed/
 - 若 spec 全部是 `pkl` 或 `seed_csv` source，builder 会直接并行产出 shard，默认不写中间 clip 文件
 - `build_dataset.py` 只写最小分发数据集，不执行 FK 预计算。
 - `precompute_dataset.py` 会写出独立的训练数据集，里面包含最小运动数据以及预计算的 joint velocity 和 body FK/velocity。
-- 训练只接受预计算后的数据集目录。它会递归发现指定根目录下的预计算 `*.h5` shard，因此可以把多个预计算数据集目录放到同一个父目录下完成合并。
+- 训练只接受预计算后的数据集目录。它会递归发现指定根目录下的预计算 `*.h5` shard，因此使用 `data/datasets_precomputed` 可以一起训练所有已下载数据集。
 - 训练会在启动时把所有发现的预计算 motion window 全量加载到内存中。joint velocity 和 body FK/velocity 不会在训练时计算。
 
 ## YAML spec
@@ -139,9 +139,9 @@ python train_mimic/scripts/data/build_dataset.py \
 python train_mimic/scripts/data/build_dataset.py \
     --spec train_mimic/configs/datasets/twist2.yaml --json
 
-# 从已有最小数据集生成预计算训练数据集
+# 从所有已下载最小数据集生成合并后的预计算训练数据集
 python train_mimic/scripts/data/precompute_dataset.py \
-    data/datasets/twist2 --outdir data/datasets/twist2_precomputed --jobs 8 --force
+    data/datasets --outdir data/datasets_precomputed --jobs 8 --force
 
 # 查看数据集统计
 python train_mimic/scripts/data/inspect_dataset.py data/datasets/twist2

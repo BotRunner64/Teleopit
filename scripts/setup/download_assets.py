@@ -56,6 +56,17 @@ def _resolve_entry_source(repo_cache: Path, entry: AssetEntry) -> Path:
     return repo_cache / entry.remote_path
 
 
+def _entry_allow_patterns(entry: AssetEntry) -> list[str]:
+    if entry.allow_patterns:
+        return list(entry.allow_patterns)
+    return [f"{entry.remote_path}*"]
+
+
+def _clear_cached_entry_sources(repo_cache: Path, entries: list[AssetEntry]) -> None:
+    for entry in entries:
+        _remove_path(_resolve_entry_source(repo_cache, entry))
+
+
 def _copy_path(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     if src.is_dir():
@@ -113,8 +124,9 @@ def download_all(groups, cache_dir):
         if not repo_entries:
             continue
         repo_type = repo_type_map[repo_id]
-        allow_patterns = [f"{e.remote_path}*" for e in repo_entries]
+        allow_patterns = [pattern for entry in repo_entries for pattern in _entry_allow_patterns(entry)]
         repo_cache = cache_dir / repo_type / repo_id.split("/")[-1]
+        _clear_cached_entry_sources(repo_cache, repo_entries)
 
         print(f"\nDownloading {repo_id} ({repo_type}) to {repo_cache} ...")
         print(f"Fetching: {[e.remote_path for e in repo_entries]}")
@@ -155,8 +167,9 @@ def download_all_hf(groups, cache_dir):
         if not repo_entries:
             continue
         repo_type = repo_type_map[repo_id]
-        allow_patterns = [f"{e.remote_path}*" for e in repo_entries]
+        allow_patterns = [pattern for entry in repo_entries for pattern in _entry_allow_patterns(entry)]
         repo_cache = cache_dir / repo_type / repo_id.split("/")[-1]
+        _clear_cached_entry_sources(repo_cache, repo_entries)
 
         print(f"\nDownloading {repo_id} ({repo_type}) from HuggingFace to {repo_cache} ...")
         print(f"Fetching: {[e.remote_path for e in repo_entries]}")

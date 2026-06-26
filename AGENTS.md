@@ -225,8 +225,8 @@ Quick reference:
 python train_mimic/scripts/data/build_dataset.py --spec train_mimic/configs/datasets/twist2.yaml
 python scripts/run/record_pico_motion.py
 python train_mimic/scripts/data/build_dataset.py --spec data/pico_motion/pico_recorded.yaml --force
-python train_mimic/scripts/data/precompute_dataset.py data/datasets/seed --outdir data/datasets/seed_precomputed --jobs 8
-python train_mimic/scripts/train.py --motion_file data/datasets/seed_precomputed
+python train_mimic/scripts/data/precompute_dataset.py data/datasets --outdir data/datasets_precomputed --jobs 8
+python train_mimic/scripts/train.py --motion_file data/datasets_precomputed
 python train_mimic/scripts/data/precompute_dataset.py data/datasets/twist2 --outdir data/datasets/twist2_precomputed --jobs 8 --force
 python train_mimic/scripts/save_onnx.py --checkpoint logs/rsl_rl/g1_general_tracking/<run>/model_30000.pt --output policy.onnx --history_length 10
 ```
